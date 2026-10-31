@@ -357,7 +357,8 @@ int main(int argc, char **argv) {
     int pending = 0;
     char ts[16];
     clock_txt(t0, ts, sizeof ts);
-    fprintf(tape, "%s perch: eye open on %s %dx%d, grid %dx%d, %s\n", ts, disp, W, H, GX, GY, use_shm ? "shm" : "no shm");
+    fprintf(tape, "# shape: time code fields | S strike col,row@x,y wxh.. | H tuned-out col,row beat_s | B beat broken col,row | L line app in/out reqs op:n.. | T text app x,y 'now' 'was' | J joined app | X left app bytes | O open | C closed\n");
+    fprintf(tape, "%s O eye %s %dx%d %dx%d\n", ts, disp, W, H, GX, GY);
 
     /* first look: whole screen, so every cell has a vector to compare against */
     grab(0, 0, W, H);
@@ -384,7 +385,7 @@ int main(int argc, char **argv) {
                 if (d->damage == rootd) {
                     /* full-screen root damage = a compositor repainting; ignore it from then on, the windows' own damage says where */
                     if (d->area.width >= W && d->area.height >= H) {
-                        if (!root_full) { root_full = 1; clock_txt(now_s(), ts, sizeof ts); fprintf(tape, "%s perch: compositor repaints the whole screen, watching windows only\n", ts); }
+                        if (!root_full) { root_full = 1; clock_txt(now_s(), ts, sizeof ts); fprintf(tape, "%s O windows-only\n", ts); }
                         continue;
                     }
                     if (root_full) continue;
@@ -456,8 +457,8 @@ int main(int argc, char **argv) {
                     nreal++;
                     zb[i * 5] = (hab == 0 || hab == 4) ? 1.0f : 2.0f;
                     if (bx1 > bx0) { zb[i * 5 + 1] = (float)bx0 / W; zb[i * 5 + 2] = (float)by0 / H; zb[i * 5 + 3] = (float)(bx1 - bx0) / W; zb[i * 5 + 4] = (float)(by1 - by0) / H; }
-                    if (hab == 3) { fprintf(tape, "%s perch: cell %d,%d tuned out (beat %.1fs)\n", ts, c, r, cells[i].beat); habit_total++; w_habit++; }
-                    else if (hab == 4) fprintf(tape, "%s perch: cell %d,%d broke its beat, watching again\n", ts, c, r);
+                    if (hab == 3) { fprintf(tape, "%s H %d,%d %.1f\n", ts, c, r, cells[i].beat); habit_total++; w_habit++; }
+                    else if (hab == 4) fprintf(tape, "%s B %d,%d\n", ts, c, r);
                     if (hab == 0 || hab == 4) {
                         if (bx1 > bx0 && ln < (int)sizeof line - 80)
                             ln += snprintf(line + ln, sizeof line - ln, "%s%d,%d@%d,%d %dx%d", nstrike ? " " : "", c, r, bx0, by0, bx1 - bx0, by1 - by0);
@@ -479,9 +480,9 @@ int main(int argc, char **argv) {
             }
             if (nstrike) {
                 strikes_total += nstrike; w_strikes += nstrike; frames_with_strike++; w_frames++;
-                int n = fprintf(tape, "%s strike %d: %s\n", ts, nstrike, line);
+                int n = fprintf(tape, "%s S %s\n", ts, line);
                 if (n > 0) { tape_bytes += n; w_tape += n; }
-                snprintf(last_line, sizeof last_line, "%s strike %d: %.300s", ts, nstrike, line);
+                snprintf(last_line, sizeof last_line, "%s S %.300s", ts, line);
             }
         }
         t = now_s();
@@ -519,7 +520,7 @@ int main(int argc, char **argv) {
                    "tokens: text %.0f, shots-on-strike %.0f, shot-per-sec %.0f\n",
             ts, dt, 100.0 * dc / dt, ev_total, looks, strikes_total, frames_with_strike, habit_total, 100.0 * px_read / ((double)W * H * dt),
             tape_bytes / 4.0, frames_with_strike * SHOT_TOKENS(W, H), dt * SHOT_TOKENS(W, H));
-    fprintf(tape, "%s perch: eye closed\n", ts);
+    fprintf(tape, "%s C eye\n", ts);
     fclose(tape); fclose(vecs); fclose(stats);
     if (use_shm) { XShmDetach(dpy, &shm); shmdt(shm.shmaddr); }
     XCloseDisplay(dpy);

@@ -54,23 +54,12 @@ static uint32_t rd32(const unsigned char *p, int big) {
     return big ? ((uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]) : ((uint32_t)p[3] << 24 | (uint32_t)p[2] << 16 | (uint32_t)p[1] << 8 | p[0]);
 }
 
-static const char *kind_name(int op) {
-    switch (op) {
-    case 1: return "CreateWindow"; case 8: return "MapWindow"; case 12: return "ConfigureWindow"; case 53: return "CreatePixmap";
-    case 55: return "CreateGC"; case 56: return "ChangeGC"; case 61: return "ClearArea"; case 62: return "CopyArea";
-    case 64: return "PolyPoint"; case 65: return "PolyLine"; case 66: return "PolySegment"; case 67: return "PolyRectangle";
-    case 69: return "FillPoly"; case 70: return "PolyFillRectangle"; case 72: return "PutImage"; case 73: return "GetImage";
-    case 74: return "PolyText8"; case 76: return "ImageText8"; case 43: return "GetInputFocus";
-    default: return op >= 128 ? "extension" : NULL;
-    }
-}
-
 static void text_at(Conn *k, uint32_t draw, int x, int y, const char *s) {
     for (int i = 0; i < nspot; i++)
         if (spots[i].draw == draw && spots[i].x == x && spots[i].y == y) {
             if (!strcmp(spots[i].text, s)) return;                   /* same text redrawn: nothing to say */
             char ts[16]; now_txt(ts, sizeof ts);
-            fprintf(tape, "%s line: %s text %d,%d '%s' was '%s'\n", ts, k->name, x, y, s, spots[i].text);
+            fprintf(tape, "%s T %s %d,%d '%s' '%s'\n", ts, k->name, x, y, s, spots[i].text);
             free(spots[i].text); spots[i].text = strdup(s ? s : "");
             return;
         }
@@ -83,7 +72,7 @@ static void text_at(Conn *k, uint32_t draw, int x, int y, const char *s) {
     spots[nspot].draw = draw; spots[nspot].x = x; spots[nspot].y = y; spots[nspot].text = strdup(s ? s : "");
     nspot++;
     char ts[16]; now_txt(ts, sizeof ts);
-    fprintf(tape, "%s line: %s text %d,%d '%s'\n", ts, k->name, x, y, s);
+    fprintf(tape, "%s T %s %d,%d '%s'\n", ts, k->name, x, y, s);
 }
 
 /* ---- the interpreter: what each app is drawing, where on the screen, in what colour ---- */
@@ -292,7 +281,7 @@ static void name_of(int fd, char *out, size_t n, int *pid) {
 static void drop(int i) {
     close(conns[i].c); close(conns[i].s); free(conns[i].req);
     char ts[16]; now_txt(ts, sizeof ts);
-    fprintf(tape, "%s line: %s left (%ld bytes in all)\n", ts, conns[i].name, conns[i].tot_in);
+    fprintf(tape, "%s X %s %ld\n", ts, conns[i].name, conns[i].tot_in);
     conns[i] = conns[--nconn];
 }
 
@@ -349,7 +338,7 @@ int main(int argc, char **argv) {
 
     signal(SIGINT, on_stop); signal(SIGTERM, on_stop); signal(SIGPIPE, SIG_IGN);
     char ts[16]; now_txt(ts, sizeof ts);
-    fprintf(tape, "%s line: tap open, :%d -> :%d\n", ts, disp, srv);
+    fprintf(tape, "%s O tap :%d>:%d\n", ts, disp, srv);
     CoopBox box;
     uint32_t bdim[1] = {259};
     char bf[300];
@@ -393,7 +382,7 @@ int main(int argc, char **argv) {
                 k->c = c; k->s = s;
                 name_of(c, k->name, sizeof k->name, &k->pid);
                 now_txt(ts, sizeof ts);
-                fprintf(tape, "%s line: %s joined\n", ts, k->name);
+                fprintf(tape, "%s J %s\n", ts, k->name);
             }
         for (int i = nconn - 1; i >= 0 && pr > 0; i--) {
             short rc = pf[2 + 2 * i].revents, rs = pf[3 + 2 * i].revents;
@@ -421,16 +410,10 @@ int main(int argc, char **argv) {
                 Conn *k = &conns[i];
                 if (!k->bytes_in && !k->bytes_out) continue;
                 char kinds[300]; size_t o = 0;
-                for (int pass2 = 0; pass2 < 3; pass2++) {                 /* the 3 busiest kinds of request */
-                    int best = -1;
-                    for (int op = 0; op < 256; op++) if (k->kinds[op] && (best < 0 || k->kinds[op] > k->kinds[best])) best = op;
-                    if (best < 0) break;
-                    const char *nm = kind_name(best);
-                    o += (size_t)snprintf(kinds + o, sizeof kinds - o, "%s%s %ld", o ? ", " : "", nm ? nm : "op", k->kinds[best]);
-                    if (!nm) o += (size_t)snprintf(kinds + o, sizeof kinds - o, "(%d)", best);
-                    k->kinds[best] = 0;
-                }
-                fprintf(tape, "%s line: %s %ld bytes in, %ld out, %ld requests (%s)\n", ts, k->name, k->bytes_in, k->bytes_out, k->reqs, o ? kinds : "replies only");
+                for (int op = 0; op < 256 && o < sizeof kinds - 16; op++)       /* every kind seen, op:n (names in the line plane header) */
+                    if (k->kinds[op]) o += (size_t)snprintf(kinds + o, sizeof kinds - o, "%s%d:%ld", o ? " " : "", op, k->kinds[op]);
+                kinds[o < sizeof kinds ? o : sizeof kinds - 1] = 0;
+                fprintf(tape, "%s L %s %ld/%ld %ld %s\n", ts, k->name, k->bytes_in, k->bytes_out, k->reqs, kinds);
                 k->tot_in += k->bytes_in;
                 k->bytes_in = k->bytes_out = k->reqs = 0;
                 memset(k->kinds, 0, sizeof k->kinds);
@@ -441,7 +424,7 @@ int main(int argc, char **argv) {
     snprintf(path, sizeof path, "/tmp/.X11-unix/X%d", disp); unlink(path);
     snprintf(path, sizeof path, "/tmp/.X%d-lock", disp); unlink(path);
     now_txt(ts, sizeof ts);
-    fprintf(tape, "%s line: tap closed\n", ts);
+    fprintf(tape, "%s C tap\n", ts);
     fclose(tape);
     return 0;
 }
