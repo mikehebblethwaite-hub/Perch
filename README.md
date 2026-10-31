@@ -27,7 +27,7 @@ The bot's mind's eye (design: ~/the notes/perch.md). Version 0.09.
 
 Tape line: `HH:MM:SS strike N: col,row@x,y WxH ...` (cell, then the zoomed box in screen pixels).
 
-Build: `make` (needs libx11-dev libxdamage-dev libxext-dev libxfixes-dev).
+Build: `make` (needs libx11-dev libxdamage-dev libxext-dev libxfixes-dev). The text layer (coop-perch-guest) needs python3-pyatspi + gir1.2-atspi-2.0 (a dependency of the .deb).
 
 ## The chip test (0.04)
 
