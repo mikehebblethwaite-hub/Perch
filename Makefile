@@ -1,5 +1,5 @@
 CFLAGS ?= -O2 -Wall -Wextra
-all: coop-perch-eye coop-perch-feed coop-perch-tap coop-perch-box
+all: coop-perch-eye coop-perch-feed coop-perch-tap coop-perch-box coop-perch-chip
 coop-perch-eye: coop-perch-eye.c coop-perch-box.h
 	$(CC) $(CFLAGS) -o $@ $< -lX11 -lXext -lXdamage -lXfixes -lm
 coop-perch-feed: coop-perch-feed.c
@@ -8,5 +8,7 @@ coop-perch-tap: coop-perch-tap.c coop-perch-box.h
 	$(CC) $(CFLAGS) -o $@ $<
 coop-perch-box: coop-perch-box.c coop-perch-box.h
 	$(CC) $(CFLAGS) -o $@ $<
+coop-perch-chip: coop-perch-chip.c
+	$(CC) $(CFLAGS) -o $@ $< -lX11
 clean:
-	rm -f coop-perch-eye coop-perch-feed coop-perch-tap coop-perch-box
+	rm -f coop-perch-eye coop-perch-feed coop-perch-tap coop-perch-box coop-perch-chip

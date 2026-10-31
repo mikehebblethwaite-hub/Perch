@@ -1,6 +1,6 @@
 # coop-perch
 
-The bot's mind's eye (design: ~/the notes/perch.md). Version 0.03.
+The bot's mind's eye (design: ~/the notes/perch.md). Version 0.04.
 
 - `coop-perch-display` : display :2. Apps connect to :2; `coop-perch-tap` sits there on the data line and passes every byte to the real
   X screen, Xvfb :12 (DAMAGE/XFIXES/MIT-SHM, local socket only). Any app on it thinks it is a monitor.
@@ -26,3 +26,12 @@ The bot's mind's eye (design: ~/the notes/perch.md). Version 0.03.
 Tape line: `HH:MM:SS strike N: col,row@x,y WxH ...` (cell, then the zoomed box in screen pixels).
 
 Build: `make` (needs libx11-dev libxdamage-dev libxext-dev libxfixes-dev).
+
+## The chip test (0.04)
+
+`sudo ./coop-perch-chip -c` reads the video card's own RAM straight from the driver (amdgpu debugfs `amdgpu_vram`; on the host the
+AMD Barcelo APU's 512 MB slice of main memory), finds the panel clock by timing (blocks that change with the seconds), then drops
+root and shows a 32x32 box on the screen: 1024 bits of that RAM, every bit an empty white circle (the template), a blue dot when 1.
+A row of 4 bytes is one pixel, so the box is 32 pixels. It follows the second hand: when the watched 128 bytes go quiet and another
+part of the clock's stretch of RAM changes, it jumps there. Beside it, "How a bot sees this": the same 32 pixels as the numbers a
+bot gets (R G B, changed), also written to the box of bot vectors as plane `chip`. `-a ADDRESS` watches a fixed spot instead.
