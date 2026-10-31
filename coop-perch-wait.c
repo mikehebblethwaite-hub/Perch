@@ -8,6 +8,7 @@
  * Nothing changed before the timeout: prints "quiet" and exits 1.
  *
  *   coop-perch-wait [-t SECONDS(10)] [-q SETTLE_MS(400)] [-r x,y,w,h (only changes touching this region)]
+ *   -f  follow: keep going for -t seconds, one line per settled change, each starting "first_seen_time printed_time"
  */
 #include "coop-perch-box.h"
 
@@ -17,10 +18,11 @@ static double now_s(void) { struct timespec t; clock_gettime(CLOCK_REALTIME, &t)
 
 int main(int argc, char **argv) {
     double timeout = 10;
-    int settle = 400, rx = 0, ry = 0, rw = 0, rh = 0;
+    int settle = 400, rx = 0, ry = 0, rw = 0, rh = 0, follow = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-t") && i + 1 < argc) timeout = atof(argv[++i]);
         else if (!strcmp(argv[i], "-q") && i + 1 < argc) settle = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-f")) follow = 1;
         else if (!strcmp(argv[i], "-r") && i + 1 < argc) { if (sscanf(argv[++i], "%d,%d,%d,%d", &rx, &ry, &rw, &rh) != 4) return 2; }
         else { fprintf(stderr, "usage: %s [-t SECONDS] [-q SETTLE_MS] [-r x,y,w,h]\n", argv[0]); return 2; }
     }
@@ -30,9 +32,13 @@ int main(int argc, char **argv) {
     uint32_t ncell = b.h->dim[0] * b.h->dim[1];
     Rect *cells = calloc(ncell, sizeof *cells);                         /* per cell: everything that changed in it so far */
     if (!cells) return 2;
-    for (uint32_t i = 0; i < ncell; i++) cells[i].x1 = -1;
+    Rect *area = calloc(ncell, sizeof *area);
+    if (!area) return 2;
     uint64_t seen = __atomic_load_n(&b.h->count, __ATOMIC_ACQUIRE);
-    double end = now_s() + timeout, last = 0;
+    double total_end = now_s() + timeout;
+    for (;;) {
+    for (uint32_t i = 0; i < ncell; i++) cells[i].x1 = -1;
+    double end = follow ? total_end : now_s() + timeout, last = 0, first = 0;
     int got = 0;
     for (;;) {
         double t = now_s();
@@ -51,16 +57,15 @@ int main(int argc, char **argv) {
                 Rect *r = &cells[i];
                 if (r->x1 < 0) { r->x0 = x0; r->y0 = y0; r->x1 = x1; r->y1 = y1; }
                 else { if (x0 < r->x0) r->x0 = x0; if (y0 < r->y0) r->y0 = y0; if (x1 > r->x1) r->x1 = x1; if (y1 > r->y1) r->y1 = y1; }
+                if (!got) first = now_s();
                 got = 1; last = now_s();
             }
         }
         seen = c;
     }
-    if (!got) { printf("quiet\n"); return 1; }
+    if (!got) { if (follow) break; printf("quiet\n"); return 1; }
     /* join touching cells into areas, so one change spread over cells is one box */
     int n = 0;
-    Rect *area = calloc(ncell, sizeof *area);
-    if (!area) return 2;
     for (uint32_t i = 0; i < ncell; i++) if (cells[i].x1 >= 0) area[n++] = cells[i];
     for (int merged = 1; merged;) {
         merged = 0;
@@ -81,8 +86,12 @@ int main(int argc, char **argv) {
         if (area[i].x1 > all.x1) all.x1 = area[i].x1;
         if (area[i].y1 > all.y1) all.y1 = area[i].y1;
     }
+    if (follow) printf("%.3f %.3f ", first, now_s());
     printf("S %d,%d %dx%d n=%d |", all.x0, all.y0, all.x1 - all.x0, all.y1 - all.y0, n);
     for (int i = 0; i < n; i++) printf(" %d,%d %dx%d", area[i].x0, area[i].y0, area[i].x1 - area[i].x0, area[i].y1 - area[i].y0);
     printf("\n");
+    fflush(stdout);
+    if (!follow) return 0;
+    }
     return 0;
 }
