@@ -232,7 +232,13 @@ static int mark(int x0, int y0, int x1, int y1) {
 
 /* ---- the windows: DAMAGE on each top-level window, like a compositor does. Damage on the root alone is useless under a
    compositing window manager (xfwm4, mutter...): it repaints the whole screen every frame, so every root damage is full screen. ---- */
-typedef struct { Window w; Damage d; int x, y, wd, ht, mapped; } Win;
+typedef struct {
+    Window w; Damage d; int x, y, wd, ht, mapped;
+    int full_hits;                  /* whole-window damage in a row: 3+ = drawn by the graphics card, a whole new frame each time */
+    int pend, px0, py0, px1, py1;   /* its damage held back until the next slow look */
+    double last;
+} Win;
+#define GPU_LOOK 0.25               /* seconds between looks at a graphics-card window (others: FRAME_MS) */
 static Win *wins = NULL;
 static int nwins = 0, capwins = 0;
 
@@ -255,6 +261,7 @@ static void win_add(Window w) {
     Win *v = &wins[nwins++];
     v->w = w; v->x = a.x; v->y = a.y; v->wd = a.width + 2 * a.border_width; v->ht = a.height + 2 * a.border_width;
     v->mapped = a.map_state == IsViewable;
+    v->full_hits = 0; v->pend = 0; v->last = 0;
     v->d = XDamageCreate(dpy, w, XDamageReportRawRectangles);
 }
 static void win_drop(Window w) {
@@ -316,9 +323,9 @@ int main(int argc, char **argv) {
     CoopBox box;                                                     /* the eye plane: rows x cols x 9 */
     uint32_t bdim[3] = {(uint32_t)GY, (uint32_t)GX, 9};
     char bfields[300];
-    snprintf(bfields, sizeof bfields, "R G B luma strike zoom_x zoom_y zoom_w zoom_h; colours 0..255 cell means; strike 0 none 1 strike 2 tuned-out cell changed; "
-                                      "zoom box 0..1 of the screen; screen %dx%d display %s; a frame per look that saw a change", W, H, disp);
-    int have_box = coop_box_create(&box, "eye", 3, bdim, bfields) == 0;
+    snprintf(bfields, sizeof bfields, "R G B luma strike zoom_x zoom_y zoom_w zoom_h; colours 0..255 cell means (rounded); strike 0 none 1 strike "
+                                      "2 tuned-out cell changed; zoom box in screen pixels; screen %dx%d display %s; a frame per look that saw a change", W, H, disp);
+    int have_box = coop_box_create(&box, "eye", "u16", 3, bdim, bfields) == 0;
     if (!have_box) fprintf(stderr, "coop-perch-eye: no box in %s (going on without it)\n", coop_box_dir());
 
     /* watch the top-level windows (and the root, for anything drawn straight onto it), hear windows come, go and move */
@@ -375,7 +382,9 @@ int main(int argc, char **argv) {
     while (!stop_now) {
         double t = now_s();
         if (run_for > 0 && t - t0 >= run_for) break;
-        int wait = pending ? (int)fmax(0, FRAME_MS - (t - last_look) * 1000) : 1000;
+        int held = 0;
+        for (int i = 0; i < nwins; i++) held |= wins[i].pend;
+        int wait = pending ? (int)fmax(0, FRAME_MS - (t - last_look) * 1000) : held ? (int)(GPU_LOOK * 1000) : 1000;
         if (!XPending(dpy)) poll(&pfd, 1, wait);
         while (XPending(dpy)) {
             XEvent e;
@@ -396,7 +405,20 @@ int main(int argc, char **argv) {
                 Win *v = win_find(d->drawable);
                 if (!v || !v->mapped) continue;
                 ev_total++; w_ev++;
-                if (mark(v->x + d->area.x, v->y + d->area.y, v->x + d->area.x + d->area.width, v->y + d->area.y + d->area.height)) pending = 1;
+                int ax0 = v->x + d->area.x, ay0 = v->y + d->area.y, ax1 = ax0 + d->area.width, ay1 = ay0 + d->area.height;
+                long area = (long)d->area.width * d->area.height, whole = (long)v->wd * v->ht;
+                v->full_hits = whole > 0 && area * 10 >= whole * 9 ? v->full_hits + 1 : 0;
+                if (v->full_hits >= 3) {                              /* a graphics-card window: hold its damage for the slow look */
+                    if (!v->pend) { v->px0 = ax0; v->py0 = ay0; v->px1 = ax1; v->py1 = ay1; v->pend = 1; }
+                    else {
+                        if (ax0 < v->px0) v->px0 = ax0;
+                        if (ay0 < v->py0) v->py0 = ay0;
+                        if (ax1 > v->px1) v->px1 = ax1;
+                        if (ay1 > v->py1) v->py1 = ay1;
+                    }
+                    continue;
+                }
+                if (mark(ax0, ay0, ax1, ay1)) pending = 1;
             } else if (e.type == CreateNotify) {
                 if (e.xcreatewindow.parent == root) win_add(e.xcreatewindow.window);
             } else if (e.type == DestroyNotify) {
@@ -418,6 +440,11 @@ int main(int argc, char **argv) {
             }
         }
         t = now_s();
+        for (int i = 0; i < nwins; i++)                                /* graphics-card windows: their held damage, 4 times a second */
+            if (wins[i].pend && t - wins[i].last >= GPU_LOOK) {
+                if (mark(wins[i].px0, wins[i].py0, wins[i].px1, wins[i].py1)) pending = 1;
+                wins[i].pend = 0; wins[i].last = t;
+            }
         if (pending && (t - last_look) * 1000 >= FRAME_MS) {
             /* the look: read only the dirty cells, make their vectors, strike, zoom */
             last_look = t; pending = 0; looks++; w_looks++;
@@ -456,7 +483,7 @@ int main(int argc, char **argv) {
                     int hab = habit_check(&cells[i], t);
                     nreal++;
                     zb[i * 5] = (hab == 0 || hab == 4) ? 1.0f : 2.0f;
-                    if (bx1 > bx0) { zb[i * 5 + 1] = (float)bx0 / W; zb[i * 5 + 2] = (float)by0 / H; zb[i * 5 + 3] = (float)(bx1 - bx0) / W; zb[i * 5 + 4] = (float)(by1 - by0) / H; }
+                    if (bx1 > bx0) { zb[i * 5 + 1] = (float)bx0; zb[i * 5 + 2] = (float)by0; zb[i * 5 + 3] = (float)(bx1 - bx0); zb[i * 5 + 4] = (float)(by1 - by0); }
                     if (hab == 3) { fprintf(tape, "%s H %d,%d %.1f\n", ts, c, r, cells[i].beat); habit_total++; w_habit++; }
                     else if (hab == 4) fprintf(tape, "%s B %d,%d\n", ts, c, r);
                     if (hab == 0 || hab == 4) {
@@ -474,8 +501,11 @@ int main(int argc, char **argv) {
                 for (int yy = y; yy < y + h; yy++) memcpy(prev + (size_t)yy * W + x, img->data + (size_t)yy * img->bytes_per_line + (size_t)x * 4, (size_t)w * 4);
             }
             if (nreal && have_box) {                                    /* the whole grid, as it is now, into the box */
-                float *bf = coop_box_next(&box, t);
-                for (int i = 0; i < ncell; i++) { memcpy(bf + (size_t)i * 9, cells[i].v, VEC * sizeof(float)); memcpy(bf + (size_t)i * 9 + 4, zb + (size_t)i * 5, 5 * sizeof(float)); }
+                uint16_t *bf = coop_box_next(&box, t);
+                for (int i = 0; i < ncell; i++) {
+                    for (int k = 0; k < VEC; k++) bf[i * 9 + k] = (uint16_t)(cells[i].v[k] + 0.5f);
+                    for (int k = 0; k < 5; k++) bf[i * 9 + 4 + k] = (uint16_t)zb[i * 5 + k];
+                }
                 coop_box_commit(&box);
             }
             if (nstrike) {

@@ -250,12 +250,12 @@ int main(int argc, char **argv) {
     if (font) XSetFont(dpy, gc, font->fid);
     XSetLineAttributes(dpy, gc, cell > 14 ? 2 : 1, LineSolid, CapRound, JoinRound);
 
-    CoopBox box;                                                      /* what the bot gets: 32 pixels x (R G B changed) */
-    uint32_t bdim[2] = {SIDE, 4};
+    CoopBox box;                                                      /* what the bot gets: 32 pixels R G B as bytes + 32 changed bits */
+    uint32_t bdim[1] = {SIDE * 3 + 4};
     char bfields[300];
-    snprintf(bfields, sizeof bfields, "R G B changed; 32 pixels of video RAM at 0x%lx (4 bytes each: blue green red spare), colours 0..255, "
-                                      "changed 1 if the pixel differs from the frame before; a frame whenever a pixel changed", addr);
-    int have_box = coop_box_create(&box, "chip", 2, bdim, bfields) == 0;
+    snprintf(bfields, sizeof bfields, "R0 G0 B0 .. R31 G31 B31 changed_bits(4 bytes, bit n = pixel n changed); 32 pixels of video RAM (4 bytes "
+                                      "each in the RAM: blue green red spare), it follows the clock so the address moves; a frame whenever a pixel changed");
+    int have_box = coop_box_create(&box, "chip", "u8", 1, bdim, bfields) == 0;
 
     unsigned char bits[BYTES], shown[BYTES];
     memset(shown, 0, sizeof shown);
@@ -334,7 +334,7 @@ int main(int argc, char **argv) {
             }
             /* the bot's view: each row's 4 bytes as one pixel, the numbers it reads, a mark when the pixel changed */
             int anychg = 0;
-            float *bf = NULL;
+            uint8_t *bf = NULL;
             for (int r = 0; r < SIDE; r++) {
                 const unsigned char *p = bits + r * 4, *q = shown + r * 4;
                 int chg = memcmp(p, q, 4) != 0;
@@ -344,7 +344,7 @@ int main(int argc, char **argv) {
             for (int r = 0; r < SIDE; r++) {
                 const unsigned char *p = bits + r * 4, *q = shown + r * 4;
                 int chg = !full && memcmp(p, q, 4) != 0;
-                if (bf) { bf[r * 4] = p[2]; bf[r * 4 + 1] = p[1]; bf[r * 4 + 2] = p[0]; bf[r * 4 + 3] = (float)chg; }
+                if (bf) { bf[r * 3] = p[2]; bf[r * 3 + 1] = p[1]; bf[r * 3 + 2] = p[0]; if (chg) bf[SIDE * 3 + r / 8] |= (uint8_t)(1u << (r % 8)); }
                 if (chg) lastchg[r] = t;
                 int mark = t - lastchg[r] < 1.0;                      /* the mark stays a second so a person can see it */
                 if (!full && !chg && mark == marked[r]) continue;     /* nothing new on this row */

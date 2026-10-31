@@ -1,6 +1,6 @@
 # coop-perch
 
-The bot's mind's eye (design: ~/the notes/perch.md). Version 0.04.
+The bot's mind's eye (design: ~/the notes/perch.md). Version 0.06.
 
 - `coop-perch-display` : display :2. Apps connect to :2; `coop-perch-tap` sits there on the data line and passes every byte to the real
   X screen, Xvfb :12 (DAMAGE/XFIXES/MIT-SHM, local socket only). Any app on it thinks it is a monitor.
@@ -8,9 +8,11 @@ The bot's mind's eye (design: ~/the notes/perch.md). Version 0.04.
   and turns each drawing (fill, outline, line, image, copy, text, map, move) into one raw event: app pid, kind, screen box, colour,
   on screen or not, and the text itself as char codes. Nothing on the line = nothing written, the tap sleeps.
 - **The box of bot vectors** (`coop-perch-box.h`): shared memory /dev/shm/coop-perch, one file per plane, a 4096-byte header that says
-  what the numbers mean, then a ring of frames (double time + floats). Bots mmap it and read in place; they sleep on the header's
-  `wake` word (futex) until a frame lands: that word is the "data or not" pin. Planes: `draw` (76 per event, from the tap),
-  `line` (259 per second with traffic: request counts by kind, bytes in/out, apps), `eye` (rows x cols x 9: R G B luma strike zoom box).
+  what the numbers mean, then a ring of frames (double time + values of the plane's type: u8 u16 u32 i32 f32, the smallest that holds
+  its numbers exactly; flags are packed bits). Bots mmap it and read in place; they sleep on the header's
+  `wake` word (futex) until a frame lands: that word is the "data or not" pin. Planes: `draw` (i32 x 26 per event, text packed as bytes),
+  `line` (u32 x 259 per second with traffic: request counts by kind, bytes in/out, apps), `eye` (u16, rows x cols x 9: R G B luma
+  strike zoom box in pixels), `chip` (u8: 32 pixels R G B + 32 changed bits).
 - `coop-perch-box info | raw PLANE [N] | stream PLANE | check PLANE SECONDS` : reader for tests and for bots that only take a pipe.
 - `coop-perch-eye` (C) : the local eye. DAMAGE on each top-level window (root damage is dropped when a compositor floods it with
   full-screen repaints); one shared-memory read per look, a row memcmp finds the tight changed box (GPU apps damage their whole
@@ -34,4 +36,4 @@ AMD Barcelo APU's 512 MB slice of main memory), finds the panel clock by timing 
 root and shows a 32x32 box on the screen: 1024 bits of that RAM, every bit an empty white circle (the template), a blue dot when 1.
 A row of 4 bytes is one pixel, so the box is 32 pixels. It follows the second hand: when the watched 128 bytes go quiet and another
 part of the clock's stretch of RAM changes, it jumps there. Beside it, "How a bot sees this": the same 32 pixels as the numbers a
-bot gets (R G B, changed), also written to the box of bot vectors as plane `chip`. `-a ADDRESS` watches a fixed spot instead.
+bot gets (R G B, changed), also written to the box of bot vectors as plane `chip` (u8, changed as bits). `-a ADDRESS` watches a fixed spot instead.

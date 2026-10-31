@@ -81,7 +81,7 @@ typedef struct { uint32_t id, fg; } XGc;                                 /* grap
 static XWin *xw = NULL; static int nxw = 0, capxw = 0;
 static XGc *xg = NULL; static int nxg = 0, capxg = 0;
 static CoopBox dbox; static int have_dbox = 0;
-#define DRAW_FIELDS 76
+#define DRAW_FIELDS 26                                                /* 10 numbers + 64 chars packed 4 to a value */
 #define DRAW_CHARS 64
 
 static XWin *xw_find(uint32_t id) { for (int i = 0; i < nxw; i++) if (xw[i].id == id) return &xw[i]; return NULL; }
@@ -112,13 +112,11 @@ static int screen_pos(uint32_t d, int *sx, int *sy) {
 static void draw_event(Conn *k, int op, uint32_t d, int x, int y, int w, int h, uint32_t colour, const char *text, int nchars) {
     if (!have_dbox) return;
     int sx, sy, on = screen_pos(d, &sx, &sy);
-    float *f = coop_box_next(&dbox, (double)time(NULL));
+    int32_t *f = coop_box_next(&dbox, (double)time(NULL));
     if (!f) return;
-    memset(f, 0, DRAW_FIELDS * sizeof(float));
-    f[0] = (float)k->pid; f[1] = (float)op; f[2] = (float)(sx + x); f[3] = (float)(sy + y); f[4] = (float)w; f[5] = (float)h;
-    f[6] = (float)(colour & 0xffffff); f[7] = (float)(d >> 16); f[8] = (float)(d & 0xffff); f[9] = (float)(on > 0 ? 1 : on < 0 ? -1 : 0);
-    f[10] = (float)nchars;
-    for (int i = 0; i < nchars && i < DRAW_CHARS && text; i++) f[12 + i] = (float)(unsigned char)text[i];
+    f[0] = k->pid; f[1] = op; f[2] = sx + x; f[3] = sy + y; f[4] = w; f[5] = h;
+    f[6] = (int32_t)(colour & 0xffffff); f[7] = (int32_t)d; f[8] = on > 0 ? 1 : on < 0 ? -1 : 0; f[9] = nchars;
+    if (text && nchars > 0) memcpy(f + 10, text, (size_t)(nchars < DRAW_CHARS ? nchars : DRAW_CHARS));
     coop_box_commit(&dbox);
 }
 static uint32_t gc_colour(uint32_t gc) { XGc *g = xg_find(gc); return g ? g->fg : 0; }
@@ -344,12 +342,12 @@ int main(int argc, char **argv) {
     char bf[300];
     snprintf(bf, sizeof bf, "op0 .. op255 bytes_in bytes_out apps; requests per X opcode in the second (op128+ extensions), bytes apps sent, bytes "
                             "the server sent back, apps connected; display :%d; a frame per second with traffic, none when the line is quiet", disp);
-    int have_box = coop_box_create(&box, "line", 1, bdim, bf) == 0;
+    int have_box = coop_box_create(&box, "line", "u32", 1, bdim, bf) == 0;
     uint32_t ddim[1] = {DRAW_FIELDS};
-    have_dbox = coop_box_create(&dbox, "draw", 1, ddim,
-        "app_pid op x y w h colour drawable_hi drawable_lo onscreen nchars spare char0 .. char63; one frame per thing drawn; "
+    have_dbox = coop_box_create(&dbox, "draw", "i32", 1, ddim,
+        "app_pid op x y w h colour drawable onscreen nchars text(16 values = 64 bytes, read as bytes); one frame per thing drawn; "
         "x y w h in screen pixels (text: x y = baseline start, w h 0); colour 0xRRGGBB as a number (0 = not known); onscreen 1 seen, 0 hidden "
-        "(unmapped), -1 off screen (pixmap); chars are byte codes; op: 8 map 9 map-subwindows 10 unmap 12 move/resize 61 clear 62 copy "
+        "(unmapped), -1 off screen (pixmap); op: 8 map 9 map-subwindows 10 unmap 12 move/resize 61 clear 62 copy "
         "64 points 65 lines 66 segments 67 rectangle 69 polygon 70 filled rectangle 72 image 74 text 76 text-on-background") == 0;
     if (!have_box) fprintf(stderr, "coop-perch-tap: no box in %s (going on without it)\n", coop_box_dir());
     time_t last = time(NULL);
@@ -396,16 +394,16 @@ int main(int argc, char **argv) {
         if (t != last) {                                              /* one line per app per second that had traffic; silence writes nothing */
             last = t;
             now_txt(ts, sizeof ts);
-            float *lf = NULL;
+            uint32_t *lf = NULL;
             for (int i = 0; i < nconn; i++)
                 if (conns[i].bytes_in || conns[i].bytes_out) {
-                    if (!lf && have_box) { lf = coop_box_next(&box, (double)t); if (lf) memset(lf, 0, 259 * sizeof(float)); }
+                    if (!lf && have_box) lf = coop_box_next(&box, (double)t);
                     if (lf) {
-                        for (int op = 0; op < 256; op++) lf[op] += (float)conns[i].kinds[op];
-                        lf[256] += (float)conns[i].bytes_in; lf[257] += (float)conns[i].bytes_out;
+                        for (int op = 0; op < 256; op++) lf[op] += (uint32_t)conns[i].kinds[op];
+                        lf[256] += (uint32_t)conns[i].bytes_in; lf[257] += (uint32_t)conns[i].bytes_out;
                     }
                 }
-            if (lf) { lf[258] = (float)nconn; coop_box_commit(&box); }
+            if (lf) { lf[258] = (uint32_t)nconn; coop_box_commit(&box); }
             for (int i = 0; i < nconn; i++) {
                 Conn *k = &conns[i];
                 if (!k->bytes_in && !k->bytes_out) continue;

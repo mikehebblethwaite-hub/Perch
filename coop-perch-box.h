@@ -1,7 +1,8 @@
 /* coop-perch-box.h: the box of bot vectors. Raw numbers for bots, no text, no human view.
  *
  * The box is a folder in shared memory (default /dev/shm/coop-perch). Each plane is one file: a 4096-byte header, then a ring of
- * frames. A frame = one double (unix time) + frame_floats floats, laid out by dim[] (last dim fastest). A bot mmaps the file and
+ * frames. A frame = one double (unix time) + frame_elems values of the plane's type (dtype: u8 u16 u32 i32 f32, little-endian),
+ * laid out by dim[] (last dim fastest). Each plane uses the smallest type that holds its numbers exactly; flags are packed bits. A bot mmaps the file and
  * reads the numbers in place: no parsing, no copies, no syscalls. To wait for the next frame without polling it sleeps on the
  * header's `wake` word (futex, shared), which the writer bumps and wakes after every frame.
  *
@@ -27,7 +28,7 @@
 #include <unistd.h>
 
 #define COOP_BOX_MAGIC "PERCHBOX"
-#define COOP_BOX_VERSION 1
+#define COOP_BOX_VERSION 2
 #define COOP_BOX_HEADER 4096
 
 typedef struct {
@@ -37,8 +38,10 @@ typedef struct {
     uint32_t ring;             /* frames kept */
     uint32_t ndim;             /* dims of one frame (time not counted) */
     uint32_t dim[4];           /* e.g. eye: rows, cols, fields per cell */
-    uint32_t frame_floats;     /* product of dims */
-    uint32_t frame_bytes;      /* 8 (time) + 4 * frame_floats, rounded up to 8 */
+    uint32_t frame_elems;      /* product of dims */
+    uint32_t frame_bytes;      /* 8 (time) + elem_bytes * frame_elems, rounded up to 8 */
+    char dtype[4];             /* "u8" "u16" "u32" "i32" "f32" */
+    uint32_t elem_bytes;
     uint64_t count;            /* frames written, ever */
     uint32_t wake;             /* futex word: changes after every frame */
     uint32_t writer_pid;
@@ -64,14 +67,18 @@ static inline int coop_box_ring(void) {
 }
 
 /* writer: make (or remake) the plane file and map it */
-static inline int coop_box_create(CoopBox *b, const char *plane, int ndim, const uint32_t *dim, const char *fields) {
+static inline uint32_t coop_box_elem(const char *dtype) {
+    return !strcmp(dtype, "u8") ? 1 : !strcmp(dtype, "u16") ? 2 : 4;   /* u32 i32 f32 */
+}
+static inline int coop_box_create(CoopBox *b, const char *plane, const char *dtype, int ndim, const uint32_t *dim, const char *fields) {
     memset(b, 0, sizeof *b);
     char path[512];
     mkdir(coop_box_dir(), 0750);
     snprintf(path, sizeof path, "%s/%s.box", coop_box_dir(), plane);
     uint32_t ff = 1;
     for (int i = 0; i < ndim && i < 4; i++) ff *= dim[i];
-    uint32_t fb = (8u + 4u * ff + 7u) & ~7u;
+    uint32_t eb = coop_box_elem(dtype);
+    uint32_t fb = (8u + eb * ff + 7u) & ~7u;
     uint32_t ring = (uint32_t)coop_box_ring();
     size_t bytes = COOP_BOX_HEADER + (size_t)fb * ring;
     char tmp[540];
@@ -86,7 +93,8 @@ static inline int coop_box_create(CoopBox *b, const char *plane, int ndim, const
     memcpy(h->magic, COOP_BOX_MAGIC, 8);
     h->version = COOP_BOX_VERSION; h->header_bytes = COOP_BOX_HEADER; h->ring = ring; h->ndim = (uint32_t)ndim;
     for (int i = 0; i < ndim && i < 4; i++) h->dim[i] = dim[i];
-    h->frame_floats = ff; h->frame_bytes = fb; h->writer_pid = (uint32_t)getpid();
+    h->frame_elems = ff; h->frame_bytes = fb; h->elem_bytes = eb;
+    snprintf(h->dtype, sizeof h->dtype, "%s", dtype); h->writer_pid = (uint32_t)getpid();
     snprintf(h->plane, sizeof h->plane, "%s", plane);
     snprintf(h->fields, sizeof h->fields, "%s", fields);
     if (rename(tmp, path) != 0) { munmap(m, bytes); unlink(tmp); return -1; }   /* readers only ever see a whole header */
@@ -94,12 +102,13 @@ static inline int coop_box_create(CoopBox *b, const char *plane, int ndim, const
     return 0;
 }
 
-/* writer: the slot for the next frame (fill its floats, then coop_box_commit) */
-static inline float *coop_box_next(CoopBox *b, double t) {
+/* writer: the slot for the next frame (fill its values, zeroed here, then coop_box_commit) */
+static inline void *coop_box_next(CoopBox *b, double t) {
     if (!b->h) return NULL;
     unsigned char *f = b->base + b->h->header_bytes + (size_t)(b->h->count % b->h->ring) * b->h->frame_bytes;
     memcpy(f, &t, 8);
-    return (float *)(f + 8);
+    memset(f + 8, 0, b->h->frame_bytes - 8);
+    return f + 8;
 }
 static inline void coop_box_commit(CoopBox *b) {
     if (!b->h) return;
@@ -140,13 +149,13 @@ static inline uint64_t coop_box_wait(CoopBox *b, uint64_t seen, int ms) {
 }
 
 /* reader: frame k (count-based). Returns time, or -1 if k is not in the ring any more (or not written yet). */
-static inline double coop_box_frame(CoopBox *b, uint64_t k, const float **out) {
+static inline double coop_box_frame(CoopBox *b, uint64_t k, const void **out) {
     uint64_t c = __atomic_load_n(&b->h->count, __ATOMIC_ACQUIRE);
     if (k >= c || c - k > b->h->ring) return -1;
     const unsigned char *f = b->base + b->h->header_bytes + (size_t)(k % b->h->ring) * b->h->frame_bytes;
     double t;
     memcpy(&t, f, 8);
-    *out = (const float *)(f + 8);
+    *out = f + 8;
     return t;
 }
 #endif
