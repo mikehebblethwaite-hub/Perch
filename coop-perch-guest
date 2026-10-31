@@ -52,6 +52,7 @@ def emit(line):
 # while it keeps changing), as the text that is THERE now, read from the widget itself. Event order and speed do not matter.
 QUIET, MAXWAIT = 0.3, 1.5
 pending = {}            # key -> {"src", "app", "lo", "hi", "dels", "first", "last"}
+sent = {}               # (widget, range start) -> text last sent: a redraw of the same text (terminal UIs repaint every second) is not sent again
 
 def wkey(src):
     return (app(src), ext(src))            # the same widget (pyatspi gives a new object for every event, so not id())
@@ -94,6 +95,13 @@ def flush():
             b = tuple(r) if r and r[2] > 0 else ext(src)
         except Exception:
             text, b = "", ext(src)
+        sk = (k, lo)
+        if text and sent.get(sk) == text:
+            continue
+        if text:
+            sent[sk] = text
+            if len(sent) > 2000:
+                sent.clear()
         if p["dels"] and not text:
             emit(f"T {p['app']} {bx(b)} -{q(p['dels'])}")
         for i in range(0, len(text), CHUNK):      # long text: several lines in order, each with its own box (never cut)
@@ -129,7 +137,7 @@ def on_window(ev):
     flush_all()
     emit(f"W {app(a)} {q((a.name or '')[:120])} {bx(ext(a))}")
 
-emit("O guest-helper 0.04")
+emit("O guest-helper 0.05")
 pyatspi.Registry.registerEventListener(on_text, "object:text-changed:insert", "object:text-changed:delete")
 pyatspi.Registry.registerEventListener(on_focus, "object:state-changed:focused")
 pyatspi.Registry.registerEventListener(on_window, "window:activate")
