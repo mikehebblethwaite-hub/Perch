@@ -1,6 +1,6 @@
 # coop-perch
 
-The bot's mind's eye (design: ~/the notes/perch.md). Version 0.08.
+The bot's mind's eye (design: ~/the notes/perch.md). Version 0.09.
 
 - `coop-perch-display` : display :2. Apps connect to :2; `coop-perch-tap` sits there on the data line and passes every byte to the real
   X screen, Xvfb :12 (DAMAGE/XFIXES/MIT-SHM, local socket only). Any app on it thinks it is a monitor.
@@ -53,5 +53,19 @@ knows what changed, so there is no capture step and no screenshot: the VM eye do
 
 Build needs libglib2.0-dev as well. Test guest (not in git, not backed up): `vm/` (Ubuntu 24.04 cloud image from build-2's cache,
 an overlay disk, autologin seed).
+
+## 0.09: meaning, hands, regions, package
+
+- **Region lines**: cells that strike together and touch are one entry `c0,r0-c1,r1@x,y wxh`. `top` repainting a text screen: 24,522 -> 1,618 tokens / 100 s.
+- **The meaning layer** (`coop-perch-guest`, inside the guest): AT-SPI, per widget; when it goes quiet (300 ms, 1.5 s max) the text that is there
+  now is read from the widget and sent once: `T app x,y wxh +'text'`, `F app role 'name' box` (focus), `W app 'title' box` (window).
+  Out over virtio-serial `org.coop.perch.0` (no network). The host parses every field and writes the line itself (caps: 1 KB a line,
+  50 lines/s); plane `vmtext-NAME` (i32 x 24).
+- **Hands**: `coop-perch-act NAME 'type ..' 'key ctrl+s' 'click X Y' 'scroll X Y down 3' 'move X Y'` -> QEMU's own keyboard/mouse (usb-tablet).
+  Events go out on a 12 ms timer (the guest's PS/2 queue holds 16), so the eye keeps seeing while a bot types; replies in order; `A` lines on the tape.
+- `coop-perch-wait -p vm-NAME`: wait for a VM screen to settle.
+- **Package**: `make deb` -> `dist/coop-perch_VERSION_amd64.deb` (stripped binaries, scripts, guest helper, QUICKSTART.txt; no source).
+- Bot job (9 steps: type in an editor, run a command in a terminal): ~847 tokens of tape vs ~12,285 for a screenshot after each step;
+  the text came back exact; the eye's copy of the 1280x800 screen = QEMU's, 0 pixels apart; 1.9% of a core.
 
 Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT.

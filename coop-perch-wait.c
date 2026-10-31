@@ -18,17 +18,19 @@ typedef struct { int x0, y0, x1, y1; } Rect;
 static double now_s(void) { struct timespec t; clock_gettime(CLOCK_REALTIME, &t); return (double)t.tv_sec + t.tv_nsec / 1e9; }
 
 int main(int argc, char **argv) {
+    const char *plane = "eye";
     double timeout = 10;
     int settle = 400, rx = 0, ry = 0, rw = 0, rh = 0, follow = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-t") && i + 1 < argc) timeout = atof(argv[++i]);
         else if (!strcmp(argv[i], "-q") && i + 1 < argc) settle = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-f")) follow = 1;
+        else if (!strcmp(argv[i], "-p") && i + 1 < argc) plane = argv[++i];   /* e.g. vm-guest: a Perch VM's screen */
         else if (!strcmp(argv[i], "-r") && i + 1 < argc) { if (sscanf(argv[++i], "%d,%d,%d,%d", &rx, &ry, &rw, &rh) != 4) return 2; }
-        else { fprintf(stderr, "usage: %s [-t SECONDS] [-q SETTLE_MS] [-r x,y,w,h]\n", argv[0]); return 2; }
+        else { fprintf(stderr, "usage: %s [-p PLANE] [-t SECONDS] [-q SETTLE_MS] [-r x,y,w,h]\n", argv[0]); return 2; }
     }
     CoopBox b;
-    if (coop_box_open(&b, "eye") != 0) { fprintf(stderr, "no eye plane in %s (start the eye: coop-perch-display)\n", coop_box_dir()); return 2; }
+    if (coop_box_open(&b, plane) != 0) { fprintf(stderr, "no %s plane in %s (start its eye: coop-perch-display or coop-perch-vmrun)\n", plane, coop_box_dir()); return 2; }
     if (strcmp(b.h->dtype, "u16") || b.h->ndim != 3 || b.h->dim[2] != 9) { fprintf(stderr, "eye plane: unexpected layout\n"); return 2; }
     uint32_t ncell = b.h->dim[0] * b.h->dim[1];
     Rect *cells = calloc(ncell, sizeof *cells);                         /* per cell: everything that changed in it so far */

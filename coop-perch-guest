@@ -1,0 +1,129 @@
+#!/usr/bin/python3 -I
+# Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT.
+# coop-perch-guest: Perch's helper inside a guest. The meaning layer: what the screen SAYS, read where it already exists (the apps'
+# accessibility tree, AT-SPI), never read back from pixels. One short line per event, out through the virtio-serial port
+# org.coop.perch.0 (not the network) to coop-perch-vm on the host, which checks, caps and quotes everything (the guest is not trusted).
+#   T app x,y wxh +'text'   text inserted (box = where it is on the screen)      T app x,y wxh -'text'   text deleted
+#   F app role 'name' x,y wxh   focus moved here                                 W app 'title' x,y wxh   window became active
+# Text: per widget, the range that changed is noted; when the widget goes quiet (300 ms, or every 1.5 s while busy) the text that is
+# there NOW is read from the widget and sent once. A busy terminal is a few lines, not thousands, and the text is never out of order.
+import os, sys, time
+import pyatspi
+from gi.repository import GLib
+
+PORT = os.environ.get("PERCH_PORT", "/dev/virtio-ports/org.coop.perch.0")
+MAXTXT = 400
+try:
+    out = open(PORT, "w", buffering=1, encoding="utf-8", errors="replace")
+except OSError as e:
+    sys.exit(f"coop-perch-guest: no port {PORT}: {e}")
+
+def q(t):
+    t = (t or "")[:MAXTXT]
+    return "'" + t.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "").replace("\t", "\\t") + "'"
+
+def word(t, n=24):
+    return "".join(c if c.isalnum() or c in "-_." else "_" for c in (t or "?"))[:n] or "?"
+
+def ext(acc):
+    try:
+        e = acc.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+        return (e.x, e.y, e.width, e.height)
+    except Exception:
+        return None
+
+def app(acc):
+    try:
+        return word(acc.getApplication().name)
+    except Exception:
+        return "?"
+
+def bx(b):
+    return f"{b[0]},{b[1]} {b[2]}x{b[3]}" if b else "?"
+
+def emit(line):
+    try:
+        out.write(line + "\n")
+    except OSError:
+        pass
+
+# what changed, per widget: the range touched (character offsets), sent when the widget has been quiet for 300 ms (or every 1.5 s
+# while it keeps changing), as the text that is THERE now, read from the widget itself. Event order and speed do not matter.
+QUIET, MAXWAIT = 0.3, 1.5
+pending = {}            # key -> {"src", "app", "lo", "hi", "dels", "first", "last"}
+
+def wkey(src):
+    return (app(src), ext(src))            # the same widget (pyatspi gives a new object for every event, so not id())
+
+def on_text(ev):
+    s = ev.any_data if isinstance(ev.any_data, str) else ""
+    src = ev.source
+    k = wkey(src)
+    now = time.monotonic()
+    p = pending.get(k)
+    if p is None:
+        p = pending[k] = {"src": src, "app": k[0], "lo": None, "hi": None, "dels": "", "first": now, "last": now}
+    p["src"], p["last"] = src, now
+    start, n = ev.detail1, ev.detail2 or len(s)
+    if ev.type.endswith("insert"):
+        if p["lo"] is not None and p["hi"] is not None and start <= p["hi"]:
+            p["hi"] += n                        # text went in inside the range: it grows
+        p["lo"] = start if p["lo"] is None else min(p["lo"], start)
+        p["hi"] = start + n if p["hi"] is None else max(p["hi"], start + n)
+    else:
+        p["dels"] = (p["dels"] + s)[-MAXTXT:]
+        if p["hi"] is not None and start < p["hi"]:
+            p["hi"] = max(start, p["hi"] - n)
+        p["lo"] = start if p["lo"] is None else min(p["lo"], start)
+        if p["hi"] is None or p["hi"] < p["lo"]:
+            p["hi"] = p["lo"]
+
+def flush():
+    now = time.monotonic()
+    for k, p in list(pending.items()):
+        if now - p["last"] < QUIET and now - p["first"] < MAXWAIT:
+            continue
+        del pending[k]
+        src, lo, hi = p["src"], p["lo"], p["hi"]
+        try:
+            t = src.queryText()
+            hi = min(hi, t.characterCount)
+            text = t.getText(lo, hi) if hi > lo else ""
+            r = t.getRangeExtents(lo, max(hi, lo + 1), pyatspi.DESKTOP_COORDS) if hi > lo else None
+            b = tuple(r) if r and r[2] > 0 else ext(src)
+        except Exception:
+            text, b = "", ext(src)
+        if p["dels"] and not text:
+            emit(f"T {p['app']} {bx(b)} -{q(p['dels'])}")
+        if text:
+            emit(f"T {p['app']} {bx(b)} +{q(text if len(text) <= MAXTXT else '...' + text[-MAXTXT:])}")
+    return True
+
+def flush_all():
+    for p in pending.values():
+        p["first"] = -1e9
+    flush()
+
+def on_focus(ev):
+    if not ev.detail1:
+        return
+    a = ev.source
+    try:
+        role = word(a.getRoleName(), 20)
+        name = a.name or ""
+    except Exception:
+        return
+    flush_all()
+    emit(f"F {app(a)} {role} {q(name[:120])} {bx(ext(a))}")
+
+def on_window(ev):
+    a = ev.source
+    flush_all()
+    emit(f"W {app(a)} {q((a.name or '')[:120])} {bx(ext(a))}")
+
+emit("O guest-helper 0.03")
+pyatspi.Registry.registerEventListener(on_text, "object:text-changed:insert", "object:text-changed:delete")
+pyatspi.Registry.registerEventListener(on_focus, "object:state-changed:focused")
+pyatspi.Registry.registerEventListener(on_window, "window:activate")
+GLib.timeout_add(100, flush)
+pyatspi.Registry.start()

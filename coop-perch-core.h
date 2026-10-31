@@ -198,6 +198,8 @@ typedef struct {
     FILE *tape, *vecs, *stats;
     CoopBox box;
     int have_box;
+    int *sbox, *queue;            /* this look: striking cells' zoom boxes (x0 y0 x1 y1) and the region walk */
+    unsigned char *smark;
     float *zb;                    /* this look: per cell strike (1 strike, 2 tuned-out change, 3 animated) + zoom box */
     int pending;
     double t0, c0, last_stats, last_look, win_t0, win_c0;
@@ -231,7 +233,7 @@ static int perch_open(PerchEye *e, const char *dir, const char *kind, const char
     e->c0 = e->win_c0 = perch_cpu();
     char ts[16];
     clock_txt(e->t0, ts, sizeof ts);
-    fprintf(e->tape, "# shape: time code fields | S strike col,row@x,y wxh.. | H tuned-out col,row beat_s | B beat broken col,row | L line app in/out reqs op:n.. | T text app x,y 'now' 'was' | J joined app | X left app bytes | O open | C closed\n");
+    fprintf(e->tape, "# shape: time code fields | S strike col,row@x,y wxh or region col0,row0-col1,row1@x,y wxh .. | H tuned-out col,row beat_s | B beat broken col,row | L line app in/out reqs op:n.. | T text app x,y 'now' 'was' | J joined app | X left app bytes | O open | C closed\n");
     return 0;
 }
 
@@ -243,7 +245,10 @@ static int perch_screen(PerchEye *e, int w, int h, int own_cur) {
     free(cells); cells = calloc((size_t)ncell, sizeof(Cell));
     free(dirty); dirty = calloc((size_t)ncell, 1);
     free(e->zb); e->zb = calloc((size_t)ncell * 5, sizeof(float));
-    if ((own_cur && !cur) || !prev || !cells || !dirty || !e->zb) { fprintf(stderr, "coop-perch-%s: out of memory\n", e->kind); return -1; }
+    free(e->sbox); e->sbox = calloc((size_t)ncell * 4, sizeof(int));
+    free(e->queue); e->queue = calloc((size_t)ncell, sizeof(int));
+    free(e->smark); e->smark = calloc((size_t)ncell, 1);
+    if ((own_cur && !cur) || !prev || !cells || !dirty || !e->zb || !e->sbox || !e->queue || !e->smark) { fprintf(stderr, "coop-perch-%s: out of memory\n", e->kind); return -1; }
     W = w; H = h;
     cw = W / GX; ch = H / GY;     /* last row/column take the remainder */
     if (cw < 1) cw = 1;
@@ -333,8 +338,7 @@ static int perch_look(PerchEye *e, double t, int (*fetch)(int, int, int, int)) {
         if (hab == 3) { fprintf(e->tape, "%s H %d,%d %.1f\n", ts, c, r, k->beat); e->habit_total++; e->w_habit++; }
         else if (hab == 4) fprintf(e->tape, "%s B %d,%d\n", ts, c, r);
         if (hab == 0 || hab == 4) {
-            if (bx1 > bx0 && ln < (int)sizeof line - 80)
-                ln += snprintf(line + ln, sizeof line - ln, "%s%d,%d@%d,%d %dx%d", nstrike ? " " : "", c, r, bx0, by0, bx1 - bx0, by1 - by0);
+            if (bx1 > bx0) { e->sbox[i * 4] = bx0; e->sbox[i * 4 + 1] = by0; e->sbox[i * 4 + 2] = bx1; e->sbox[i * 4 + 3] = by1; e->smark[i] = 1; }
             nstrike++;
         }
         if (e->vecs) {                                                   /* raw vector tape: time, cell, 4 floats; local only */
@@ -353,7 +357,39 @@ static int perch_look(PerchEye *e, double t, int (*fetch)(int, int, int, int)) {
         }
         coop_box_commit(&e->box);
     }
-    if (nstrike) {
+    /* the text line: cells that strike together and touch (8 ways) are one region, "c0,r0-c1,r1@x,y wxh" with the box around their
+       zoom boxes; a lone cell stays "c,r@x,y wxh". A full-screen repaint (top, a scrolling page) is one entry, not one per cell. */
+    for (int i = 0; i < ncell; i++) {
+        if (e->smark[i] != 1) continue;
+        int head = 0, tail = 0, n = 0;
+        int c0 = GX, r0 = GY, c1 = -1, r1 = -1, x0 = W, y0 = H, x1 = 0, y1 = 0;
+        e->queue[tail++] = i; e->smark[i] = 2;
+        while (head < tail) {
+            int j = e->queue[head++], jr = j / GX, jc = j % GX;
+            n++;
+            if (jc < c0) c0 = jc;
+            if (jc > c1) c1 = jc;
+            if (jr < r0) r0 = jr;
+            if (jr > r1) r1 = jr;
+            if (e->sbox[j * 4] < x0) x0 = e->sbox[j * 4];
+            if (e->sbox[j * 4 + 1] < y0) y0 = e->sbox[j * 4 + 1];
+            if (e->sbox[j * 4 + 2] > x1) x1 = e->sbox[j * 4 + 2];
+            if (e->sbox[j * 4 + 3] > y1) y1 = e->sbox[j * 4 + 3];
+            for (int dr = -1; dr <= 1; dr++)
+                for (int dc = -1; dc <= 1; dc++) {
+                    int nr = jr + dr, nc = jc + dc;
+                    if (nr < 0 || nc < 0 || nr >= GY || nc >= GX) continue;
+                    int k = nr * GX + nc;
+                    if (e->smark[k] == 1) { e->smark[k] = 2; e->queue[tail++] = k; }
+                }
+        }
+        if (ln < (int)sizeof line - 80) {
+            if (n == 1) ln += snprintf(line + ln, sizeof line - ln, "%s%d,%d@%d,%d %dx%d", ln ? " " : "", c0, r0, x0, y0, x1 - x0, y1 - y0);
+            else ln += snprintf(line + ln, sizeof line - ln, "%s%d,%d-%d,%d@%d,%d %dx%d", ln ? " " : "", c0, r0, c1, r1, x0, y0, x1 - x0, y1 - y0);
+        }
+    }
+    if (ncell > 0) memset(e->smark, 0, (size_t)ncell);
+    if (nstrike && ln) {
         e->strikes_total += nstrike; e->w_strikes += nstrike; e->frames_with_strike++; e->w_frames++;
         int n = fprintf(e->tape, "%s S %s\n", ts, line);
         if (n > 0) { e->tape_bytes += n; e->w_tape += n; }

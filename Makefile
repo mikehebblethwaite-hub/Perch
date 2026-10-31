@@ -23,6 +23,24 @@ coop-perch-shotbot: coop-perch-shotbot.c
 coop-perch-cam: coop-perch-cam.c coop-perch-box.h
 	$(CC) $(CFLAGS) -o $@ $<
 clean:
-	rm -f coop-perch-eye coop-perch-feed coop-perch-tap coop-perch-box coop-perch-chip coop-perch-hen coop-perch-wait coop-perch-crop coop-perch-scene coop-perch-shotbot coop-perch-cam coop-perch-vm
+	rm -f coop-perch-eye coop-perch-feed coop-perch-tap coop-perch-box coop-perch-chip coop-perch-hen coop-perch-wait coop-perch-crop coop-perch-scene coop-perch-shotbot coop-perch-cam coop-perch-vm; rm -rf dist
 coop-perch-vm: coop-perch-vm.c coop-perch-core.h coop-perch-box.h
 	$(CC) $(CFLAGS) -o $@ $< $(shell pkg-config --cflags --libs gio-2.0 gio-unix-2.0) -lm
+
+# ---- the product: install, and a .deb of the VM eye (binaries only, stripped; no source goes out) ----
+VERSION ?= $(shell sed -n 's/.*Version \([0-9.]*\)\..*/\1/p' README.md | head -1)
+PREFIX ?= /usr/local
+PRODUCT_BIN = coop-perch-vm coop-perch-box coop-perch-wait
+PRODUCT_SCRIPTS = coop-perch-vmrun coop-perch-act
+install: $(PRODUCT_BIN)
+	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/share/coop-perch/guest
+	install -s -m 755 $(PRODUCT_BIN) $(DESTDIR)$(PREFIX)/bin/
+	install -m 755 $(PRODUCT_SCRIPTS) $(DESTDIR)$(PREFIX)/bin/
+	install -m 755 coop-perch-guest $(DESTDIR)$(PREFIX)/share/coop-perch/guest/
+	install -m 644 COPYRIGHT QUICKSTART.txt $(DESTDIR)$(PREFIX)/share/coop-perch/
+deb: $(PRODUCT_BIN)
+	rm -rf dist/pkg && mkdir -p dist/pkg/DEBIAN
+	$(MAKE) install DESTDIR=$(CURDIR)/dist/pkg PREFIX=/usr
+	printf 'Package: coop-perch\nVersion: $(VERSION)\nArchitecture: amd64\nMaintainer: Mike J Hebblethwaite\nDepends: qemu-system-x86 (>= 1:8.0), dbus-daemon | dbus, libglib2.0-0t64 | libglib2.0-0, python3\nSection: misc\nPriority: optional\nDescription: Perch: a virtual machine screen for bots, without screenshots\n The guest screen comes straight from the hypervisor as changed boxes and\n raw vectors; text from the guest helper; keys and mouse back the same way.\n' > dist/pkg/DEBIAN/control
+	printf 'Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved.\n' > dist/pkg/DEBIAN/copyright
+	dpkg-deb --root-owner-group --build dist/pkg dist/coop-perch_$(VERSION)_amd64.deb
