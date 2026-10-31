@@ -13,6 +13,7 @@ from gi.repository import GLib
 
 PORT = os.environ.get("PERCH_PORT", "/dev/virtio-ports/org.coop.perch.0")
 MAXTXT = 400
+CHUNK = 200            # characters per text line: the host takes lines up to 1 KB (UTF-8 + escapes)
 try:
     out = open(PORT, "w", buffering=1, encoding="utf-8", errors="replace")
 except OSError as e:
@@ -88,15 +89,22 @@ def flush():
         try:
             t = src.queryText()
             hi = min(hi, t.characterCount)
-            text = t.getText(lo, hi) if hi > lo else ""
+            text = t.getText(lo, hi)[:20000] if hi > lo else ""
             r = t.getRangeExtents(lo, max(hi, lo + 1), pyatspi.DESKTOP_COORDS) if hi > lo else None
             b = tuple(r) if r and r[2] > 0 else ext(src)
         except Exception:
             text, b = "", ext(src)
         if p["dels"] and not text:
             emit(f"T {p['app']} {bx(b)} -{q(p['dels'])}")
-        if text:
-            emit(f"T {p['app']} {bx(b)} +{q(text if len(text) <= MAXTXT else '...' + text[-MAXTXT:])}")
+        for i in range(0, len(text), CHUNK):      # long text: several lines in order, each with its own box (never cut)
+            part = text[i:i + CHUNK]
+            if i:
+                try:
+                    r = src.queryText().getRangeExtents(lo + i, lo + i + len(part), pyatspi.DESKTOP_COORDS)
+                    b = tuple(r) if r and r[2] > 0 else b
+                except Exception:
+                    pass
+            emit(f"T {p['app']} {bx(b)} +{q(part)}")
     return True
 
 def flush_all():
@@ -121,7 +129,7 @@ def on_window(ev):
     flush_all()
     emit(f"W {app(a)} {q((a.name or '')[:120])} {bx(ext(a))}")
 
-emit("O guest-helper 0.03")
+emit("O guest-helper 0.04")
 pyatspi.Registry.registerEventListener(on_text, "object:text-changed:insert", "object:text-changed:delete")
 pyatspi.Registry.registerEventListener(on_focus, "object:state-changed:focused")
 pyatspi.Registry.registerEventListener(on_window, "window:activate")

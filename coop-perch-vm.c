@@ -369,15 +369,19 @@ static int qcall(const char *iface, const char *method, GVariant *args) {
     g_variant_unref(r);
     return 0;
 }
-/* actions go out on a 12 ms timer, one keyboard or mouse event a tick, so the eye keeps seeing while a bot types (and the guest's
-   PS/2 keyboard, which queues only 16 events, never drops or reorders keys). Replies wait in the same queue, so they come back in order. */
-#define TICK_MS 12
+/* actions go out from a queue on a timer, so the eye keeps seeing while a bot types, and replies come back in order.
+   Unpaced by default (measured 31 Oct: 640 characters in 0.3-0.5 s, screen quiet or busy, every key read by the guest, text exact);
+   at most 64 device events a tick, so the main loop never stalls. PERCH_TICK_MS / "pace MS" set a gap between events (tests). */
+#define TICK_MS 0
+#define BURST 64
 #define EVQ_MAX 20000
 typedef struct { int kind; unsigned a, b; LineConn *c; char *reply; } ActEv;   /* 0 key 1 button 2 move 3 wait(a ticks) 4 reply */
 static GQueue evq = G_QUEUE_INIT;
 static guint ev_timer = 0;
+static int tick_ms = TICK_MS;                                     /* ms between device events; 0 = unpaced (64 a tick) */
 static gboolean ev_tick(gpointer u) {
     (void)u;
+    int burst = 0;
     for (;;) {
         ActEv *e = g_queue_peek_head(&evq);
         if (!e) { ev_timer = 0; return G_SOURCE_REMOVE; }
@@ -392,7 +396,7 @@ static gboolean ev_tick(gpointer u) {
         else if (e->kind == 1) qcall("org.qemu.Display1.Mouse", e->b ? "Press" : "Release", g_variant_new("(u)", e->a));
         else if (e->kind == 2) qcall("org.qemu.Display1.Mouse", "SetAbsPosition", g_variant_new("(uu)", e->a, e->b));
         g_free(e);
-        return G_SOURCE_CONTINUE;
+        if (tick_ms > 0 || ++burst >= BURST) return G_SOURCE_CONTINUE;
     }
 }
 static void ev_push(int kind, unsigned a, unsigned b, LineConn *c, const char *reply) {
@@ -400,11 +404,11 @@ static void ev_push(int kind, unsigned a, unsigned b, LineConn *c, const char *r
     e->kind = kind; e->a = a; e->b = b; e->c = c;
     if (c) { c->refs++; e->reply = g_strdup(reply); }
     g_queue_push_tail(&evq, e);
-    if (!ev_timer) ev_timer = g_timeout_add(TICK_MS, ev_tick, NULL);
+    if (!ev_timer) ev_timer = g_timeout_add(tick_ms > 0 ? (guint)tick_ms : 1, ev_tick, NULL);
 }
 static void key_press(unsigned c, int down) { ev_push(0, c, (unsigned)down, NULL, NULL); }
 static void mouse_button(unsigned b, int down) { ev_push(1, b, (unsigned)down, NULL, NULL); }
-static void act_wait_ms(int ms) { ev_push(3, (unsigned)((ms + TICK_MS - 1) / TICK_MS), 0, NULL, NULL); }
+static void act_wait_ms(int ms) { int t = tick_ms > 0 ? tick_ms : 1; ev_push(3, (unsigned)((ms + t - 1) / t), 0, NULL, NULL); }   /* in ticks of the current pace (1 ms unpaced) */
 static int mouse_to(int x, int y) {
     if (x < 0 || y < 0 || x >= W || y >= H) return -1;
     ev_push(2, (unsigned)x, (unsigned)y, NULL, NULL);
@@ -441,6 +445,10 @@ static void act_line(LineConn *c, char *l) {
         snprintf(what, sizeof what, "type %s", qt);
         if (bad) snprintf(reply, sizeof reply, "ok (%d characters not on a US keyboard left out)", bad);
         g_free(v);
+    } else if (sscanf(l, "pace %d", &n) == 1 && n >= 0 && n <= 200) {   /* tests only: ms between device events, 0 = no pacing */
+        tick_ms = n;
+        if (ev_timer) { g_source_remove(ev_timer); ev_timer = g_timeout_add(tick_ms > 0 ? (guint)tick_ms : 1, ev_tick, NULL); }
+        snprintf(what, sizeof what, "pace %d", n);
     } else if (!strncmp(l, "key ", 4)) {
         unsigned ks[6];
         int nk = 0, bad = 0;
@@ -621,6 +629,7 @@ int main(int argc, char **argv) {
     g_object_unref(reg_res);
     if (!reply) { fprintf(stderr, "coop-perch-vm: QEMU did not take the listener: %s\n", err->message); return 1; }
     g_variant_unref(reply);
+    if (getenv("PERCH_TICK_MS")) tick_ms = atoi(getenv("PERCH_TICK_MS"));
     if (text_path) g_timeout_add(500, text_connect, NULL);           /* until QEMU opens the port; then it stops */
     if (act_path && act_listen() != 0) { fprintf(stderr, "coop-perch-vm: cannot listen on %s\n", act_path); return 1; }
     if (verbose) fprintf(stderr, "listening to QEMU's console 0 on %s\n", addr);

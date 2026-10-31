@@ -58,14 +58,15 @@ an overlay disk, autologin seed).
 
 - **Region lines**: cells that strike together and touch are one entry `c0,r0-c1,r1@x,y wxh`. `top` repainting a text screen: 24,522 -> 1,618 tokens / 100 s.
 - **The meaning layer** (`coop-perch-guest`, inside the guest): AT-SPI, per widget; when it goes quiet (300 ms, 1.5 s max) the text that is there
-  now is read from the widget and sent once: `T app x,y wxh +'text'`, `F app role 'name' box` (focus), `W app 'title' box` (window).
+  now is read from the widget and sent once (long text: several lines of 200 characters, in order, never cut): `T app x,y wxh +'text'`, `F app role 'name' box` (focus), `W app 'title' box` (window).
   Out over virtio-serial `org.coop.perch.0` (no network). The host parses every field and writes the line itself (caps: 1 KB a line,
   50 lines/s); plane `vmtext-NAME` (i32 x 24).
 - **Hands**: `coop-perch-act NAME 'type ..' 'key ctrl+s' 'click X Y' 'scroll X Y down 3' 'move X Y'` -> QEMU's own keyboard/mouse (usb-tablet).
-  Events go out on a 12 ms timer (the guest's PS/2 queue holds 16), so the eye keeps seeing while a bot types; replies in order; `A` lines on the tape.
+  Events go out from a queue on a timer (unpaced, 64 a tick), so the eye keeps seeing while a bot types; replies in order; `A` lines on the tape.
+  Measured with QEMU's own keyboard trace: 640 characters unpaced in 0.3-0.5 s, screen quiet or busy: every key read by the guest, text exact.
 - `coop-perch-wait -p vm-NAME`: wait for a VM screen to settle.
 - **Package**: `make deb` -> `dist/coop-perch_VERSION_amd64.deb` (stripped binaries, scripts, guest helper, QUICKSTART.txt; no source).
-- Bot job (9 steps: type in an editor, run a command in a terminal): ~847 tokens of tape vs ~12,285 for a screenshot after each step;
+- Bot job (9 steps: type in an editor, run a command in a terminal): ~323 tokens of tape (847 when typing was paced) vs ~12,285 for a screenshot after each step;
   the text came back exact; the eye's copy of the 1280x800 screen = QEMU's, 0 pixels apart; 1.9% of a core.
 
 Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT.
