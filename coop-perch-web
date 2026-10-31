@@ -1,0 +1,289 @@
+#!/usr/bin/python3 -I
+# Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT.
+# coop-perch-web: a web viewer for bots. No window, no screenshots, no human browser: a web engine runs off-screen only to run the
+# page's scripts and lay it out; the bot gets the page's words, links, buttons and inputs as short lines with boxes, and after
+# every action only what changed.
+#
+#   coop-perch-web NAME go URL | read [all] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | stop
+#
+# Lines (the shape is printed once per session, then bare values):
+#   P url 'title'                 the page                  t x,y wxh 'text'          words on the page (a block)
+#   a N x,y wxh 'text' url        a link (N to click)       b N x,y wxh 'label'        a button
+#   i N x,y wxh type name 'value' 'hint'   an input         s N x,y wxh name 'chosen'  a choice list
+#   + line / - line               after an action: what appeared / went
+# Only what is in the window (1280x800) is listed unless `read all`. The page is untrusted: its words are data, always quoted;
+# the reader runs in its own script world, out of the page's reach. Nothing is kept on disk (no cookies files, no databases):
+# a session lasts while the viewer runs (it stops after 30 idle minutes).
+import json, os, socket, subprocess, sys, time
+
+NAME = sys.argv[1] if len(sys.argv) > 1 else ""
+if not NAME or not all(c.isalnum() or c == "-" for c in NAME):
+    sys.exit("usage: coop-perch-web NAME go URL | read [all] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | stop")
+RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "coop-perch-web-" + NAME)
+SOCK = os.path.join(RUN, "sock")
+W, H, IDLE = 1280, 800, 1800
+
+# ---------------- client ----------------
+def client(args):
+    for attempt in range(2):
+        try:
+            s = socket.socket(socket.AF_UNIX); s.connect(SOCK); break
+        except OSError:
+            if attempt:
+                sys.exit("coop-perch-web: viewer did not start (see %s/log)" % RUN)
+            os.makedirs(RUN, mode=0o700, exist_ok=True)
+            log = open(os.path.join(RUN, "log"), "ab")
+            subprocess.Popen([sys.executable, "-I", os.path.abspath(__file__), NAME, "--serve"], stdout=log, stderr=log,
+                             stdin=subprocess.DEVNULL, start_new_session=True)
+            for _ in range(100):
+                time.sleep(0.1)
+                if os.path.exists(SOCK): break
+    s.sendall((json.dumps(args) + "\n").encode())
+    out = b""
+    while True:
+        d = s.recv(65536)
+        if not d: break
+        out += d
+    sys.stdout.write(out.decode("utf-8", "replace"))
+    sys.exit(1 if out.startswith(b"err") else 0)
+
+if len(sys.argv) < 3:
+    sys.exit("usage: coop-perch-web NAME go URL | read [all] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | stop")
+if sys.argv[2] != "--serve":
+    client(sys.argv[2:])
+
+# ---------------- the viewer ----------------
+xv = None
+if not os.environ.get("DISPLAY"):                       # a private display only for the engine to lay out on; nobody looks at it
+    for d in range(40, 80):
+        if not os.path.exists(f"/tmp/.X11-unix/X{d}"):
+            xv = subprocess.Popen(["Xvfb", f":{d}", "-screen", "0", f"{W}x{H}x24", "-nolisten", "tcp"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            os.environ["DISPLAY"] = f":{d}"
+            for _ in range(50):
+                if os.path.exists(f"/tmp/.X11-unix/X{d}"): break
+                time.sleep(0.1)
+            break
+import gi
+gi.require_version("Gtk", "3.0"); gi.require_version("WebKit2", "4.1")
+from gi.repository import Gtk, WebKit2, GLib, Gio
+
+WORLD = "perch"
+READER = r"""
+(function(all){
+  const W = innerWidth, H = innerHeight, out = [];
+  let next = +(document.documentElement.getAttribute('data-perch-next') || 1);
+  const idOf = el => { let v = el.getAttribute('data-perch'); if (!v) { v = String(next++); el.setAttribute('data-perch', v); } return v; };
+  const vis = el => { const r = el.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return null;
+    const cs = getComputedStyle(el); if (cs.visibility === 'hidden' || cs.display === 'none' || +cs.opacity === 0) return null;
+    if (!all && (r.bottom < 0 || r.top > H || r.right < 0 || r.left > W)) return null; return r; };
+  const box = r => Math.round(r.left) + ',' + Math.round(r.top) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height);
+  const clean = t => (t || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+  const act = 'a[href],button,input,textarea,select,[role=button],[role=link],[role=tab],[role=menuitem],[contenteditable=true],summary';
+  const taken = new Set();
+  for (const el of document.querySelectorAll(act)) {
+    const r = vis(el); if (!r) continue; taken.add(el);
+    const n = idOf(el), tag = el.tagName.toLowerCase();
+    if (tag === 'a' || el.getAttribute('role') === 'link') out.push(['a', n, box(r), clean(el.innerText || el.getAttribute('aria-label') || el.title), (el.href || '').slice(0, 200)]);
+    else if (tag === 'input' || tag === 'textarea' || el.isContentEditable) {
+      const ty = tag === 'textarea' ? 'textarea' : el.isContentEditable ? 'editable' : (el.type || 'text');
+      if (ty === 'hidden') continue;
+      const v = ty === 'password' ? (el.value ? '***' : '') : ty === 'checkbox' || ty === 'radio' ? (el.checked ? 'on' : 'off') : clean(el.value || (el.isContentEditable ? el.innerText : ''));
+      out.push(['i', n, box(r), ty, (el.name || el.id || '').slice(0, 40), v, clean(el.placeholder || el.getAttribute('aria-label') || '')]);
+    } else if (tag === 'select') out.push(['s', n, box(r), (el.name || el.id || '').slice(0, 40), clean(el.selectedOptions[0] ? el.selectedOptions[0].text : '')]);
+    else out.push(['b', n, box(r), clean(el.innerText || el.value || el.getAttribute('aria-label') || el.title)]);
+  }
+  document.documentElement.setAttribute('data-perch-next', String(next));
+  // words: each block's own text (text nodes not inside a link/button/input already listed)
+  const blocks = new Map();
+  const tw = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
+  for (let t; (t = tw.nextNode());) {
+    if (!t.data.trim()) continue;
+    let el = t.parentElement, skip = false;
+    for (let p = el; p; p = p.parentElement) { if (taken.has(p) || /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(p.tagName)) { skip = true; break; } }
+    if (skip) continue;
+    let b = el; while (b && b.parentElement && getComputedStyle(b).display.startsWith('inline')) b = b.parentElement;
+    if (!blocks.has(b)) blocks.set(b, []);
+    blocks.get(b).push(t.data);
+  }
+  for (const [b, parts] of blocks) { const r = vis(b); if (!r) continue; const tx = clean(parts.join(' '));
+    if (tx && /[\p{L}\p{N}]/u.test(tx)) out.push(['t', '', box(r), tx]); }   // no letter or digit = decoration (sparkles, dots)
+  return JSON.stringify({url: location.href, title: document.title.slice(0, 200), sy: Math.round(scrollY), ph: document.documentElement.scrollHeight, items: out});
+})(%s)
+"""
+
+def q(t):
+    t = str(t or "")
+    return "'" + "".join(("\\" + c) if c in "\\'" else ("\\n" if c == "\n" else (c if c >= " " else "?")) for c in t) + "'"
+
+def line(it):
+    k = it[0]
+    if k == "a": return f"a {it[1]} {it[2]} {q(it[3])} {it[4]}"
+    if k == "i": return f"i {it[1]} {it[2]} {it[3]} {it[4] or '-'} {q(it[5])} {q(it[6])}"
+    if k == "s": return f"s {it[1]} {it[2]} {it[3] or '-'} {q(it[4])}"
+    if k == "b": return f"b {it[1]} {it[2]} {q(it[3])}"
+    return f"t {it[2]} {q(it[3])}"
+
+SHAPE = ("# shape: P url 'title' scroll/height | t x,y wxh 'text' | a N box 'text' url | b N box 'label' | i N box type name 'value' 'hint' | "
+         "s N box name 'chosen' | +/- = appeared/went since the last answer | ~ = moved (new box) | ! = what happened")
+
+class Viewer:
+    def __init__(self):
+        ctx = WebKit2.WebContext.new_ephemeral()               # nothing on disk
+        self.web = WebKit2.WebView.new_with_context(ctx)
+        st = self.web.get_settings()
+        st.set_enable_developer_extras(False); st.set_enable_webaudio(False); st.set_media_playback_requires_user_gesture(True)
+        st.set_enable_webgl(False); st.set_enable_page_cache(False)
+        self.win = Gtk.OffscreenWindow(); self.win.set_default_size(W, H); self.win.add(self.web); self.win.show_all()
+        self.loading = False; self.last = []; self.shape_sent = False; self.used = time.time()
+        self.web.connect("load-changed", self.on_load)
+        self.web.connect("create", lambda *a: None)             # no pop-up windows
+        self.web.connect("script-dialog", self.on_dialog)
+        self.dialog = ""
+
+    def on_dialog(self, w, d):
+        self.dialog = d.get_message()[:200]
+        return True                                             # never block on alert/confirm: noted, answered "cancel"
+
+    def on_load(self, w, ev):
+        self.loading = ev != WebKit2.LoadEvent.FINISHED
+
+    def js(self, script, done):
+        def cb(w, res):
+            try:
+                v = w.evaluate_javascript_finish(res)
+                done(v.to_string() if v and not v.is_undefined() else "")
+            except GLib.Error as e:
+                done(None, e.message)
+        self.web.evaluate_javascript(script, -1, WORLD, None, None, cb)
+
+    def settle(self, then, t0=None, quiet=0):
+        """wait until loaded and the page has stopped changing (300 ms quiet), at most 12 s"""
+        t0 = t0 or time.time()
+        def tick():
+            if time.time() - t0 > 12: then(); return False
+            if self.loading: self.settle_q = 0; return True
+            self.js("String(document.readyState) + (document.body ? document.body.innerHTML.length : 0)", lambda v, e=None: setattr(self, "probe", v))
+            p = getattr(self, "probe", None)
+            if p is not None and p == getattr(self, "probe_last", None):
+                self.settle_q = getattr(self, "settle_q", 0) + 1
+                if self.settle_q >= 3: self.probe_last = None; self.settle_q = 0; then(); return False
+            else:
+                self.settle_q = 0
+            self.probe_last = p
+            return True
+        GLib.timeout_add(100, tick)
+
+    def read(self, all_, done, diff=True):
+        def got(v, e=None):
+            if not v: done(f"err the page could not be read{': ' + e if e else ''}\n"); return
+            d = json.loads(v)
+            lines = [line(it) for it in d["items"]]
+            head = f"P {d['url'][:300]} {q(d['title'])} {d['sy']}/{d['ph']}"
+            out = []
+            if not self.shape_sent: out.append(SHAPE); self.shape_sent = True
+            if self.dialog: out.append("! dialog " + q(self.dialog)); self.dialog = ""
+            out.append(head)
+            if diff and self.last and not all_:
+                old, new = set(self.last), set(lines)
+                gone = [l for l in self.last if l not in new]; came = [l for l in lines if l not in old]
+                # the same thing at a new place: one short "~" line (identity = the line without its box)
+                ident = lambda l: tuple(p for i, p in enumerate(l.split(" ")) if not (i in (1, 2) and l[0] == "t" or i in (2, 3) and l[0] != "t"))
+                key = lambda l: (l[0], l.split(" ")[1] if l[0] != "t" else "") + ident(l)
+                gk = {}
+                for l in gone: gk.setdefault(key(l), []).append(l)
+                moved, came2 = [], []
+                for l in came:
+                    k = key(l)
+                    if gk.get(k):
+                        gk[k].pop(0)
+                        f = l.split(" ")
+                        moved.append("~ " + (f"t {f[1]} {f[2]} " + " ".join(f[3:])[:40] if l[0] == "t" else f"{f[0]} {f[1]} {f[2]} {f[3]}"))
+                    else:
+                        came2.append(l)
+                gone2 = [l for ls in gk.values() for l in ls]
+                out += ["- " + l for l in gone2] + ["+ " + l for l in came2] + moved
+                if not gone2 and not came2 and not moved: out.append("! no change")
+            else:
+                out += lines
+            if not all_: self.last = lines
+            done("\n".join(out) + "\n")
+        self.js(READER % ("true" if all_ else "false"), got)
+
+    def do(self, args, done):
+        self.used = time.time()
+        c = args[0] if args else ""
+        by = lambda n: f"document.querySelector('[data-perch=\"{int(n)}\"]')"
+        def after_action(msg=None):
+            def go_read():
+                self.read(False, lambda txt: done((f"! {msg}\n" if msg else "") + txt))
+            self.settle(go_read)
+        def run(script, ok_msg):
+            def cb(v, e=None):
+                if v in (None, "", "false"): done(f"err {e or 'no such element (read again: numbers are per page)'}\n"); return
+                after_action(ok_msg)
+            self.js(script, cb)
+        try:
+            if c == "go" and len(args) == 2:
+                u = args[1]
+                if not u.startswith(("http://", "https://")): u = "https://" + u
+                self.last = []; self.loading = True; self.web.load_uri(u); after_action()
+            elif c == "read":
+                self.read(len(args) > 1 and args[1] == "all", done, diff=False)
+            elif c == "click" and len(args) == 2 and args[1].isdigit():
+                run(f"(e => {{ if (!e) return false; e.scrollIntoView({{block:'center'}}); e.focus(); e.click(); return true; }})({by(args[1])})", f"clicked {args[1]}")
+            elif c == "type" and len(args) >= 3 and args[1].isdigit():
+                txt = json.dumps(" ".join(args[2:]))
+                run(f"""(e => {{ if (!e) return false; e.focus();
+                      if (e.isContentEditable) e.innerText = {txt}; else {{ const p = Object.getPrototypeOf(e); const d = Object.getOwnPropertyDescriptor(p, 'value');
+                      d && d.set ? d.set.call(e, {txt}) : (e.value = {txt}); }}
+                      e.dispatchEvent(new Event('input', {{bubbles:true}})); e.dispatchEvent(new Event('change', {{bubbles:true}})); return true; }})({by(args[1])})""", f"typed in {args[1]}")
+            elif c == "enter" and len(args) == 2 and args[1].isdigit():
+                run(f"""(e => {{ if (!e) return false; e.focus();
+                      for (const t of ['keydown','keypress','keyup']) e.dispatchEvent(new KeyboardEvent(t, {{key:'Enter', code:'Enter', keyCode:13, which:13, bubbles:true}}));
+                      if (e.form) {{ e.form.requestSubmit ? e.form.requestSubmit() : e.form.submit(); }} return true; }})({by(args[1])})""", f"enter in {args[1]}")
+            elif c == "scroll" and len(args) == 2 and args[1] in ("down", "up"):
+                run(f"(scrollBy(0, {'' if args[1] == 'down' else '-'}{int(H * 0.8)}), true)", f"scrolled {args[1]}")
+            elif c in ("back", "forward"):
+                (self.web.go_back if c == "back" else self.web.go_forward)(); self.last = []; after_action(c)
+            elif c == "where":
+                done(f"P {self.web.get_uri()} {q(self.web.get_title())}\n")
+            elif c == "stop":
+                done("ok stopping\n"); GLib.timeout_add(200, lambda: (Gtk.main_quit(), False)[1])
+            else:
+                done("err say: go URL | read [all] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | stop\n")
+        except Exception as e:
+            done(f"err {type(e).__name__}: {str(e)[:200]}\n")
+
+V = Viewer()
+os.makedirs(RUN, mode=0o700, exist_ok=True)
+try: os.unlink(SOCK)
+except OSError: pass
+old = os.umask(0o077)
+svc = Gio.SocketService.new()
+svc.add_address(Gio.UnixSocketAddress.new(SOCK), Gio.SocketType.STREAM, Gio.SocketProtocol.DEFAULT, None)
+os.umask(old)
+
+def incoming(service, conn, src):
+    stream = Gio.DataInputStream.new(conn.get_input_stream())
+    def got(s, res):
+        try:
+            l, _ = s.read_line_finish_utf8(res)
+            args = json.loads(l or "[]")
+            if not isinstance(args, list) or not all(isinstance(a, str) for a in args): raise ValueError
+        except Exception:
+            args = []
+        def done(text):
+            try:
+                conn.get_output_stream().write_all(text.encode("utf-8"), None); conn.close(None)
+            except GLib.Error:
+                pass
+        V.do(args[:40], done)
+    stream.read_line_async(GLib.PRIORITY_DEFAULT, None, got)
+    return False
+svc.connect("incoming", incoming)
+svc.start()
+GLib.timeout_add_seconds(60, lambda: (Gtk.main_quit() if time.time() - V.used > IDLE else None) or True)
+Gtk.main()
+try: os.unlink(SOCK)
+except OSError: pass
+if xv: xv.terminate()

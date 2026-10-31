@@ -1,6 +1,6 @@
 # coop-perch
 
-The bot's mind's eye (design: ~/the notes/perch.md). Version 0.09.
+The bot's mind's eye (design: ~/the notes/perch.md). Version 0.10.
 
 - `coop-perch-display` : display :2. Apps connect to :2; `coop-perch-tap` sits there on the data line and passes every byte to the real
   X screen, Xvfb :12 (DAMAGE/XFIXES/MIT-SHM, local socket only). Any app on it thinks it is a monitor.
@@ -68,5 +68,13 @@ an overlay disk, autologin seed).
 - **Package**: `make deb` -> `dist/coop-perch_VERSION_amd64.deb` (stripped binaries, scripts, guest helper, QUICKSTART.txt; no source).
 - Bot job (9 steps: type in an editor, run a command in a terminal): ~323 tokens of tape (847 when typing was paced) vs ~12,285 for a screenshot after each step;
   the text came back exact; the eye's copy of the 1280x800 screen = QEMU's, 0 pixels apart; 1.9% of a core.
+
+## coop-perch-web (0.10): the web for bots
+
+No Chrome, no Firefox, no window: a web engine (WebKitGTK, ephemeral, nothing on disk) runs off-screen on a private display only to run
+the page's scripts and lay it out. The bot gets lines (`t` words, `a N` links with their address, `b N` buttons, `i N` inputs, `s N`
+lists, each with its box) and acts by number (`click N`, `type N TEXT`, `enter N`); after every action only the changes (`+ - ~`).
+The reader runs in its own script world (out of the page's reach); page text is always quoted data. Decoration (no letter or digit)
+is left out. example.org: the page ~550 tokens (a screenshot ~1,365); a search job (open, type, search) ~1,050 vs ~5,460.
 
 Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT.
