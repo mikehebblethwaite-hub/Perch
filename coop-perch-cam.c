@@ -98,16 +98,12 @@ int main(int argc, char **argv) {
             if (cnt >= need) { zoom(x, y, cw, ch, 0, &bx0, &by0, &bx1, &by1); ncell++; }
         }
         (void)bv;
-        /* the background follows the scene slowly (about 2 s), and not at all where something is moving */
-        for (int c = 0; c < ncells; c++) {
-            if (cellv[c * 3 + 2]) continue;
-            int x = (c % GX) * cw, y = (c / GX) * ch;
-            for (int yy = y; yy < y + ch; yy++)
-                for (int xx = x; xx < x + cw; xx++) {
-                    size_t i = (size_t)yy * W + xx;
-                    bgf[i] = (uint16_t)(bgf[i] + (((int)fr[i] << 8) - (int)bgf[i]) / 32);
-                    bg[i] = (unsigned char)(bgf[i] >> 8);
-                }
+        /* the background keeps learning every pixel: fast (about 1 s) where it matches, slower (about 1.6 s) where it differs, so a moving
+           thing is never taken in but a ghost (something that was there at the start, or has left) fades away */
+        for (size_t i = 0; i < n; i++) {
+            int d = ((int)fr[i] << 8) - (int)bgf[i];
+            bgf[i] = (uint16_t)((int)bgf[i] + d / (abs(fr[i] - bg[i]) > T ? 24 : 16));
+            bg[i] = (unsigned char)(bgf[i] >> 8);
         }
         if (ncell && bx1 > bx0) {
             mframes++;
