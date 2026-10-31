@@ -1,5 +1,5 @@
 CFLAGS ?= -O2 -Wall -Wextra
-all: coop-perch-eye coop-perch-feed coop-perch-tap coop-perch-box coop-perch-chip coop-perch-hen coop-perch-wait coop-perch-crop coop-perch-scene coop-perch-shotbot
+all: coop-perch-eye coop-perch-feed coop-perch-tap coop-perch-box coop-perch-chip coop-perch-hen coop-perch-wait coop-perch-crop coop-perch-scene coop-perch-shotbot coop-perch-cam
 coop-perch-eye: coop-perch-eye.c coop-perch-box.h
 	$(CC) $(CFLAGS) -o $@ $< -lX11 -lXext -lXdamage -lXfixes -lm
 coop-perch-feed: coop-perch-feed.c
@@ -20,5 +20,7 @@ coop-perch-scene: coop-perch-scene.c
 	$(CC) $(CFLAGS) -o $@ $< -lX11
 coop-perch-shotbot: coop-perch-shotbot.c
 	$(CC) $(CFLAGS) -o $@ $< -lX11 -lz
+coop-perch-cam: coop-perch-cam.c coop-perch-box.h
+	$(CC) $(CFLAGS) -o $@ $<
 clean:
-	rm -f coop-perch-eye coop-perch-feed coop-perch-tap coop-perch-box coop-perch-chip coop-perch-hen coop-perch-wait coop-perch-crop coop-perch-scene coop-perch-shotbot
+	rm -f coop-perch-eye coop-perch-feed coop-perch-tap coop-perch-box coop-perch-chip coop-perch-hen coop-perch-wait coop-perch-crop coop-perch-scene coop-perch-shotbot coop-perch-cam
