@@ -1,8 +1,17 @@
 # coop-perch
 
-The bot's mind's eye (design: ~/the notes/perch.md). Version 0.02.
+The bot's mind's eye (design: ~/the notes/perch.md). Version 0.03.
 
-- `coop-perch-display` : display :2, a real X screen (Xvfb, DAMAGE/XFIXES/MIT-SHM, local socket only). Any app on it thinks it is a monitor.
+- `coop-perch-display` : display :2. Apps connect to :2; `coop-perch-tap` sits there on the data line and passes every byte to the real
+  X screen, Xvfb :12 (DAMAGE/XFIXES/MIT-SHM, local socket only). Any app on it thinks it is a monitor.
+- `coop-perch-tap` (C) : the interpreter on the data line. Reads every request as it goes by: keeps the window tree and drawing colours,
+  and turns each drawing (fill, outline, line, image, copy, text, map, move) into one raw event: app pid, kind, screen box, colour,
+  on screen or not, and the text itself as char codes. Nothing on the line = nothing written, the tap sleeps.
+- **The box of bot vectors** (`coop-perch-box.h`): shared memory /dev/shm/coop-perch, one file per plane, a 4096-byte header that says
+  what the numbers mean, then a ring of frames (double time + floats). Bots mmap it and read in place; they sleep on the header's
+  `wake` word (futex) until a frame lands: that word is the "data or not" pin. Planes: `draw` (76 per event, from the tap),
+  `line` (259 per second with traffic: request counts by kind, bytes in/out, apps), `eye` (rows x cols x 9: R G B luma strike zoom box).
+- `coop-perch-box info | raw PLANE [N] | stream PLANE | check PLANE SECONDS` : reader for tests and for bots that only take a pipe.
 - `coop-perch-eye` (C) : the local eye. DAMAGE on each top-level window (root damage is dropped when a compositor floods it with
   full-screen repaints); one shared-memory read per look, a row memcmp finds the tight changed box (GPU apps damage their whole
   window every frame); each cell of a 16x10 grid keeps its

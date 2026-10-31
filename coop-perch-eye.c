@@ -8,7 +8,7 @@
  *   3. a box whose pixels really changed = a strike; the eye zooms into that cell (quadtree, "look closer where it moved")
  *      until the change is pinned to a small box;
  *   4. habituation: a cell that keeps striking on a beat (clock, cursor, spinner) gets tuned out; a break in its beat counts again.
- * Vectors stay local (binary tape, no tokens). Text is the bottom layer: one short line per strike frame, the same shape every time.
+ * Vectors go to the box of bot vectors (shared memory, plane "eye", see coop-perch-box.h) and the binary tape: raw, no tokens. Text is the bottom layer: one short line per strike frame, the same shape every time.
  * Every 10 s a stats line: the eye's own CPU, events, strikes, and the tokens the text tape would cost the bot,
  * next to what screenshots would have cost for the same moments.
  *
@@ -20,6 +20,7 @@
 #include <X11/extensions/Xdamage.h>
 #include <X11/extensions/XShm.h>
 #include <X11/extensions/Xfixes.h>
+#include "coop-perch-box.h"
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <sys/resource.h>
@@ -308,9 +309,17 @@ int main(int argc, char **argv) {
     int ncell = GX * GY;
     cells = calloc((size_t)ncell, sizeof(Cell));
     dirty = calloc((size_t)ncell, 1);
-    float *frame = calloc((size_t)ncell * VEC, sizeof(float));
-    if (!cells || !dirty || !frame) { fprintf(stderr, "coop-perch-eye: out of memory\n"); return 1; }
+    float *zb = calloc((size_t)ncell * 5, sizeof(float));      /* this look: per cell strike (1 strike, 2 tuned-out change) + zoom box */
+    if (!cells || !dirty || !zb) { fprintf(stderr, "coop-perch-eye: out of memory\n"); return 1; }
     cw = W / GX; ch = H / GY;   /* last row/column take the remainder */
+
+    CoopBox box;                                                     /* the eye plane: rows x cols x 9 */
+    uint32_t bdim[3] = {(uint32_t)GY, (uint32_t)GX, 9};
+    char bfields[300];
+    snprintf(bfields, sizeof bfields, "R G B luma strike zoom_x zoom_y zoom_w zoom_h; colours 0..255 cell means; strike 0 none 1 strike 2 tuned-out cell changed; "
+                                      "zoom box 0..1 of the screen; screen %dx%d display %s; a frame per look that saw a change", W, H, disp);
+    int have_box = coop_box_create(&box, "eye", 3, bdim, bfields) == 0;
+    if (!have_box) fprintf(stderr, "coop-perch-eye: no box in %s (going on without it)\n", coop_box_dir());
 
     /* watch the top-level windows (and the root, for anything drawn straight onto it), hear windows come, go and move */
     XSetErrorHandler(x_error);
@@ -412,7 +421,8 @@ int main(int argc, char **argv) {
             /* the look: read only the dirty cells, make their vectors, strike, zoom */
             last_look = t; pending = 0; looks++; w_looks++;
             char line[4000];
-            int ln = 0, nstrike = 0;
+            int ln = 0, nstrike = 0, nreal = 0;
+            memset(zb, 0, (size_t)ncell * 5 * sizeof(float));
             clock_txt(t, ts, sizeof ts);
             /* one read for the whole look: the box around every cell's changed box (one round trip, not one per cell) */
             int ux0 = W, uy0 = H, ux1 = 0, uy1 = 0;
@@ -443,6 +453,9 @@ int main(int argc, char **argv) {
                 {                                                      /* pixels did change in the box: a strike */
                     zoom(x, y, w, h, 0, &bx0, &by0, &bx1, &by1, &md);
                     int hab = habit_check(&cells[i], t);
+                    nreal++;
+                    zb[i * 5] = (hab == 0 || hab == 4) ? 1.0f : 2.0f;
+                    if (bx1 > bx0) { zb[i * 5 + 1] = (float)bx0 / W; zb[i * 5 + 2] = (float)by0 / H; zb[i * 5 + 3] = (float)(bx1 - bx0) / W; zb[i * 5 + 4] = (float)(by1 - by0) / H; }
                     if (hab == 3) { fprintf(tape, "%s perch: cell %d,%d tuned out (beat %.1fs)\n", ts, c, r, cells[i].beat); habit_total++; w_habit++; }
                     else if (hab == 4) fprintf(tape, "%s perch: cell %d,%d broke its beat, watching again\n", ts, c, r);
                     if (hab == 0 || hab == 4) {
@@ -458,7 +471,11 @@ int main(int argc, char **argv) {
                 }
                 memcpy(cells[i].v, v, sizeof v);
                 for (int yy = y; yy < y + h; yy++) memcpy(prev + (size_t)yy * W + x, img->data + (size_t)yy * img->bytes_per_line + (size_t)x * 4, (size_t)w * 4);
-                memcpy(frame + (size_t)i * VEC, v, sizeof v);
+            }
+            if (nreal && have_box) {                                    /* the whole grid, as it is now, into the box */
+                float *bf = coop_box_next(&box, t);
+                for (int i = 0; i < ncell; i++) { memcpy(bf + (size_t)i * 9, cells[i].v, VEC * sizeof(float)); memcpy(bf + (size_t)i * 9 + 4, zb + (size_t)i * 5, 5 * sizeof(float)); }
+                coop_box_commit(&box);
             }
             if (nstrike) {
                 strikes_total += nstrike; w_strikes += nstrike; frames_with_strike++; w_frames++;
