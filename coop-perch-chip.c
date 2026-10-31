@@ -1,17 +1,24 @@
-/* coop-perch-chip: 1024 bits (128 bytes) of the video card's own RAM, live, as a 32x32 box on the screen.
- * Every bit has its empty white circle (the template, always there); a 1 bit fills it with a blue dot. Rows are 4 bytes each,
- * the highest bit of each byte on the left. A row of 4 bytes is one pixel (blue, green, red, spare), so the box is 32 pixels.
- * Beside it, "How a bot sees this": the same 32 pixels as the numbers a bot gets (R G B 0..255, changed or not), row for row,
- * which also go to the box of bot vectors as plane "chip" (32 x 4: R G B changed), a frame whenever a pixel changed.
+/* coop-perch-chip: the Perch eye on the video card's own RAM, as a 32x32 box of bits on the screen.
  *
- * The RAM is read straight from the GPU driver (amdgpu debugfs: amdgpu_vram, the card's whole VRAM; on the host's AMD APU that is
- * a 512 MB slice of main memory set aside for the GPU). Needs root to open it: run with sudo; it opens the RAM, finds a spot, then
- * drops to the user who ran sudo before it touches the screen.
+ * The zoom (Mike, 31 Oct 2026):
+ *   zoom out: look at all of the video RAM a few times; count the bit flips in each of 16 parts.
+ *   something is changing: zoom into the part that changed most; it becomes the new window, from address X to Y.
+ *   repeat on that window (16 parts again, each 16 times smaller) until the window is the 128 bytes the box shows.
+ *   when the box goes quiet, zoom back out one level and look again (all the way out if need be).
+ * The window (from - to, size, level) is written at the top of the box, live, in fixed columns.
+ * The eye masks itself out first: it flashes its own window 3 times and notes the RAM that changes exactly then (its own picture,
+ * and its patch of the screen's framebuffer). Masked blocks never attract the zoom.
  *
- *   sudo coop-perch-chip                  sweep the RAM 3 times, pick the 128 bytes that keep changing most, watch them
- *   sudo coop-perch-chip -c               find the panel clock (with seconds): bits that change once a second, on the second
- *   sudo coop-perch-chip -a 0x1234000     watch these 128 bytes
- *   options: -d :0 (screen), -r 10 (reads a second), -s 18 (pixels per bit)
+ * The box: 1024 bits, every bit an empty white circle (the template, always there), a blue dot when 1. A row of 4 bytes is one
+ * pixel if the memory holds pixels (blue, green, red, spare). Beside it, "How a bot sees this": the 32 rows as the numbers a bot
+ * gets (R G B, changed), also written to the box of bot vectors as plane "chip" (u8: 32 x R G B + 32 changed bits).
+ *
+ * The RAM is read straight from the GPU driver (amdgpu debugfs amdgpu_vram; on the host's AMD APU a 512 MB slice of main memory).
+ * Needs root to open it: run with sudo; it opens the RAM, then drops to the user who ran sudo before it touches the screen.
+ *
+ *   sudo coop-perch-chip                  zoom (above)
+ *   sudo coop-perch-chip -a 0x1234000     watch these 128 bytes, no zoom
+ *   options: -d :0 (screen), -r 10 (reads a second at the bottom), -n 4 (looks per zoom level), -s 18 (pixels per bit)
  */
 #define _GNU_SOURCE
 #include <X11/Xlib.h>
@@ -24,14 +31,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 #include "coop-perch-box.h"
 
-#define BYTES 128
+#define BYTES 128          /* the box: 1024 bits */
 #define SIDE 32
+#define PARTS 16           /* each zoom level splits its window into this many parts */
 #define CHUNK (4u << 20)
+#define QUIET_S 3.0        /* the box quiet this long: zoom out one level */
+#define LEVEL_GAP 0.3      /* at least this long between looks at one level, so slow changes (a clock) are seen */
 
 static double now_s(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (double)t.tv_sec + t.tv_nsec / 1e9; }
 
@@ -45,147 +56,99 @@ static int read_all(int fd, unsigned char *buf, size_t off, size_t n) {
     return 0;
 }
 
-/* three sweeps: a block that changed between 1-2 and again between 2-3 is live; the one with the most bit flips wins */
-static long find_live(int fd, size_t size) {
-    unsigned char *snap = malloc(size), *cur = malloc(CHUNK);
-    uint16_t *flips = calloc(size / BYTES, sizeof(uint16_t));
-    unsigned char *hit = calloc(size / BYTES, 1);
-    if (!snap || !cur || !flips || !hit) { fprintf(stderr, "coop-perch-chip: out of memory for the sweep\n"); return -1; }
-    fprintf(stderr, "coop-perch-chip: sweeping %zu MB of video RAM 3 times to find bits that move...\n", size >> 20);
-    if (read_all(fd, snap, 0, size) != 0) { fprintf(stderr, "coop-perch-chip: cannot read the video RAM\n"); return -1; }
-    for (int pass = 1; pass <= 2; pass++) {
-        usleep(700000);
-        for (size_t off = 0; off < size; off += CHUNK) {
-            size_t n = size - off < CHUNK ? size - off : CHUNK;
-            if (read_all(fd, cur, off, n) != 0) return -1;
-            if (!memcmp(cur, snap + off, n)) continue;
-            for (size_t b = 0; b < n; b += BYTES) {
-                if (!memcmp(cur + b, snap + off + b, BYTES)) continue;
-                size_t blk = (off + b) / BYTES;
-                int f = 0;
-                for (int i = 0; i < BYTES; i++) f += __builtin_popcount(cur[b + i] ^ snap[off + b + i]);
-                hit[blk] |= (unsigned char)pass;
-                flips[blk] = (uint16_t)(flips[blk] + f > 65535 ? 65535 : flips[blk] + f);
-            }
-            memcpy(snap + off, cur, n);
-        }
-    }
-    long best = -1, live = 0;
-    for (size_t blk = 0; blk < size / BYTES; blk++)
-        if (hit[blk] == 3) { live++; if (best < 0 || flips[blk] > flips[best]) best = (long)blk; }
-    if (best < 0)                                                     /* nothing moved twice: take anything that moved once */
-        for (size_t blk = 0; blk < size / BYTES; blk++) if (hit[blk] && (best < 0 || flips[blk] > flips[best])) best = (long)blk;
-    fprintf(stderr, "coop-perch-chip: %ld blocks of 128 bytes kept changing; watching 0x%lx\n", live, best < 0 ? 0L : best * (long)BYTES);
-    free(snap); free(cur); free(flips); free(hit);
-    return best < 0 ? 0 : best * BYTES;
+static void size_txt(size_t n, char *o, size_t on) {
+    if (n >= (1u << 20)) snprintf(o, on, "%zu MB", n >> 20);
+    else if (n >= 1024) snprintf(o, on, "%zu KB", n >> 10);
+    else snprintf(o, on, "%zu bytes", n);
 }
 
-/* one sweep: compare the whole RAM with snap, mark blocks that changed in `mark` (bit `flag`), count flips, then snap = now */
-static int sweep(int fd, size_t size, unsigned char *snap, unsigned char *cur, unsigned char *mark, unsigned char flag, uint16_t *flips) {
-    for (size_t off = 0; off < size; off += CHUNK) {
-        size_t n = size - off < CHUNK ? size - off : CHUNK;
-        if (read_all(fd, cur, off, n) != 0) return -1;
-        if (!memcmp(cur, snap + off, n)) continue;
-        for (size_t b = 0; b < n; b += BYTES) {
-            if (!memcmp(cur + b, snap + off + b, BYTES)) continue;
-            size_t blk = (off + b) / BYTES;
-            int f = 0;
-            for (int i = 0; i < BYTES; i++) f += __builtin_popcount(cur[b + i] ^ snap[off + b + i]);
-            mark[blk] |= flag;
-            if (flips) flips[blk] = (uint16_t)(flips[blk] + f > 65535 ? 65535 : flips[blk] + f);
-        }
-        memcpy(snap + off, cur, n);
+/* ---- the screen ---- */
+static Display *dpy;
+static Window win;
+static GC gc;
+static int cell = 18, pad, top, bitsW, botX, botW, W, H;
+static const unsigned long white = 0xffffff, ring = 0xb8c4d6, blue = 0x1f5fd6, ink = 0x2a3140, soft = 0x8a93a6;
+static char status[200] = "";
+
+static void set_status(int level, size_t lo, size_t hi, const char *state) {
+    char sz[40];
+    size_txt(hi - lo, sz, sizeof sz);
+    snprintf(status, sizeof status, "level %2d   from 0x%08zx   to 0x%08zx   %-9s  %-10s", level, lo, hi, sz, state);
+}
+static void draw_status(void) {
+    XSetForeground(dpy, gc, white);
+    XFillRectangle(dpy, win, gc, 0, 0, (unsigned)W, (unsigned)(cell + 12));
+    XSetForeground(dpy, gc, ink);
+    XDrawString(dpy, win, gc, pad, cell + 2, status, (int)strlen(status));
+    XFlush(dpy);
+}
+static int pump(Atom del) {                                          /* window events; 1 = closed */
+    while (XPending(dpy)) {
+        XEvent e;
+        XNextEvent(dpy, &e);
+        if (e.type == ClientMessage && (Atom)e.xclient.data.l[0] == del) return 1;
+        if (e.type == DestroyNotify) return 1;
     }
     return 0;
 }
-/* the clock (with seconds): blocks that change in nearly every second, but not much more often than once a second.
-   Step 1: two sweeps of the whole RAM list every block that moves at all. Step 2: only those are read 10 times a second for
-   SAMPLE_S seconds; a clock block changes in >= 75% of the seconds and at most 1.6 times a second (animations change far more). */
-#define SAMPLE_S 12
-static long span_lo = -1, span_hi = -1;                          /* the clock's stretch of RAM, found by find_clock */
-static long find_clock(int fd, size_t size) {
-    unsigned char *snap = malloc(size), *cur = malloc(CHUNK), *mark = calloc(size / BYTES, 1);
-    if (!snap || !cur || !mark) { fprintf(stderr, "coop-perch-chip: out of memory for the sweep\n"); return -1; }
-    fprintf(stderr, "coop-perch-chip: finding the clock in %zu MB of video RAM (about 25 seconds)...\n", size >> 20);
-    if (read_all(fd, snap, 0, size) != 0) { fprintf(stderr, "coop-perch-chip: cannot read the video RAM\n"); return -1; }
-    for (int i = 0; i < 2; i++) { usleep(400000); if (sweep(fd, size, snap, cur, mark, 1, NULL) != 0) return -1; }
-    size_t nblk = size / BYTES, ncand = 0;
-    for (size_t k = 0; k < nblk; k++) ncand += mark[k] != 0;
-    fprintf(stderr, "coop-perch-chip: %zu blocks move at all; timing them for %d seconds\n", ncand, SAMPLE_S);
-    if (!ncand) return -1;
-    size_t *cand = malloc(ncand * sizeof *cand);
-    uint16_t *changes = calloc(ncand, sizeof *changes), *flips = calloc(ncand, sizeof *flips);
-    uint32_t *secs = calloc(ncand, sizeof *secs);
-    unsigned char *last = malloc(ncand * BYTES), *now = malloc(BYTES);
-    if (!cand || !changes || !flips || !secs || !last || !now) { fprintf(stderr, "coop-perch-chip: out of memory\n"); return -1; }
-    size_t j = 0;
-    for (size_t k = 0; k < nblk; k++) if (mark[k]) { cand[j] = k; memcpy(last + j * BYTES, snap + k * BYTES, BYTES); j++; }
-    free(snap); free(cur); free(mark);
-    time_t t0 = time(NULL);
-    while (time(NULL) == t0) usleep(20000);                           /* start on a second boundary */
-    t0 = time(NULL);
-    double next = now_s();
-    while (time(NULL) - t0 < SAMPLE_S) {
-        int sec = (int)(time(NULL) - t0);
-        for (size_t c = 0; c < ncand; c++) {
-            if (read_all(fd, now, cand[c] * BYTES, BYTES) != 0) return -1;
-            if (!memcmp(now, last + c * BYTES, BYTES)) continue;
-            int f = 0;
-            for (int i = 0; i < BYTES; i++) f += __builtin_popcount(now[i] ^ last[c * BYTES + i]);
-            memcpy(last + c * BYTES, now, BYTES);
-            changes[c]++; flips[c] = (uint16_t)(flips[c] + f > 65535 ? 65535 : flips[c] + f);
-            secs[c] |= 1u << sec;
-        }
-        next += 0.1;
-        double w = next - now_s();
-        if (w > 0) usleep((useconds_t)(w * 1e6)); else next = now_s();
-    }
-    /* best: changed in the most seconds, then the fewest extra changes (once a second exactly), then the most bit flips.
-       A block under the second hand's path ticks only while the hand passes; one by the hand's pivot ticks every second. */
-    long best = -1; size_t n = 0;
-    int bs = 0, bx = 0;
-    for (size_t c = 0; c < ncand; c++) {
-        int ns = __builtin_popcount(secs[c]), extra = changes[c] > ns ? changes[c] - ns : 0;
-        if (ns * 4 < SAMPLE_S * 3 || changes[c] * 10 > SAMPLE_S * 16) continue;
-        n++;
-        if (best < 0 || ns > bs || (ns == bs && (extra < bx || (extra == bx && flips[c] > flips[best])))) { best = (long)c; bs = ns; bx = extra; }
-    }
-    long addr = best < 0 ? -1 : (long)(cand[best] * BYTES);
-    if (best >= 0) {     /* the stretch: every block on the seconds beat (2+ seconds, at most 1.6 changes a second), within 4 KB of each other */
-        long lo = addr, hi = addr + BYTES;
-        for (int grew = 1; grew;) {
-            grew = 0;
-            for (size_t c = 0; c < ncand; c++) {
-                int ns = __builtin_popcount(secs[c]);
-                if (ns < 2 || changes[c] * 10 > ns * 16) continue;
-                long a = (long)(cand[c] * BYTES);
-                if (a < lo && a >= lo - 4096) { lo = a; grew = 1; }
-                if (a + BYTES > hi && a <= hi + 4096) { hi = a + BYTES; grew = 1; }
+
+/* ---- the mask: the eye's own memory (its window's picture and its patch of the screen), never looked at ---- */
+static unsigned char *self_mask = NULL;                              /* one byte per 128-byte block of the RAM, 1 = the eye itself */
+
+/* ---- the zoom ---- */
+typedef struct { size_t lo, hi; } Span;
+
+/* look at [lo,hi) `looks` times; return the start of the part (of PARTS, fewer when the window is small) with the most bit flips.
+   *flips gets that count (0 = nothing changed), *plen the part length. */
+static long look(int fd, size_t lo, size_t hi, int looks, unsigned char *snap, unsigned char *cur, long *flips, size_t *plen_out,
+                 Atom del, int *closed) {
+    size_t len = hi - lo;
+    size_t parts = len / BYTES < PARTS ? len / BYTES : PARTS;
+    if (parts < 1) parts = 1;
+    size_t plen = (len / parts + BYTES - 1) / BYTES * BYTES;
+    uint64_t pf[PARTS];
+    memset(pf, 0, sizeof pf);
+    if (read_all(fd, snap, lo, len) != 0) return -1;
+    for (int k = 1; k < looks; k++) {
+        double t0 = now_s();
+        for (size_t off = 0; off < len; off += CHUNK) {
+            size_t n = len - off < CHUNK ? len - off : CHUNK;
+            if (read_all(fd, cur, lo + off, n) != 0) return -1;
+            if (memcmp(cur, snap + off, n)) {
+                for (size_t i = 0; i + 8 <= n; i += 8) {
+                    uint64_t a, b;
+                    memcpy(&a, cur + i, 8); memcpy(&b, snap + off + i, 8);
+                    if (a != b && !(self_mask && self_mask[(lo + off + i) / BYTES])) { size_t p = (off + i) / plen; pf[p < parts ? p : parts - 1] += (uint64_t)__builtin_popcountll(a ^ b); }
+                }
+                memcpy(snap + off, cur, n);
             }
+            if (pump(del)) { *closed = 1; return -1; }
         }
-        span_lo = lo; span_hi = hi;
-        fprintf(stderr, "coop-perch-chip: the clock's stretch of RAM: 0x%lx..0x%lx (%ld KB)\n", lo, hi, (hi - lo) >> 10);
+        double w = LEVEL_GAP - (now_s() - t0);
+        if (w > 0) usleep((useconds_t)(w * 1e6));
     }
-    fprintf(stderr, "coop-perch-chip: %zu blocks tick with the seconds; watching 0x%lx\n", n, addr < 0 ? 0L : addr);
-    free(cand); free(changes); free(flips); free(secs); free(last); free(now);
-    return addr;
+    size_t best = 0;
+    for (size_t p = 1; p < parts; p++) if (pf[p] > pf[best]) best = p;
+    *flips = (long)pf[best];
+    *plen_out = plen;
+    return (long)(lo + best * plen);
 }
 
 int main(int argc, char **argv) {
-    int clock_mode = 0;
     const char *disp = NULL;
-    long addr = -1;
+    long fixed = -1;
     double rate = 10;
-    int cell = 18;
+    int looks = 4;
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-a") && i + 1 < argc) addr = strtol(argv[++i], NULL, 0);
-        else if (!strcmp(argv[i], "-c")) clock_mode = 1;
+        if (!strcmp(argv[i], "-a") && i + 1 < argc) fixed = strtol(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "-d") && i + 1 < argc) disp = argv[++i];
         else if (!strcmp(argv[i], "-r") && i + 1 < argc) rate = atof(argv[++i]);
+        else if (!strcmp(argv[i], "-n") && i + 1 < argc) looks = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-s") && i + 1 < argc) cell = atoi(argv[++i]);
-        else { fprintf(stderr, "usage: sudo %s [-c | -a ADDRESS] [-d :0] [-r READS_PER_SEC] [-s PIXELS_PER_BIT]\n", argv[0]); return 2; }
+        else { fprintf(stderr, "usage: sudo %s [-a ADDRESS] [-d :0] [-r READS_PER_SEC] [-n LOOKS_PER_LEVEL] [-s PIXELS_PER_BIT]\n", argv[0]); return 2; }
     }
     if (rate <= 0) rate = 10;
+    if (looks < 2) looks = 2;
     if (cell < 6) cell = 6;
 
     glob_t g;
@@ -201,16 +164,7 @@ int main(int argc, char **argv) {
     struct stat st;
     size_t size = fstat(fd, &st) == 0 && st.st_size > 0 ? (size_t)st.st_size : 0;
     if (!size) { fprintf(stderr, "coop-perch-chip: video RAM size unknown\n"); return 1; }
-    if (addr < 0 && clock_mode) {
-        addr = find_clock(fd, size);
-        if (addr < 0) { fprintf(stderr, "coop-perch-chip: no clock found\n"); return 1; }
-        printf("0x%lx\n", addr);
-        fflush(stdout);
-    }
-    if (addr < 0) addr = find_live(fd, size);
-    if (addr < 0) return 1;
-    addr &= ~(long)(BYTES - 1);
-    if ((size_t)addr + BYTES > size) { fprintf(stderr, "coop-perch-chip: address past the end of the %zu MB\n", size >> 20); return 1; }
+    if (fixed >= 0) { fixed &= ~(long)(BYTES - 1); if ((size_t)fixed + BYTES > size) { fprintf(stderr, "coop-perch-chip: address past the end\n"); return 1; } }
 
     /* the RAM is open: stop being root before going near the screen */
     const char *su = getenv("SUDO_UID"), *sg = getenv("SUDO_GID");
@@ -228,95 +182,128 @@ int main(int argc, char **argv) {
     }
     if (!disp) disp = getenv("DISPLAY") && *getenv("DISPLAY") ? getenv("DISPLAY") : ":0";
 
-    Display *dpy = XOpenDisplay(disp);
+    dpy = XOpenDisplay(disp);
     if (!dpy) { fprintf(stderr, "coop-perch-chip: cannot open screen %s\n", disp); return 1; }
-    int scr = DefaultScreen(dpy), pad = cell, top = cell + 22;
+    int scr = DefaultScreen(dpy);
+    pad = cell; top = cell + 40;
     XFontStruct *font = XLoadQueryFont(dpy, "-misc-fixed-medium-r-normal--13-*-*-*-*-*-iso8859-1");
     if (!font) font = XLoadQueryFont(dpy, "fixed");
-    int bitsW = SIDE * cell, botX = pad + bitsW + 2 * pad, botW = 26 * 7 + 40;
-    int W = botX + botW + pad, H = top + SIDE * cell + pad;
-    unsigned long white = 0xffffff, ring = 0xb8c4d6, blue = 0x1f5fd6, ink = 0x2a3140, soft = 0x8a93a6;
-    Window win = XCreateSimpleWindow(dpy, RootWindow(dpy, scr), 60, 60, (unsigned)W, (unsigned)H, 0, 0, white);
-    char title[160];
-    snprintf(title, sizeof title, "coop-perch-chip: video RAM 0x%lx, 128 bytes, 1024 bits", addr);
-    XStoreName(dpy, win, title);
+    bitsW = SIDE * cell; botX = pad + bitsW + 2 * pad; botW = 26 * 7 + 40;
+    W = botX + botW + pad; H = top + SIDE * cell + pad;
+    win = XCreateSimpleWindow(dpy, RootWindow(dpy, scr), 60, 60, (unsigned)W, (unsigned)H, 0, 0, white);
+    XStoreName(dpy, win, "coop-perch-chip: the eye on the video RAM");   /* fixed: the zoom is shown inside, not in the title */
     XSizeHints *sh = XAllocSizeHints();
     if (sh) { sh->flags = PMinSize | PMaxSize; sh->min_width = sh->max_width = W; sh->min_height = sh->max_height = H; XSetWMNormalHints(dpy, win, sh); XFree(sh); }
     Atom del = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(dpy, win, &del, 1);
     XSelectInput(dpy, win, ExposureMask | StructureNotifyMask);
     XMapWindow(dpy, win);
-    GC gc = XCreateGC(dpy, win, 0, NULL);
+    gc = XCreateGC(dpy, win, 0, NULL);
     if (font) XSetFont(dpy, gc, font->fid);
     XSetLineAttributes(dpy, gc, cell > 14 ? 2 : 1, LineSolid, CapRound, JoinRound);
 
-    CoopBox box;                                                      /* what the bot gets: 32 pixels R G B as bytes + 32 changed bits */
+    CoopBox box;                                                      /* what the bot gets: 32 rows R G B as bytes + 32 changed bits */
     uint32_t bdim[1] = {SIDE * 3 + 4};
-    char bfields[300];
-    snprintf(bfields, sizeof bfields, "R0 G0 B0 .. R31 G31 B31 changed_bits(4 bytes, bit n = pixel n changed); 32 pixels of video RAM (4 bytes "
-                                      "each in the RAM: blue green red spare), it follows the clock so the address moves; a frame whenever a pixel changed");
-    int have_box = coop_box_create(&box, "chip", "u8", 1, bdim, bfields) == 0;
+    int have_box = coop_box_create(&box, "chip", "u8", 1, bdim,
+        "R0 G0 B0 .. R31 G31 B31 changed_bits(4 bytes, bit n = row n changed); the 128 bytes the eye is on in the video RAM, a row of 4 "
+        "bytes read as blue green red spare; the eye zooms, so the address moves; a frame whenever a row changed") == 0;
+
+    unsigned char *snap = malloc(size), *cur = malloc(CHUNK);
+    if (!snap || !cur) { fprintf(stderr, "coop-perch-chip: out of memory\n"); return 1; }
+    if (fixed < 0) {
+        /* learn the mask: one sweep around a flash gives every block that changed (wide); then 3 quick flashes, reading only those
+           blocks just before and just after each; what changes every time is the eye itself */
+        XSync(dpy, False); usleep(300000);
+        snprintf(status, sizeof status, "learning which memory is this box itself (a few seconds)");
+        draw_status();
+        size_t nb = size / BYTES, nc = 0;
+        self_mask = calloc(nb, 1);
+        if (!self_mask || read_all(fd, snap, 0, size) != 0) { fprintf(stderr, "coop-perch-chip: cannot read the video RAM\n"); return 1; }
+        XSetForeground(dpy, gc, 0x000000); XFillRectangle(dpy, win, gc, 0, 0, (unsigned)W, (unsigned)H); XSync(dpy, False); usleep(150000);
+        for (size_t off = 0; off < size; off += CHUNK) {
+            size_t n = size - off < CHUNK ? size - off : CHUNK;
+            if (read_all(fd, cur, off, n) != 0) return 1;
+            for (size_t b = 0; b < n; b += BYTES) if (memcmp(cur + b, snap + off + b, BYTES)) { self_mask[(off + b) / BYTES] = 1; nc++; }
+        }
+        unsigned char before[BYTES], after[BYTES];
+        for (int round = 0; round < 3; round++) {
+            unsigned char *keep = calloc(nb, 1);
+            if (!keep) return 1;
+            for (size_t k = 0; k < nb; k++) if (self_mask[k]) { if (read_all(fd, snap + k * BYTES, k * BYTES, BYTES) != 0) return 1; }
+            XSetForeground(dpy, gc, round % 2 ? 0x000000 : 0xffffff);
+            XFillRectangle(dpy, win, gc, 0, 0, (unsigned)W, (unsigned)H); XSync(dpy, False); usleep(150000);
+            for (size_t k = 0; k < nb; k++)
+                if (self_mask[k]) {
+                    memcpy(before, snap + k * BYTES, BYTES);
+                    if (read_all(fd, after, k * BYTES, BYTES) != 0) return 1;
+                    if (memcmp(before, after, BYTES)) keep[k] = 1;
+                }
+            memcpy(self_mask, keep, nb);
+            free(keep);
+        }
+        size_t ns = 0;
+        for (size_t k = 0; k < nb; k++) ns += self_mask[k];
+        fprintf(stderr, "coop-perch-chip: mask: %zu blocks (%zu KB) are this box itself (%zu changed in the wide look)\n", ns, ns * BYTES / 1024, nc);
+    }
+    Span stack[16];
+    int depth = 0;                                                    /* stack[depth] = current window; 0 = all of the RAM */
+    stack[0].lo = 0; stack[0].hi = size;
+    long addr = fixed >= 0 ? fixed : 0;
+    int bottom = fixed >= 0;                                          /* at the bottom: watching the 128 bytes */
 
     unsigned char bits[BYTES], shown[BYTES];
     memset(shown, 0, sizeof shown);
-    long span_n = span_lo >= 0 ? (span_hi - span_lo) / BYTES : 0;
-    unsigned char *span = span_n ? malloc((size_t)span_n * BYTES) : NULL, *span_prev = span_n ? malloc((size_t)span_n * BYTES) : NULL;
-    double *span_t = span_n ? calloc((size_t)span_n, sizeof(double)) : NULL;
-    if (span && span_prev && span_t && read_all(fd, span_prev, (size_t)span_lo, (size_t)span_n * BYTES) != 0) span_n = 0;
-    if (!span || !span_prev || !span_t) span_n = 0;
-    double watched_since = now_s();
-    double lastchg[SIDE];
+    double lastchg[SIDE], box_changed = now_s();
     int marked[SIDE];
     for (int r = 0; r < SIDE; r++) { lastchg[r] = -10; marked[r] = 0; }
     int full = 1;
     double next = 0;
     int dot = cell - 6, inner = dot - (cell > 14 ? 6 : 4);
     if (inner < 2) inner = 2;
+    double level_quiet_since = -1;                                    /* when this level's looks started coming back empty */
     for (;;) {
-        while (XPending(dpy)) {
-            XEvent e;
-            XNextEvent(dpy, &e);
-            if (e.type == Expose && e.xexpose.count == 0) full = 1;
-            if (e.type == ClientMessage && (Atom)e.xclient.data.l[0] == del) { XCloseDisplay(dpy); return 0; }
-            if (e.type == DestroyNotify) return 0;
+        if (pump(del)) { XCloseDisplay(dpy); return 0; }
+        if (!bottom) {
+            /* one zoom step: look at the window, go into its busiest part, or back out if nothing moved */
+            Span w = stack[depth];
+            set_status(depth, w.lo, w.hi, "looking");
+            draw_status();
+            long fl = 0;
+            size_t plen = 0;
+            int closed = 0;
+            long p = look(fd, w.lo, w.hi, looks, snap, cur, &fl, &plen, del, &closed);
+            if (closed) { XCloseDisplay(dpy); return 0; }
+            if (p < 0) { fprintf(stderr, "coop-perch-chip: cannot read the video RAM\n"); return 1; }
+            if (fl == 0) {                                             /* nothing moved: look again; quiet for QUIET_S = zoom out */
+                double tq = now_s();
+                if (level_quiet_since < 0) level_quiet_since = tq;
+                if (tq - level_quiet_since >= QUIET_S) { if (depth > 0) depth--; level_quiet_since = -1; }
+                continue;
+            }
+            level_quiet_since = -1;
+            size_t nlo = (size_t)p, nhi = nlo + plen < w.hi ? nlo + plen : w.hi;
+            if (nhi - nlo <= BYTES || depth + 1 >= 16) { addr = (long)nlo; bottom = 1; box_changed = now_s(); full = 1; }
+            else { depth++; stack[depth].lo = nlo; stack[depth].hi = nhi; }
+            continue;
         }
         double t = now_s();
         if (t >= next) {
             next = t + 1.0 / rate;
-            if (span_n && read_all(fd, span, (size_t)span_lo, (size_t)span_n * BYTES) == 0) {
-                /* follow the hand: when blocks in the clock's stretch change this tick and the watched one has not changed for
-                   half a second, jump to the one that changed most (the gaze goes to the strike) */
-                long fresh = -1;
-                int fresh_flips = 0;
-                for (long k = 0; k < span_n; k++) {
-                    if (!memcmp(span + k * BYTES, span_prev + k * BYTES, BYTES)) continue;
-                    span_t[k] = t;
-                    int f = 0;
-                    for (int i = 0; i < BYTES; i++) f += __builtin_popcount(span[k * BYTES + i] ^ span_prev[k * BYTES + i]);
-                    if (f > fresh_flips) { fresh = k; fresh_flips = f; }
-                }
-                memcpy(span_prev, span, (size_t)span_n * BYTES);
-                long cur = (addr - span_lo) / BYTES;
-                double quiet = cur >= 0 && cur < span_n && span_t[cur] > 0 ? t - span_t[cur] : t - watched_since;
-                if (fresh >= 0 && fresh != cur && quiet > 0.5) {
-                    addr = span_lo + fresh * BYTES;
-                    watched_since = t;
-                    snprintf(title, sizeof title, "coop-perch-chip: video RAM 0x%lx, 128 bytes, 1024 bits (following the clock)", addr);
-                    XStoreName(dpy, win, title);
-                }
-            }
             if (read_all(fd, bits, (size_t)addr, BYTES) != 0) { fprintf(stderr, "coop-perch-chip: read failed\n"); return 1; }
+            if (memcmp(bits, shown, BYTES)) box_changed = t;
             if (full) {
                 XSetForeground(dpy, gc, white);
                 XFillRectangle(dpy, win, gc, 0, 0, (unsigned)W, (unsigned)H);
                 XSetForeground(dpy, gc, ink);
                 const char *h1 = "The chip's bits", *h2 = "How a bot sees this";
-                XDrawString(dpy, win, gc, pad, cell + 6, h1, (int)strlen(h1));
-                XDrawString(dpy, win, gc, botX, cell + 6, h2, (int)strlen(h2));
+                XDrawString(dpy, win, gc, pad, top - 10, h1, (int)strlen(h1));
+                XDrawString(dpy, win, gc, botX, top - 22, h2, (int)strlen(h2));
                 XSetForeground(dpy, gc, soft);
                 const char *k1 = "1 row = 4 bytes = 1 pixel", *k2 = "px    R   G   B";
-                XDrawString(dpy, win, gc, pad + bitsW - (int)strlen(k1) * 7, cell + 6, k1, (int)strlen(k1));
+                XDrawString(dpy, win, gc, pad + bitsW - (int)strlen(k1) * 7, top - 10, k1, (int)strlen(k1));
                 XDrawString(dpy, win, gc, botX + 28, top - 4, k2, (int)strlen(k2));
+                set_status(fixed >= 0 ? 0 : depth + 1, (size_t)addr, (size_t)addr + BYTES, fixed >= 0 ? "fixed" : "locked on");
+                draw_status();
             }
             for (int i = 0; i < SIDE * SIDE; i++) {
                 int byte = i / 8, bit = 7 - (i % 8);
@@ -332,27 +319,21 @@ int main(int argc, char **argv) {
                     XFillArc(dpy, win, gc, x + (dot - inner) / 2, y + (dot - inner) / 2, (unsigned)inner, (unsigned)inner, 0, 360 * 64);
                 }
             }
-            /* the bot's view: each row's 4 bytes as one pixel, the numbers it reads, a mark when the pixel changed */
-            int anychg = 0;
+            /* the bot's view: each row's 4 bytes as one pixel, the numbers it reads, a mark (held 1 s) when the row changed */
             uint8_t *bf = NULL;
-            for (int r = 0; r < SIDE; r++) {
-                const unsigned char *p = bits + r * 4, *q = shown + r * 4;
-                int chg = memcmp(p, q, 4) != 0;
-                anychg |= chg;
-            }
-            if (anychg && have_box && !full) bf = coop_box_next(&box, (double)time(NULL));
+            if (!full && memcmp(bits, shown, BYTES) && have_box) bf = coop_box_next(&box, (double)time(NULL));
             for (int r = 0; r < SIDE; r++) {
                 const unsigned char *p = bits + r * 4, *q = shown + r * 4;
                 int chg = !full && memcmp(p, q, 4) != 0;
                 if (bf) { bf[r * 3] = p[2]; bf[r * 3 + 1] = p[1]; bf[r * 3 + 2] = p[0]; if (chg) bf[SIDE * 3 + r / 8] |= (uint8_t)(1u << (r % 8)); }
                 if (chg) lastchg[r] = t;
-                int mark = t - lastchg[r] < 1.0;                      /* the mark stays a second so a person can see it */
-                if (!full && !chg && mark == marked[r]) continue;     /* nothing new on this row */
+                int mark = t - lastchg[r] < 1.0;
+                if (!full && !chg && mark == marked[r]) continue;
                 marked[r] = mark;
                 int y = top + r * cell;
                 XSetForeground(dpy, gc, white);
                 XFillRectangle(dpy, win, gc, botX, y, (unsigned)botW, (unsigned)cell);
-                XSetForeground(dpy, gc, (unsigned long)p[2] << 16 | (unsigned long)p[1] << 8 | p[0]);   /* the pixel's own colour */
+                XSetForeground(dpy, gc, (unsigned long)p[2] << 16 | (unsigned long)p[1] << 8 | p[0]);
                 XFillRectangle(dpy, win, gc, botX, y + 3, 18, (unsigned)(cell - 6));
                 XSetForeground(dpy, gc, ring);
                 XDrawRectangle(dpy, win, gc, botX, y + 3, 18, (unsigned)(cell - 6));
@@ -360,15 +341,13 @@ int main(int argc, char **argv) {
                 snprintf(line, sizeof line, "%2d  %3d %3d %3d", r, p[2], p[1], p[0]);
                 XSetForeground(dpy, gc, mark ? blue : ink);
                 XDrawString(dpy, win, gc, botX + 28, y + cell - 5, line, (int)strlen(line));
-                if (mark) {                                            /* changed: the bot's strike */
-                    XSetForeground(dpy, gc, blue);
-                    XFillArc(dpy, win, gc, botX + 28 + 17 * 7, y + cell / 2 - 4, 8, 8, 0, 360 * 64);
-                }
+                if (mark) { XSetForeground(dpy, gc, blue); XFillArc(dpy, win, gc, botX + 28 + 17 * 7, y + cell / 2 - 4, 8, 8, 0, 360 * 64); }
             }
             if (bf) coop_box_commit(&box);
             memcpy(shown, bits, sizeof shown);
             full = 0;
             XFlush(dpy);
+            if (fixed < 0 && t - box_changed > QUIET_S) { bottom = 0; full = 1; }   /* quiet: zoom out to the window above */
         }
         double wait = next - now_s();
         if (wait > 0) {
@@ -377,6 +356,13 @@ int main(int argc, char **argv) {
             FD_SET(ConnectionNumber(dpy), &fs);
             struct timeval tv = {(long)wait, (long)((wait - (long)wait) * 1e6)};
             select(ConnectionNumber(dpy) + 1, &fs, NULL, NULL, &tv);
+        }
+        while (XPending(dpy)) {
+            XEvent e;
+            XNextEvent(dpy, &e);
+            if (e.type == Expose && e.xexpose.count == 0) full = 1;
+            if (e.type == ClientMessage && (Atom)e.xclient.data.l[0] == del) { XCloseDisplay(dpy); return 0; }
+            if (e.type == DestroyNotify) return 0;
         }
     }
 }
