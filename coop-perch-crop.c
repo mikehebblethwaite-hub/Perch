@@ -1,6 +1,6 @@
 /* Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT. */
 /* coop-perch-crop: save one box of the screen as a small PNG (the fovea: only where it changed, never the whole screen).
- *   coop-perch-crop x,y,w,h [-d :2] [-o FILE.png] [-p PAD]      (default out: /dev/shm/coop-perch/crop.png, pad 4 px)
+ *   coop-perch-crop x,y,w,h [-d :2] [-o FILE.png] [-p PAD]      (default out: ~/coop-perch/tape/crop.png, pad 4 px)
  * Prints the file path and its size.
  */
 #include <X11/Xlib.h>
@@ -61,7 +61,7 @@ int main(int argc, char **argv) {
     unsigned char *z = malloc(zn);
     if (!z || compress2(z, &zn, raw, (uLong)raw_n, 9) != Z_OK) return 1;
     char def[256];
-    if (!out) { mkdir("/dev/shm/coop-perch", 0750); snprintf(def, sizeof def, "/dev/shm/coop-perch/crop.png"); out = def; }
+    if (!out) { snprintf(def, sizeof def, "%s/coop-perch/tape", getenv("HOME") ? getenv("HOME") : "."); mkdir(def, 0750); strncat(def, "/crop.png", sizeof def - strlen(def) - 1); out = def; }
     FILE *f = fopen(out, "wb");
     if (!f) { perror(out); return 1; }
     fwrite("\x89PNG\r\n\x1a\n", 1, 8, f);
