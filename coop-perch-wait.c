@@ -6,6 +6,8 @@
  * that changed, and the boxes per area:
  *     S x,y wxh n=CELLS | x,y wxh x,y wxh ...
  * Nothing changed before the timeout: prints "quiet" and exits 1.
+ * Animation is left out: a cell that has kept changing for over 2 s without a 1 s break is animated; it never holds up "settled"
+ * and never makes a line, until it has been still for 1 s.
  *
  *   coop-perch-wait [-t SECONDS(10)] [-q SETTLE_MS(400)] [-r x,y,w,h (only changes touching this region)]
  *   -f  follow: keep going for -t seconds, one line per settled change, each starting "first_seen_time printed_time"
@@ -33,7 +35,8 @@ int main(int argc, char **argv) {
     Rect *cells = calloc(ncell, sizeof *cells);                         /* per cell: everything that changed in it so far */
     if (!cells) return 2;
     Rect *area = calloc(ncell, sizeof *area);
-    if (!area) return 2;
+    double *streak = calloc(ncell, sizeof(double)), *lastc = calloc(ncell, sizeof(double));   /* per cell: changing since, last change */
+    if (!area || !streak || !lastc) return 2;
     uint64_t seen = __atomic_load_n(&b.h->count, __ATOMIC_ACQUIRE);
     double total_end = now_s() + timeout;
     for (;;) {
@@ -51,7 +54,12 @@ int main(int argc, char **argv) {
             const uint16_t *f = fv;
             for (uint32_t i = 0; i < ncell; i++) {
                 const uint16_t *v = f + i * 9;
-                if (v[4] != 1 || v[7] == 0) continue;                    /* strikes only (tuned-out beats ignored) */
+                if (v[4] == 0 || v[7] == 0) continue;
+                double tn = now_s();
+                if (tn - lastc[i] > 1.0) streak[i] = tn;                 /* a break of 1 s starts a new streak */
+                lastc[i] = tn;
+                if (tn - streak[i] > 2.0) continue;                      /* animated: changing for over 2 s, left out */
+                if (v[4] != 1) continue;                                 /* strikes only (tuned-out beats ignored) */
                 int x0 = v[5], y0 = v[6], x1 = v[5] + v[7], y1 = v[6] + v[8];
                 if (rw > 0 && (x1 <= rx || x0 >= rx + rw || y1 <= ry || y0 >= ry + rh)) continue;
                 Rect *r = &cells[i];
