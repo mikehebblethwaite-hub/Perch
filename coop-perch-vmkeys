@@ -1,0 +1,36 @@
+#!/usr/bin/python3 -I
+# Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT.
+# coop-perch-vmkeys NAME TEXT... : type into a Perch guest (QMP send-key). "\n" in TEXT = Enter. --shot FILE: QEMU's own
+# screendump (PPM) of the guest screen, for checking Perch's numbers in tests only (Perch itself never takes one).
+import json, os, socket, sys, time
+if len(sys.argv) < 3:
+    sys.exit("usage: coop-perch-vmkeys NAME TEXT... | NAME --shot FILE | NAME --quit")
+name = sys.argv[1]
+run = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "coop-perch-vm-" + name, "qmp")
+s = socket.socket(socket.AF_UNIX); s.connect(run); f = s.makefile("rw")
+def cmd(c, **a):
+    f.write(json.dumps({"execute": c, "arguments": a} if a else {"execute": c}) + "\n"); f.flush()
+    while True:
+        r = json.loads(f.readline())
+        if "return" in r or "error" in r:
+            return r
+json.loads(f.readline()); cmd("qmp_capabilities")
+if sys.argv[2] == "--shot":
+    print(cmd("screendump", filename=os.path.abspath(sys.argv[3]))); sys.exit()
+if sys.argv[2] == "--quit":
+    print(cmd("system_powerdown")); sys.exit()
+SHIFT = {'!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '^': '6', '&': '7', '*': '8', '(': '9', ')': '0', '_': 'minus', '+': 'equal',
+         '{': 'bracket_left', '}': 'bracket_right', ':': 'semicolon', '"': 'apostrophe', '~': 'grave_accent', '|': 'backslash', '<': 'comma',
+         '>': 'dot', '?': 'slash'}
+PLAIN = {' ': 'spc', '-': 'minus', '=': 'equal', '[': 'bracket_left', ']': 'bracket_right', ';': 'semicolon', "'": 'apostrophe',
+         '`': 'grave_accent', '\\': 'backslash', ',': 'comma', '.': 'dot', '/': 'slash', '\n': 'ret'}
+text = " ".join(sys.argv[2:]).replace("\\n", "\n")
+for ch in text:
+    keys = []
+    if ch.isupper(): keys = ["shift", ch.lower()]
+    elif ch in SHIFT: keys = ["shift", SHIFT[ch]]
+    elif ch in PLAIN: keys = [PLAIN[ch]]
+    elif ch.isalnum(): keys = [ch]
+    else: continue
+    cmd("send-key", keys=[{"type": "qcode", "data": k} for k in keys])
+    time.sleep(0.06)

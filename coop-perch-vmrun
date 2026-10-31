@@ -1,0 +1,25 @@
+#!/bin/sh
+# Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT.
+# coop-perch-vmrun DISK [NAME]: run a guest whose only monitor is Perch.
+#   a private bus (this user only) -> QEMU -display dbus on it (no window, no VNC, nothing on the network)
+#   -> coop-perch-vm registers as the monitor: QEMU hands it each changed rectangle; plane vm-NAME, tape ~/coop-perch/tape/vm-NAME.
+# QMP (to type into the guest, power it off) at $RUN/qmp. Stops QEMU and the bus when the eye stops.
+# Env: PERCH_VM_MEM (MB, 2048), PERCH_VM_CPUS (2), PERCH_VM_ARGS (more QEMU args), PERCH_EYE_ARGS (more eye args, e.g. -t 60 -v).
+set -e
+[ -n "$1" ] || { echo "usage: coop-perch-vmrun DISK [NAME]"; exit 2; }
+DISK=$(realpath "$1"); NAME="${2:-guest}"
+case "$NAME" in *[!a-z0-9-]*) echo "NAME: a-z 0-9 - only"; exit 2;; esac
+cd "$(dirname "$0")"
+RUN="${XDG_RUNTIME_DIR:-/tmp}/coop-perch-vm-$NAME"
+mkdir -p "$RUN"; chmod 700 "$RUN"; rm -f "$RUN/bus" "$RUN/qmp"
+dbus-daemon --config-file=/usr/share/dbus-1/session.conf --address="unix:path=$RUN/bus" --nofork --nopidfile >/dev/null 2>&1 & B=$!
+i=0; until [ -S "$RUN/bus" ]; do i=$((i+1)); [ $i -gt 50 ] && { echo "bus did not start"; kill $B; exit 1; }; sleep 0.1; done
+KVM=""; [ -w /dev/kvm ] && KVM="-enable-kvm -cpu host"
+# shellcheck disable=SC2086
+qemu-system-x86_64 $KVM -m "${PERCH_VM_MEM:-2048}" -smp "${PERCH_VM_CPUS:-2}" -name "perch-$NAME" \
+    -drive "file=$DISK,if=virtio" -vga std -display "dbus,addr=unix:path=$RUN/bus" \
+    -qmp "unix:$RUN/qmp,server=on,wait=off" -nic user,model=virtio-net-pci $PERCH_VM_ARGS & Q=$!
+trap 'kill $Q 2>/dev/null; sleep 1; kill $B 2>/dev/null' INT TERM EXIT
+set +e
+# shellcheck disable=SC2086
+./coop-perch-vm -a "unix:path=$RUN/bus" -n "$NAME" $PERCH_EYE_ARGS

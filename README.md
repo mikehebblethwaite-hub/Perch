@@ -1,6 +1,6 @@
 # coop-perch
 
-The bot's mind's eye (design: ~/the notes/perch.md). Version 0.07.
+The bot's mind's eye (design: ~/the notes/perch.md). Version 0.08.
 
 - `coop-perch-display` : display :2. Apps connect to :2; `coop-perch-tap` sits there on the data line and passes every byte to the real
   X screen, Xvfb :12 (DAMAGE/XFIXES/MIT-SHM, local socket only). Any app on it thinks it is a monitor.
@@ -35,5 +35,23 @@ Build: `make` (needs libx11-dev libxdamage-dev libxext-dev libxfixes-dev).
 notes the RAM that changes exactly then), then zooms: looks at all the RAM a few times, goes into the 1/16 that changed most, repeats
 (512 MB > 32 MB > 2 MB > 128 KB > 8 KB > 512 B) down to 128 bytes, and zooms back out after 3 s quiet. The box: 1024 bits, every bit an empty white circle (the template), a blue dot when 1; the window from-to in fixed columns on top.
 bot gets (R G B, changed), also written to the box of bot vectors as plane `chip` (u8, changed as bits). `-a ADDRESS` watches a fixed spot instead.
+
+## The VM eye (0.08): Perch as a virtual machine's monitor
+
+`coop-perch-vmrun DISK [NAME]` runs a guest whose only monitor is Perch: a private bus (this user only), QEMU `-display dbus` on it
+(no window, no VNC, nothing on the network), and `coop-perch-vm` registered as the monitor on a private peer-to-peer line.
+QEMU hands over the whole screen once, then **only the rectangles the guest changed, with their pixels**. The hypervisor already
+knows what changed, so there is no capture step and no screenshot: the VM eye does Perch's part only.
+
+- Plane `vm-NAME` in the box (same shape as `eye`: u16 rows x cols x 9), tape in `tape/vm-NAME/` (tape.txt, vectors.bin, stats.txt, now.json).
+- The guest's mode changes (BIOS 640x480 -> text 720x400 -> desktop) are followed from the console's Width/Height on the bus: QEMU 8.2
+  sends no new Scanout for them.
+- `coop-perch-vmkeys NAME TEXT` types into the guest (QMP send-key); `--shot FILE` (QEMU's own screendump) and `coop-perch-vm -s FILE`
+  + SIGUSR1 (the eye's own copy) are for tests only, to check the eye's copy against the guest's real screen.
+- **The core** (`coop-perch-core.h`): cells, strikes, zoom, habits, plane, tape and stats are shared by `coop-perch-eye` (desktop, X) and
+  `coop-perch-vm`. An eye only says where the screen changed and keeps the pixels there current.
+
+Build needs libglib2.0-dev as well. Test guest (not in git, not backed up): `vm/` (Ubuntu 24.04 cloud image from build-2's cache,
+an overlay disk, autologin seed).
 
 Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT.
