@@ -35,3 +35,5 @@ Build: `make` (needs libx11-dev libxdamage-dev libxext-dev libxfixes-dev).
 notes the RAM that changes exactly then), then zooms: looks at all the RAM a few times, goes into the 1/16 that changed most, repeats
 (512 MB > 32 MB > 2 MB > 128 KB > 8 KB > 512 B) down to 128 bytes, and zooms back out after 3 s quiet. The box: 1024 bits, every bit an empty white circle (the template), a blue dot when 1; the window from-to in fixed columns on top.
 bot gets (R G B, changed), also written to the box of bot vectors as plane `chip` (u8, changed as bits). `-a ADDRESS` watches a fixed spot instead.
+
+Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT.

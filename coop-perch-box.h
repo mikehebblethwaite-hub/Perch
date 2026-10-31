@@ -1,3 +1,4 @@
+/* Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT. */
 /* coop-perch-box.h: the box of bot vectors. Raw numbers for bots, no text, no human view.
  *
  * The box is a folder in shared memory (default /dev/shm/coop-perch). Each plane is one file: a 4096-byte header, then a ring of

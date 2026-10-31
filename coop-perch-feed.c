@@ -1,3 +1,4 @@
+/* Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT. */
 /* coop-perch-feed: draws build-2's memory onto a Perch display, live, as raw blocks (no text needed to see it change).
  *
  * Reads blocks from stdin, one per second, as sent by coop-perch-feed-two (ssh build-2):

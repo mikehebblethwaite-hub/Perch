@@ -1,3 +1,4 @@
+/* Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT. */
 /* coop-perch-chip: the Perch eye on the video card's own RAM, as a 32x32 box of bits on the screen.
  *
  * The zoom (Mike, 31 Oct 2026):
