@@ -56,6 +56,7 @@ typedef struct {
     int habit;                    /* tuned out */
     double beat;                  /* learned seconds between strikes when habit */
     double last;                  /* last strike time */
+    double streak, lastc;         /* changing nonstop since; last change (animation: over 2 s without a 1 s break) */
 } Cell;
 
 static volatile sig_atomic_t stop_now = 0;
@@ -325,7 +326,7 @@ int main(int argc, char **argv) {
     uint32_t bdim[3] = {(uint32_t)GY, (uint32_t)GX, 9};
     char bfields[300];
     snprintf(bfields, sizeof bfields, "R G B luma strike zoom_x zoom_y zoom_w zoom_h; colours 0..255 cell means (rounded); strike 0 none 1 strike "
-                                      "2 tuned-out cell changed; zoom box in screen pixels; screen %dx%d display %s; a frame per look that saw a change", W, H, disp);
+                                      "2 tuned-out cell changed 3 animated (nonstop over 2 s); zoom box in screen pixels; screen %dx%d display %s; a frame per look that saw a change", W, H, disp);
     int have_box = coop_box_create(&box, "eye", "u16", 3, bdim, bfields) == 0;
     if (!have_box) fprintf(stderr, "coop-perch-eye: no box in %s (going on without it)\n", coop_box_dir());
 
@@ -483,7 +484,11 @@ int main(int argc, char **argv) {
                     zoom(x, y, w, h, 0, &bx0, &by0, &bx1, &by1, &md);
                     int hab = habit_check(&cells[i], t);
                     nreal++;
-                    zb[i * 5] = (hab == 0 || hab == 4) ? 1.0f : 2.0f;
+                    if (t - cells[i].lastc > 1.0) cells[i].streak = t;
+                    cells[i].lastc = t;
+                    int anim = t - cells[i].streak > 2.0;               /* animated: remembered here, so every reader knows */
+                    if (anim && (hab == 0 || hab == 4)) hab = 2;
+                    zb[i * 5] = anim ? 3.0f : (hab == 0 || hab == 4) ? 1.0f : 2.0f;
                     if (bx1 > bx0) { zb[i * 5 + 1] = (float)bx0; zb[i * 5 + 2] = (float)by0; zb[i * 5 + 3] = (float)(bx1 - bx0); zb[i * 5 + 4] = (float)(by1 - by0); }
                     if (hab == 3) { fprintf(tape, "%s H %d,%d %.1f\n", ts, c, r, cells[i].beat); habit_total++; w_habit++; }
                     else if (hab == 4) fprintf(tape, "%s B %d,%d\n", ts, c, r);
