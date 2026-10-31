@@ -1,0 +1,6 @@
+#!/bin/sh
+# coop-perch-display: start Perch display :2, a real X screen (Xvfb) that every app treats as a monitor.
+# DAMAGE + XFIXES + MIT-SHM on, no TCP, local socket only. Size by PERCH_SIZE (default 1280x800).
+D="${PERCH_DISPLAY:-:2}"; S="${PERCH_SIZE:-1280x800}"
+if xdpyinfo -display "$D" >/dev/null 2>&1; then echo "perch display $D already up"; exit 0; fi
+exec Xvfb "$D" -screen 0 "${S}x24" -nolisten tcp +extension DAMAGE +extension XFIXES +extension MIT-SHM -noreset

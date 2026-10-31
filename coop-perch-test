@@ -1,0 +1,17 @@
+#!/bin/sh
+# coop-perch-test [SECONDS]: the first test. Display :2 up, build-2's memory drawn on it, the eye watching.
+# Prints the eye's stats (its CPU, strikes, tokens text vs screenshots) and the last tape lines.
+set -e
+cd "$(dirname "$0")"
+T="${1:-120}"; D="${PERCH_DISPLAY:-:2}"; OUT="${PERCH_TAPE:-$PWD/tape}"
+mkdir -p "$OUT"
+started=""
+if ! xdpyinfo -display "$D" >/dev/null 2>&1; then ./coop-perch-display & started=$!; sleep 1; fi
+./coop-perch-feed-two | ./coop-perch-feed -d "$D" & feed=$!
+sleep 2
+./coop-perch-eye -d "$D" -o "$OUT" -t "$T"
+pkill -A -P $$ -f coop-perch-feed 2>/dev/null || true
+pkill -A -f 'ssh .*build-2 while :; do cat /proc/meminfo' 2>/dev/null || true
+[ -n "$started" ] && kill "$started" 2>/dev/null || true
+echo "--- stats ($OUT/stats.txt)"; tail -n "$(( T / 10 + 2 ))" "$OUT/stats.txt"
+echo "--- tape ($OUT/tape.txt)"; tail -n 15 "$OUT/tape.txt"
