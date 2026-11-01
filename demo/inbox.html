@@ -1,0 +1,48 @@
+<!doctype html>
+<!-- Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. CONFIDENTIAL. Perch demo: a made-up inbox (local only). -->
+<html lang="en"><head><meta charset="utf-8"><title>Inbox</title>
+<style>
+*{box-sizing:border-box} body{margin:0;font:15px/1.35 system-ui,Segoe UI,Helvetica,Arial,sans-serif;color:#202124;background:#f6f8fc}
+header{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:18px;height:64px;padding:0 20px;background:#f6f8fc;border-bottom:1px solid #e3e6eb}
+header h1{font-size:22px;font-weight:500;margin:0;color:#444} header .search{flex:1;max-width:620px;height:44px;border-radius:22px;background:#e9eef6;padding:12px 20px;color:#5f6368}
+header .today{color:#5f6368;font-size:14px}
+.wrap{display:flex} nav{width:200px;padding:14px 10px;flex:none} nav div{padding:7px 14px;border-radius:16px;color:#444;font-size:14px}
+nav div.on{background:#d3e3fd;font-weight:600;color:#041e49}
+main{flex:1;min-width:0;background:#fff;border-radius:14px;margin:0 16px 16px 0;min-height:1200px}
+.row{display:flex;gap:14px;align-items:center;padding:12px 18px;border-bottom:1px solid #eef0f3;text-decoration:none;color:#202124}
+.row:hover{box-shadow:inset 1px 0 0 #dadce0,inset -1px 0 0 #dadce0,0 1px 2px rgba(60,64,67,.3)}
+.row .from{width:190px;flex:none} .row .subj{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .subj span{color:#5f6368} .row .when{width:70px;text-align:right;color:#5f6368;font-size:13px}
+.row.unread .from,.row.unread b{font-weight:700}
+.mail{padding:26px 36px;display:none} .mail h2{font-weight:400;font-size:24px;margin:0 0 16px} .mail .meta{color:#5f6368;font-size:14px;margin-bottom:22px}
+.mail p{max-width:720px} .back{display:inline-block;margin-bottom:16px;color:#0b57d0;text-decoration:none}
+.list-head{padding:12px 18px;color:#5f6368;font-size:13px;border-bottom:1px solid #eef0f3}
+</style></head><body>
+<header><h1>Mail</h1><div class="search">Search mail</div><div class="today">Today: Thursday 6 November</div></header>
+<div class="wrap"><nav><div class="on">Inbox 5</div><div>Starred</div><div>Snoozed</div><div>Sent</div><div>Drafts</div><div>Spam</div></nav>
+<main><div id="list"><div class="list-head">Primary · 14 conversations</div></div><div class="mail" id="mail"></div></main></div>
+<script>
+const M = [
+ ["Priya Shah","Slides for the client call","Reply before 12 noon today with the final pricing slide. The call starts at 1pm and I need your sign-off.","09:12",1],
+ ["Weekly Digest","Ten gadgets you missed this week","Our editors picked the best launches of the week. No reply needed.","08:40",0],
+ ["Tom Wright","Boiler engineer visit","Please reply by 6pm today: the gas engineer can come tomorrow (Friday) between 9 and 11 to fix the boiler. Confirm someone will be in, otherwise the next slot is in two weeks. Tom (landlord)","08:05",1],
+ ["Parcel Tracking","Your parcel is out for delivery","Your parcel 4471 will arrive today between 2pm and 4pm. Nothing to do.","07:58",0],
+ ["Mum","Sunday lunch?","Let me know by Saturday if you are coming for Sunday lunch, so I know how much to cook. Love, Mum","Wed",1],
+ ["City Bank","Your statement is ready","Your October statement is ready to view online. This mailbox is not monitored.","Wed",0],
+ ["Bright Smile Dental","Appointment on Monday 10 Nov, 10:30","Reply YES today to keep your appointment on Monday at 10:30. Unconfirmed appointments are released tomorrow morning.","Wed",1],
+ ["Garden Centre","20% off bulbs this weekend","Spring bulbs are in. Offer ends Sunday.","Wed",0],
+ ["Oakfield Primary School","Museum trip consent form","Reply by the end of today with consent and the £8 payment for the Year 4 museum trip.","Tue",1],
+ ["Running Club","Saturday parkrun results","Well done to everyone who ran. Results are on the club page.","Tue",0],
+ ["Alex Chen","Photos from the wedding","Here are the photos I promised! No rush to reply, enjoy them.","Mon",0],
+ ["Energy Co","Your bill is ready","Your bill for October is £84.20. It will be paid by direct debit on 14 November.","Mon",0],
+ ["IT Helpdesk","Password expires in 10 days","Your work password expires on 16 November. Change it any time before then.","Mon",0],
+ ["Book Club","Next month's book","We are reading 'The Remains of the Day'. Meeting on 4 December.","Sun",0]];
+const list = document.getElementById("list"), mail = document.getElementById("mail");
+M.forEach((m, i) => { const a = document.createElement("a"); a.className = "row" + (m[4] ? " unread" : ""); a.href = "#m" + i;
+  a.innerHTML = `<div class="from">${m[0]}</div><div class="subj"><b>${m[1]}</b> <span>- ${m[2]}</span></div><div class="when">${m[3]}</div>`; list.appendChild(a); });
+function route() { const k = /^#m(\d+)$/.exec(location.hash);
+  if (k && M[+k[1]]) { const m = M[+k[1]]; list.style.display = "none"; mail.style.display = "block"; scrollTo(0, 0);
+    mail.innerHTML = `<a class="back" href="#">← Back to Inbox</a><h2>${m[1]}</h2><div class="meta">From: ${m[0]} · ${m[3]}</div><p>${m[2]}</p>`; }
+  else { list.style.display = "block"; mail.style.display = "none"; } }
+addEventListener("hashchange", route); route();
+</script></body></html>

@@ -1,0 +1,304 @@
+<!doctype html>
+<!-- Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. CONFIDENTIAL: Perch demo, this box only. -->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Perch demo</title>
+<style>
+:root{--bg:#eef1f3;--panel:#fff;--ink:#17232c;--ink2:#4a5863;--muted:#6f7c87;--rule:#d3dae0;--shot:#eb6834;--perch:#2a78d6;--perch-soft:rgba(42,120,214,.16);--gone:rgba(111,124,135,.5);--screen:#f7f9fa;
+  --sans:"Atkinson Hyperlegible","Noto Sans",system-ui,sans-serif;--mono:"DejaVu Sans Mono","Noto Mono",monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#11181d;--panel:#1a2329;--ink:#edf1f3;--ink2:#b9c4cc;--muted:#8d9aa5;--rule:#2c3942;--shot:#d95926;--perch:#3987e5;--perch-soft:rgba(57,135,229,.2);--gone:rgba(141,154,165,.45);--screen:#141c21;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#11181d;--panel:#1a2329;--ink:#edf1f3;--ink2:#b9c4cc;--muted:#8d9aa5;--rule:#2c3942;--shot:#d95926;--perch:#3987e5;--perch-soft:rgba(57,135,229,.2);--gone:rgba(141,154,165,.45);--screen:#141c21;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 var(--sans)}
+.page{max-width:1500px;margin:0 auto;padding:28px 24px 60px}
+header{display:grid;grid-template-columns:1fr auto;gap:8px 32px;align-items:end}
+h1{font-size:44px;line-height:1.05;margin:0;font-weight:700;letter-spacing:-.01em}
+.lede{margin:6px 0 0;color:var(--ink2);max-width:68ch}
+.ask{grid-column:1/-1;display:flex;gap:16px;align-items:center;margin-top:18px}
+.bubble{flex:1;background:var(--panel);border:1px solid var(--rule);border-radius:18px 18px 18px 4px;padding:12px 18px;font-size:18px}
+.bubble small{display:block;color:var(--muted);font-size:13px}
+button{font:inherit;font-weight:700;font-size:17px;padding:12px 22px;border-radius:10px;border:0;background:var(--ink);color:var(--bg);cursor:pointer}
+.btns{display:flex;flex-direction:column;gap:8px}
+button.second{background:transparent;color:var(--ink);border:2px solid var(--ink);padding:10px 20px}
+button:disabled{opacity:.45;cursor:default}
+button:focus-visible{outline:3px solid var(--perch);outline-offset:3px}
+#status{color:var(--muted);font-size:14px;min-height:21px;margin:10px 0 0}
+
+/* the race: one shared scale for both bots' tokens */
+.race{margin:26px 0 8px;display:grid;grid-template-columns:130px 1fr 150px;gap:10px 16px;align-items:center}
+.race .who{font-weight:700}
+.race .track{height:30px;background:var(--panel);border:1px solid var(--rule);border-radius:6px;overflow:hidden}
+.race .fill{height:100%;width:0;border-radius:0 4px 4px 0;transition:width .6s ease-out}
+.race .num{font-size:30px;font-weight:700;text-align:right;font-variant-numeric:tabular-nums;line-height:1}
+.race .num small{display:block;font-size:12px;font-weight:400;color:var(--muted)}
+.race-note{color:var(--muted);font-size:13px;margin:0 0 18px}
+.fill.shot{background:var(--shot)} .fill.perch{background:var(--perch)}
+
+.lanes{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+.lane{background:var(--panel);border:1px solid var(--rule);border-radius:14px;padding:16px 18px 18px;min-width:0}
+.lane h2{margin:0;font-size:22px;display:flex;align-items:center;gap:10px}
+.lane h2 i{width:14px;height:14px;border-radius:3px;display:inline-block}
+.lane .how{margin:2px 0 12px;color:var(--ink2);font-size:14px}
+.monitor{position:relative;aspect-ratio:16/10;background:var(--screen);border:1px solid var(--rule);border-radius:8px;overflow:hidden}
+.monitor img,.monitor canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.monitor .empty{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);font-size:14px;text-align:center;padding:20px}
+.monitor .tag{position:absolute;right:8px;bottom:8px;background:var(--panel);border:1px solid var(--rule);border-radius:6px;padding:2px 8px;font-size:12px;color:var(--ink2)}
+.thinking .monitor{box-shadow:0 0 0 3px var(--rule)}
+.sent{margin:10px 0 0;font-size:13px;color:var(--ink2)}
+.lines{margin:6px 0 0;height:132px;overflow:auto;background:var(--screen);border:1px solid var(--rule);border-radius:8px;padding:8px 10px;font:12px/1.45 var(--mono);white-space:pre-wrap;word-break:break-all}
+.lines .add{color:var(--perch)} .lines .gone{color:var(--muted)} .lines .shape{color:var(--muted)}
+.facts{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:12px 0 0}
+.facts div{border-top:2px solid var(--rule);padding-top:4px;font-size:13px;color:var(--muted)}
+.facts b{display:block;font-size:19px;color:var(--ink);font-variant-numeric:tabular-nums}
+.log{margin:12px 0 0;padding:0;list-style:none;font-size:14px;max-height:230px;overflow:auto}
+.log li{padding:6px 0;border-top:1px solid var(--rule)}
+.log li.model{color:var(--ink2)} .log li.model::before{content:"model: ";color:var(--muted)}
+.log li.done{font-weight:700}
+
+/* results */
+#results{display:none;margin-top:34px}
+#results h2{font-size:32px;margin:0 0 4px;line-height:1.15}
+#results .sub{color:var(--ink2);margin:0 0 20px;max-width:80ch}
+.graphs{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+.graph{background:var(--panel);border:1px solid var(--rule);border-radius:14px;padding:16px 18px}
+.graph h3{margin:0 0 10px;font-size:20px;display:flex;align-items:center;gap:10px}
+.graph h3 i{width:14px;height:14px;border-radius:3px;display:inline-block}
+.row{display:grid;grid-template-columns:150px 1fr;gap:4px 14px;align-items:center;padding:7px 0;border-top:1px solid var(--rule)}
+.row .name{font-size:14px;color:var(--ink2)}
+.row .bar{position:relative;height:16px}
+.row .bar span{position:absolute;left:0;top:0;bottom:0;border-radius:0 4px 4px 0;min-width:2px}
+.row .val{grid-column:2;font-size:13px;color:var(--ink2);font-variant-numeric:tabular-nums}
+.row.key{padding:12px 0}
+.row.key .name{font-weight:700;color:var(--ink);font-size:15px}
+.row.key .bar{height:34px}
+.row.key .val{font-size:26px;font-weight:700;color:var(--ink)}
+.row.key .val small{font-size:14px;font-weight:400;color:var(--ink2)}
+.answers{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:22px}
+.answer{background:var(--panel);border:1px solid var(--rule);border-radius:14px;padding:16px 18px}
+.answer h3{margin:0 0 6px;font-size:18px}
+.answer ul{margin:6px 0 0;padding-left:20px}
+.answer .ok::marker{content:"✓  "} .answer .no::marker{content:"✗  "}
+.answer blockquote{margin:6px 0 10px;padding:6px 12px;border-left:3px solid var(--rule);color:var(--ink2);font-size:14px}
+.method{color:var(--muted);font-size:13px;margin-top:22px;max-width:100ch}
+#tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--bg);font-size:13px;padding:6px 9px;border-radius:6px;display:none;max-width:280px;z-index:9}
+@media (max-width:900px){.lanes,.graphs,.answers{grid-template-columns:1fr}.race{grid-template-columns:90px 1fr 110px}.facts{grid-template-columns:repeat(2,1fr)}h1{font-size:34px}header{grid-template-columns:1fr}}
+@media (prefers-reduced-motion:reduce){.race .fill{transition:none}}
+</style></head><body>
+<div class="page">
+<header>
+  <div><h1>Perch</h1>
+  <p class="lede">One everyday job, done twice by the same local model with the same hands: they open the inbox and each unread email in turn. The left bot sees the screen the usual way, as screenshots. The right bot sees it through Perch: the words and buttons, then only what changed.</p></div>
+  <div class="ask"><div class="bubble"><small>Asked of both bots</small><span id="task">Go through my unread emails. Which need a reply from me today? Draft the replies.</span></div>
+  <div class="btns"><button id="replay" hidden>Watch the last run side by side</button><button id="go" class="second">Run it live</button></div></div>
+</header>
+<p id="status" role="status">Ready.</p>
+
+<div class="race" aria-label="Tokens so far">
+  <span class="who">Screenshots</span><div class="track"><div class="fill shot" id="rs"></div></div><div class="num" id="ns">0<small>tokens</small></div>
+  <span class="who">Perch</span><div class="track"><div class="fill perch" id="rp"></div></div><div class="num" id="np">0<small>tokens</small></div>
+</div>
+<p class="race-note">Tokens as a chat model like Claude bills them: every call reads the whole conversation again. Text is counted by the model itself; each 1280×800 screenshot counts at Claude's <span id="imgtok">1,365</span> tokens.</p>
+
+<div class="lanes">
+  <section class="lane" id="lane-shot">
+    <h2><i style="background:var(--shot)"></i>Screenshot bot</h2>
+    <p class="how">What the model is sent: the whole screen as a picture, after every action.</p>
+    <div class="monitor"><div class="empty" id="shot-empty">The screenshots the model reads appear here.</div><img id="shot-img" alt="The last screenshot sent to the model" hidden><span class="tag" id="shot-tag" hidden></span></div>
+    <p class="sent" id="shot-sent">Nothing sent yet.</p>
+    <div class="facts"><div>Time<b id="shot-s">0 s</b></div><div>Energy<b id="shot-j">0 J</b></div><div>Processor, all cores<b id="shot-cpu">0 s</b></div><div>Looks<b id="shot-looks">0</b></div></div>
+    <ul class="log" id="shot-log"></ul>
+  </section>
+  <section class="lane" id="lane-perch">
+    <h2><i style="background:var(--perch)"></i>Perch bot</h2>
+    <p class="how">What the model is sent, drawn for you: every box is one line Perch gave the model. New lines light up; the rest it already knows.</p>
+    <div class="monitor"><div class="empty" id="perch-empty">What Perch tells the model appears here.</div><canvas id="perch-cv" width="1280" height="800" aria-label="A drawing of the lines Perch sent to the model" hidden></canvas><span class="tag" id="perch-tag" hidden></span></div>
+    <p class="sent" id="perch-sent">Nothing sent yet.</p>
+    <div class="lines" id="perch-lines" aria-label="The exact lines the model read"></div>
+    <div class="facts"><div>Time<b id="perch-s">0 s</b></div><div>Energy<b id="perch-j">0 J</b></div><div>Processor, all cores<b id="perch-cpu">0 s</b></div><div>Looks<b id="perch-looks">0</b></div></div>
+    <ul class="log" id="perch-log"></ul>
+  </section>
+</div>
+
+<section id="results" aria-live="polite">
+  <h2 id="headline"></h2>
+  <p class="sub" id="subline"></p>
+  <div class="graphs"><div class="graph" id="g-shot"></div><div class="graph" id="g-perch"></div></div>
+  <div class="answers"><div class="answer" id="a-shot"></div><div class="answer" id="a-perch"></div></div>
+  <p class="method">How it was measured: both bots ran on this box, Perch first and then screenshots (one at a time, so neither upsets the other's place in the model), with the same local model (gemma-chuck, 7.5B) at temperature 0 and the same hands. Time, energy and processor count only each bot's own steps. Energy is the processor package's own meter (it includes the model, which runs on the processor). Local-model tokens are what the model reports it processed; it keeps the start of a conversation it has already read, so this is lower than the billed figure. Nothing left this box.</p>
+</section>
+</div>
+<div id="tip" role="tooltip"></div>
+<script>
+const $ = id => document.getElementById(id), fmt = n => Math.round(n).toLocaleString("en-GB");
+const C = { shot: { claude: 0 }, perch: { claude: 0 } };
+let max = 1;
+
+function race() {
+  max = Math.max(max, C.shot.claude, C.perch.claude, 1);
+  $("rs").style.width = (100 * C.shot.claude / max) + "%"; $("rp").style.width = (100 * C.perch.claude / max) + "%";
+  $("ns").firstChild.nodeValue = fmt(C.shot.claude); $("np").firstChild.nodeValue = fmt(C.perch.claude);
+}
+function log(lane, text, cls) {
+  const li = document.createElement("li"); li.textContent = text; if (cls) li.className = cls;
+  const ul = $(lane + "-log"); ul.appendChild(li); ul.scrollTop = ul.scrollHeight;
+}
+const secs = s => s < 90 ? s.toFixed(0) + " s" : Math.floor(s / 60) + " min " + Math.round(s % 60) + " s";
+const joules = j => j == null ? "n/a" : j >= 1000 ? (j / 1000).toFixed(1) + " kJ" : Math.round(j) + " J";
+const bytes = b => b >= 1e6 ? (b / 1e6).toFixed(1) + " MB" : b >= 1e3 ? (b / 1e3).toFixed(1) + " KB" : b + " B";
+
+// ---- the human view of what Perch tells the model ----
+const cv = $("perch-cv"), g = cv.getContext("2d");
+const items = new Map(), told = new Map();   // key -> {kind,n,x,y,w,h,text,born,state}
+let fading = [];
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+function unq(s) { return s.replace(/\\n/g, " ").replace(/\\(.)/g, "$1"); }
+function parse(lines) {
+  const now = performance.now();
+  for (const raw of lines.split("\n")) {
+    let m, l = raw;
+    if (!l || l[0] === "#" || l[0] === "P" || l[0] === "!") continue;
+    if ((m = /^- ([abis]) (\d+)(?:-(\d+))?$/.exec(l))) { for (let n = +m[2]; n <= +(m[3] || m[2]); n++) gone(m[1] + n, now); continue; }
+    if ((m = /^- t (-?\d+),(-?\d+)$/.exec(l))) { for (const [k, it] of items) if (it.kind === "t" && it.x === +m[1] && it.y === +m[2]) gone(k, now); continue; }
+    if ((m = /^= ([abis]) (\d+)(?:-(\d+))?(?: (-?\d+),(-?\d+) (\d+)x(\d+))?$/.exec(l))) {
+      for (let n = +m[2]; n <= +(m[3] || m[2]); n++) { const t = told.get(m[1] + n); if (!t) continue;
+        const it = { ...t, born: now, state: "back" }; if (m[4] != null) Object.assign(it, { x: +m[4], y: +m[5], w: +m[6], h: +m[7] }); items.set(m[1] + n, it); }
+      continue; }
+    if ((m = /^~ ([abis]) (\d+) (-?\d+),(-?\d+) (\d+)x(\d+)/.exec(l))) { const it = items.get(m[1] + m[2]); if (it) Object.assign(it, { x: +m[3], y: +m[4], w: +m[5], h: +m[6] }); continue; }
+    const add = l.startsWith("+ "); if (add) l = l.slice(2);
+    if ((m = /^t (-?\d+),(-?\d+) (\d+)x(\d+) '((?:[^'\\]|\\.)*)'/.exec(l))) {
+      const it = { kind: "t", x: +m[1], y: +m[2], w: +m[3], h: +m[4], text: unq(m[5]), born: now, state: "new" }; items.set("t@" + m[1] + "," + m[2], it); continue; }
+    if ((m = /^([abis]) (\d+) (-?\d+),(-?\d+) (\d+)x(\d+) (?:\S+ \S+ )?'((?:[^'\\]|\\.)*)'/.exec(l))) {
+      const it = { kind: m[1], n: +m[2], x: +m[3], y: +m[4], w: +m[5], h: +m[6], text: unq(m[7]), born: now, state: "new" };
+      items.set(m[1] + m[2], it); told.set(m[1] + m[2], it); }
+  }
+  draw();
+}
+function gone(k, now) { const it = items.get(k); if (!it) return; items.delete(k); fading.push({ ...it, died: now }); }
+function box(it, a, fillA) {
+  const pc = css("--perch");
+  if (fillA > 0) { g.globalAlpha = fillA; g.fillStyle = pc; g.fillRect(it.x, it.y, it.w, it.h); }
+  g.globalAlpha = a; g.strokeStyle = it.kind === "t" ? css("--muted") : pc; g.lineWidth = it.kind === "t" ? 1 : 2;
+  g.strokeRect(it.x + .5, it.y + .5, it.w - 1, it.h - 1);
+  g.fillStyle = css("--ink"); const fs = Math.max(11, Math.min(18, it.h * .5)); g.font = `${fs}px ${css("--mono")}`; g.textBaseline = "middle";
+  g.save(); g.beginPath(); g.rect(it.x, it.y, it.w, it.h); g.clip();
+  let tx = it.x + 6;
+  if (it.kind !== "t") { const tag = String(it.n); g.fillStyle = pc; g.fillRect(it.x, it.y, 12 + tag.length * fs * .62, it.h); g.fillStyle = "#fff"; g.fillText(tag, it.x + 5, it.y + it.h / 2); tx = it.x + 18 + tag.length * fs * .62; g.fillStyle = css("--ink"); }
+  g.fillText(it.text, tx, it.y + it.h / 2); g.restore(); g.globalAlpha = 1;
+}
+function draw() {
+  const now = performance.now(); let busy = false;
+  g.fillStyle = css("--screen"); g.fillRect(0, 0, 1280, 800);
+  fading = fading.filter(f => now - f.died < 900);
+  for (const f of fading) { const a = still ? 0 : 1 - (now - f.died) / 900; g.setLineDash([6, 5]); box({ ...f, text: "" }, a * .7, 0); g.setLineDash([]); busy = true; }
+  for (const it of items.values()) {
+    const age = now - it.born, fresh = still ? 0 : Math.max(0, 1 - age / 1600);
+    box(it, 1, it.state === "new" ? .18 + .4 * fresh : .06 + .25 * fresh); if (fresh > 0) busy = true;
+  }
+  if (busy) requestAnimationFrame(draw);
+}
+
+// ---- events from the bots ----
+function show(ev) {
+  const L = ev.lane;
+  switch (ev.kind) {
+    case "start":
+      $("go").disabled = true; $("status").textContent = "Running. Perch goes first, then the screenshot bot does the same job."; $("imgtok").textContent = fmt(ev.img_tokens); break;
+    case "note": $("status").textContent = ev.text + "…"; break;
+    case "begin": $("status").textContent = (L === "shot" ? "Now the screenshot bot" : "Perch bot") + " is doing the job."; $("lane-" + L).scrollIntoView({ block: "nearest", behavior: still ? "auto" : "smooth" }); break;
+    case "see":
+      if (L === "shot") { $("shot-empty").hidden = true; const im = $("shot-img"); im.hidden = false; im.src = ev.img; $("shot-tag").hidden = false;
+        $("shot-tag").textContent = "screenshot " + (Number(ev.img.match(/shot-(\d+)/)[1]) + 1); $("shot-sent").textContent = `Last look: a ${bytes(ev.bytes)} picture, ${fmt(ev.tokens)} tokens.`; }
+      else { $("perch-empty").hidden = true; cv.hidden = false; parse(ev.lines); $("perch-tag").hidden = false; $("perch-tag").textContent = items.size + " things on screen";
+        $("perch-sent").textContent = `Last look: ${ev.lines.split("\n").length} lines, ${bytes(ev.bytes)}, ${fmt(ev.tokens)} tokens.`;
+        const box = $("perch-lines"); box.textContent = "";
+        for (const l of ev.lines.split("\n")) { const s = document.createElement("div"); s.textContent = l; s.className = l[0] === "#" ? "shape" : l[0] === "+" ? "add" : (l[0] === "-" || l[0] === "=") ? "gone" : ""; box.appendChild(s); } }
+      break;
+    case "think": $("lane-" + L).classList.add("thinking"); if (!replaying) $("status").textContent = (L === "shot" ? "Screenshot bot" : "Perch bot") + ": the model is reading…"; break;
+    case "say": $("lane-" + L).classList.remove("thinking"); log(L, ev.text, "model"); break;
+    case "step": log(L, ev.text); break;
+    case "stats":
+      C[L].claude = ev.claude; race();
+      $(L + "-s").textContent = secs(ev.s); $(L + "-j").textContent = joules(ev.j); $(L + "-cpu").textContent = secs(ev.cpu); $(L + "-looks").textContent = ev.looks; break;
+    case "finished": log(L, "Done in " + secs(ev.wall != null ? ev.wall : ev.s) + " on the clock", "done"); if (ev.wall != null) $(L + "-s").textContent = secs(ev.wall); break;
+    case "done": results(ev.result); $("go").disabled = false; $("replay").disabled = false; $("status").textContent = replaying ? "Replay finished: the measured run, both bots started together." : "Finished."; replaying = false; lastRun(); break;
+    case "error": $("status").textContent = "Stopped: " + ev.text + ". Run it again once the cause is fixed."; $("go").disabled = false; break;
+  }
+}
+
+function results(r) {
+  const s = r.shot, p = r.perch, x = s.claude / Math.max(1, p.claude);
+  $("headline").textContent = `Perch used ${x.toFixed(1)}× fewer tokens for the same job`;
+  $("subline").textContent = `${fmt(s.claude)} tokens with screenshots against ${fmt(p.claude)} with Perch. ` +
+    `The whole run took ${secs(r.total_wall || 0)} on the clock: Perch ${secs(p.wall)}, screenshots ${secs(s.wall)}. Perch was ${(s.wall / Math.max(.1, p.wall)).toFixed(1)}× quicker` + (s.j && p.j ? ` and used ${(s.j / Math.max(1, p.j)).toFixed(1)}× less energy.` : ".");
+  const rows = [
+    ["claude", "Tokens billed", v => fmt(v), true],
+    ["local", "Local-model tokens", v => fmt(v)],
+    ["wall", "Time (wall clock)", v => secs(v)],
+    ["j", "Energy", v => joules(v)],
+    ["cpu", "Processor time (all 12 cores)", v => secs(v)],
+    ["bytes", "Sent to the model", v => bytes(v)],
+    ["looks", "Looks at the screen", v => fmt(v)]];
+  for (const [lane, name, col] of [["shot", "Screenshot bot", "--shot"], ["perch", "Perch bot", "--perch"]]) {
+    const el = $("g-" + lane); el.innerHTML = `<h3><i style="background:var(${col})"></i>${name}</h3>`;
+    for (const [k, label, f, key] of rows) {
+      const v = r[lane][k], m = Math.max(r.shot[k] || 0, r.perch[k] || 0) || 1, row = document.createElement("div");
+      row.className = "row" + (key ? " key" : "");
+      const other = r[lane === "shot" ? "perch" : "shot"][k];
+      row.innerHTML = `<span class="name">${label}</span><div class="bar"><span style="width:${v == null ? 0 : 100 * v / m}%;background:var(${col})"></span></div><span class="val">${v == null ? "n/a" : f(v)}${key && lane === "perch" ? ` <small>${x.toFixed(1)}× fewer</small>` : ""}</span>`;
+      row.dataset.tip = `${name}, ${label.toLowerCase()}: ${v == null ? "n/a" : f(v)}. Other bot: ${other == null ? "n/a" : f(other)}.`;
+      el.appendChild(row);
+    }
+  }
+  for (const [lane, name] of [["shot", "Screenshot bot's answer"], ["perch", "Perch bot's answer"]]) {
+    const b = r[lane], el = $("a-" + lane), hit = b.names.filter(n => r.truth.includes(n)).length;
+    el.innerHTML = `<h3>${name}</h3><p>Found ${hit} of the ${r.truth.length} emails that need a reply today${b.names.length > hit ? `, plus ${b.names.length - hit} that ${b.names.length - hit === 1 ? "does" : "do"} not` : ""}.</p>`;
+    const ul = document.createElement("ul");
+    for (const n of b.names) { const li = document.createElement("li"); li.className = r.truth.includes(n) ? "ok" : "no"; li.textContent = n; ul.appendChild(li);
+      if (b.replies[n]) { const q = document.createElement("blockquote"); q.textContent = b.replies[n]; li.appendChild(q); } }
+    for (const n of r.truth) if (!b.names.includes(n)) { const li = document.createElement("li"); li.className = "no"; li.textContent = n + " (missed)"; ul.appendChild(li); }
+    el.appendChild(ul);
+  }
+  $("results").style.display = "block"; $("results").scrollIntoView({ behavior: still ? "auto" : "smooth" });
+}
+const tip = $("tip");
+document.addEventListener("pointermove", e => { const r = e.target.closest && e.target.closest(".row");
+  if (!r) { tip.style.display = "none"; return; } tip.textContent = r.dataset.tip; tip.style.display = "block";
+  tip.style.left = Math.min(innerWidth - 300, e.clientX + 14) + "px"; tip.style.top = (e.clientY + 14) + "px"; });
+
+function reset() {
+  for (const L of ["shot", "perch"]) { $(L + "-log").textContent = ""; C[L].claude = 0; $(L + "-s").textContent = "0 s"; $(L + "-j").textContent = "0 J"; $(L + "-cpu").textContent = "0 s"; $(L + "-looks").textContent = "0"; }
+  max = 1; race(); items.clear(); told.clear(); fading = []; $("perch-lines").textContent = ""; $("results").style.display = "none";
+}
+let replaying = false, timers = [];
+async function lastRun() {
+  try { const ev = await (await fetch("/last-run")).json(); const done = ev.find(e => e.kind === "done");
+    if (!done) { $("replay").hidden = true; return null; }
+    const r = done.result, when = new Date(ev[0].t * 1000).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" });
+    $("replay").hidden = false; $("replay").textContent = `Watch the last run side by side (${SPEED}× speed, ${secs((Math.max(r.shot.wall, r.perch.wall)) / SPEED)})`;
+    $("go").textContent = `Run it live (the last run took ${secs(r.total_wall)})`;
+    if (!replaying && $("go").disabled === false) $("status").textContent = `Last run ${when}. A replay shows that run's real measured timings, both bots started together, sped up ${SPEED}×.`;
+    return ev; } catch (e) { return null; }
+}
+const SPEED = 10;
+$("replay").onclick = async () => {
+  const ev = await lastRun(); if (!ev) return;
+  timers.forEach(clearTimeout); timers = []; reset(); replaying = true; $("replay").disabled = true; $("go").disabled = true;
+  const begin = {}; for (const e of ev) if (e.lane && e.kind === "begin" && begin[e.lane] == null) begin[e.lane] = e.t;
+  let end = 0;
+  show({ kind: "start", img_tokens: (ev.find(e => e.kind === "start") || {}).img_tokens || 1365 });
+  $("status").textContent = `Replay of the measured run at ${SPEED}× speed, both bots started together.`;
+  for (const e of ev) {
+    if (!e.lane || begin[e.lane] == null || e.t < begin[e.lane]) continue;
+    const d = (e.t - begin[e.lane]) * 1000 / SPEED; end = Math.max(end, d);
+    timers.push(setTimeout(() => show(e), d));
+  }
+  const done = ev.find(e => e.kind === "done"); timers.push(setTimeout(() => show(done), end + 800));
+};
+$("go").onclick = async () => { timers.forEach(clearTimeout); timers = []; replaying = false; reset(); $("go").disabled = true; $("replay").disabled = true; const r = await fetch("/run", { method: "POST" }); if (r.status === 409) $("status").textContent = "A run is already going; following it."; };
+const es = new EventSource("/events");
+es.onmessage = e => { const ev = JSON.parse(e.data);
+  if (ev.kind === "start") { timers.forEach(clearTimeout); timers = []; replaying = false; reset(); }
+  if (replaying) return; show(ev); };
+lastRun();
+es.onerror = () => { $("status").textContent = "Lost the demo server on this box. Start it with: coop-perch-demo"; };
+</script></body></html>
