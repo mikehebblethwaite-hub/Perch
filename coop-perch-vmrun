@@ -6,7 +6,7 @@
 # $RUN/act: a bot's hands (type TEXT | key ctrl+c | move X Y | click X Y | scroll X Y up|down), one line in, "ok"/"err" back.
 # $RUN/text: the guest helper's line (virtio-serial org.coop.perch.0, not the network); the eye reads, checks and re-quotes it.
 # QMP (power, tests) at $RUN/qmp. Stops QEMU and the bus when the eye stops.
-# Env: PERCH_VM_MEM (MB, 2048), PERCH_VM_CPUS (2), PERCH_VM_ARGS (more QEMU args), PERCH_EYE_ARGS (more eye args, e.g. -t 60 -v).
+# Env: PERCH_VM_MEM (MB, 2048), PERCH_VM_CPUS (2), PERCH_VM_NIC (QEMU -nic, default user,model=virtio-net-pci), PERCH_VM_ARGS (more QEMU args), PERCH_EYE_ARGS (more eye args, e.g. -t 60 -v).
 set -e
 [ -n "$1" ] || { echo "usage: coop-perch-vmrun DISK [NAME]"; exit 2; }
 DISK=$(realpath "$1"); NAME="${2:-guest}"
@@ -23,7 +23,7 @@ qemu-system-x86_64 $KVM -m "${PERCH_VM_MEM:-2048}" -smp "${PERCH_VM_CPUS:-2}" -n
     -device qemu-xhci -device usb-tablet \
     -device virtio-serial-pci -chardev "socket,id=perchtext,path=$RUN/text,server=on,wait=off" \
     -device virtserialport,chardev=perchtext,name=org.coop.perch.0 \
-    -qmp "unix:$RUN/qmp,server=on,wait=off" -nic user,model=virtio-net-pci $PERCH_VM_ARGS & Q=$!
+    -qmp "unix:$RUN/qmp,server=on,wait=off" -nic "${PERCH_VM_NIC:-user,model=virtio-net-pci}" $PERCH_VM_ARGS & Q=$!
 trap 'kill $Q 2>/dev/null; sleep 1; kill $B 2>/dev/null' INT TERM EXIT
 set +e
 # shellcheck disable=SC2086
