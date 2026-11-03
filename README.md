@@ -66,10 +66,8 @@ See `site/demo/` for examples and the included demo scripts.
 
 If Perch saves you money, time, or tokens—consider supporting the project:
 
-- **[Ko-fi](https://ko-fi.com)** — One-time or recurring donations
-- **[Buy Me a Coffee](https://buymeacoffee.com)** — Quick coffee-sized gifts
-- **[GitHub Sponsors](https://github.com/sponsors)** — If hosted on GitHub
-- **Direct:** Email mike.hebblethwaite@gmail.com to discuss sponsorship or custom work
+- **[Ko-fi](https://ko-fi.com/mikehebblethwaite)** — One-time or recurring donations
+- **[GitHub Sponsors](https://github.com/sponsors/mikehebblethwaite)** — Recurring sponsorship
 
 Every contribution helps keep Perch free and open for everyone.
 
