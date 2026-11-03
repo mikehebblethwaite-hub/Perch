@@ -1,4 +1,5 @@
-# Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT.
+# Copyright (c) 2026 Mike J Hebblethwaite
+# Licensed under the MIT License - see LICENSE.md
 """Score a coop-perch-bench run: python3 bench-score.py tape/bench-HHMMSS"""
 import sys, os
 d = sys.argv[1]
