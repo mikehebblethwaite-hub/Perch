@@ -62,6 +62,17 @@ make
 
 See `site/demo/` for examples and the included demo scripts.
 
+## Support Perch
+
+If Perch saves you money, time, or tokens—consider supporting the project:
+
+- **[Ko-fi](https://ko-fi.com)** — One-time or recurring donations
+- **[Buy Me a Coffee](https://buymeacoffee.com)** — Quick coffee-sized gifts
+- **[GitHub Sponsors](https://github.com/sponsors)** — If hosted on GitHub
+- **Direct:** Email mike.hebblethwaite@gmail.com to discuss sponsorship or custom work
+
+Every contribution helps keep Perch free and open for everyone.
+
 ## License
 
 MIT License — see LICENSE.md for details.
@@ -69,3 +80,4 @@ MIT License — see LICENSE.md for details.
 ---
 
 Perch © 2026 Mike J Hebblethwaite
+Contact: mike.hebblethwaite@gmail.com

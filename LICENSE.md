@@ -2,6 +2,8 @@
 
 Perch (the bot's eye on the display) is open-source software by Mike J Hebblethwaite.
 
+**Contact:** mike.hebblethwaite@gmail.com
+
 ## License
 
 MIT License
@@ -14,4 +16,4 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ---
 
-© 2026 Mike J Hebblethwaite
+© 2026 Mike J Hebblethwaite — mike.hebblethwaite@gmail.com
