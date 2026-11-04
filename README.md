@@ -23,6 +23,10 @@ Perch is an open-source tool that lets bots and automated systems see your scree
   pixels on the machine itself (Tesseract: `sudo apt install tesseract-ocr`) and sent as `R` lines: no tokens, and only what
   changed. In a VM (`perch-vmlook`): the parts that changed without words. On a Linux display (`perch-look`): the
   windows that give no words, read again only when their pixels change.
+- **Words caught where they are drawn, before they become pixels:** text a web page draws on a `<canvas>` comes as words
+  (Perch notes each `fillText`/`strokeText`); an app started on Perch's display with `./perch-run APP` gives the words it
+  draws itself (Pango/Cairo, HarfBuzz) as `D` lines: exact, live, and faster than reading pixels. Reading pixels (`R`) is
+  left for what has no words anywhere before the screen: remote desktops, video, games that draw their own letters.
 - Not yet: macOS; Windows or Linux desktops without a VM.
 
 ## How a look answers (your settings)
@@ -110,6 +114,7 @@ finds the skill in `.claude/skills/perch`.
 - `perch-web`: the web for bots; `perch-look`: a bot's look at a Linux display
 - `perch-settings`, `perch_settings.py`: how a look answers (mode, line cut, picture size)
 - `perch_read.py`: reading words from pixels where an app gives none
+- `perch-text.c` (`libperch-text.so`), `perch-run`: the words an app draws, caught at the drawing call
 - `demo/`: the demos; `perch-report`: your result as a report
 - `vm-win/`: the Windows test VM
 - `site/`: the Perch website (`python3 site/build.py`), with the measured runs it shows in `site/data/`

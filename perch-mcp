@@ -90,7 +90,7 @@ TOOLS = [
     {"name": "perch_display",
      "description": "Look at a Linux display run by Perch (default :2) as the apps' own words instead of a screenshot. mode screen = "
                     "everything now, changes = only what changed since the last look. Windows that give no words are read from "
-                    "their pixels as R lines. " + SHAPE,
+                    "their pixels as R lines; apps started with perch-run give the words they draw as D lines (exact). " + SHAPE,
      "inputSchema": {"type": "object", "properties": {
          "mode": {"type": "string", "enum": ["screen", "changes"]},
          "display": {"type": "string", "description": "the X display, like :2"},

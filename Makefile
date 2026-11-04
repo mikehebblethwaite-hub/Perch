@@ -1,5 +1,7 @@
 CFLAGS ?= -O2 -Wall -Wextra
-all: perch-eye perch-feed perch-tap perch-box perch-chip perch-hen perch-wait perch-crop perch-scene perch-shotbot perch-cam perch-vm
+all: perch-eye perch-feed perch-tap perch-box perch-chip perch-hen perch-wait perch-crop perch-scene perch-shotbot perch-cam perch-vm libperch-text.so
+libperch-text.so: perch-text.c
+	$(CC) $(CFLAGS) -fPIC -shared -o $@ $< -ldl -lpthread
 perch-eye: perch-eye.c perch-box.h perch-core.h
 	$(CC) $(CFLAGS) -o $@ $< -lX11 -lXext -lXdamage -lXfixes -lm
 perch-feed: perch-feed.c
@@ -31,11 +33,12 @@ perch-vm: perch-vm.c perch-core.h perch-box.h
 VERSION ?= $(shell cat VERSION)
 PREFIX ?= /usr/local
 PRODUCT_BIN = perch-vm perch-box perch-wait perch-crop
-PRODUCT_SCRIPTS = perch-vmrun perch-act perch-web perch-vmlook perch-report perch-look perch-mcp perch-settings
+PRODUCT_SCRIPTS = perch-vmrun perch-act perch-web perch-vmlook perch-report perch-look perch-mcp perch-settings perch-run
 install: $(PRODUCT_BIN)
 	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/share/perch/guest $(DESTDIR)$(PREFIX)/lib/perch
 	install -m 644 perch_read.py perch_read_seed.json $(DESTDIR)$(PREFIX)/lib/perch/
 	install -m 644 perch_settings.py $(DESTDIR)$(PREFIX)/lib/perch/
+	install -m 644 libperch-text.so $(DESTDIR)$(PREFIX)/lib/perch/
 	install -d $(DESTDIR)$(PREFIX)/share/perch/fonts
 	install -m 644 demo/inbox.html $(DESTDIR)$(PREFIX)/share/perch/
 	install -m 644 site/assets/fonts/AtkinsonHyperlegible-Regular.ttf site/assets/fonts/AtkinsonHyperlegible-Bold.ttf site/assets/fonts/DejaVuSansMono.ttf $(DESTDIR)$(PREFIX)/share/perch/fonts/

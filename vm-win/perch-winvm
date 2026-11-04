@@ -115,7 +115,17 @@ guest) # put Perch's Windows helper (perch-guest.ps1) in: C:\perch, started at e
         scp -q -i $T/key -P $SSHP -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$f" mike@127.0.0.1:C:/perch/ || exit 1
     done
     $V 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\perch\perch-guest-task.ps1' ;;
-stop)  up && { $V 'Stop-Computer -Force' >/dev/null 2>&1; for i in $(seq 60); do up || break; sleep 2; done; up && kill "$(cat $T/vm.pid)"; }; echo stopped ;;
+stop)  up && { $V 'Stop-Computer -Force' >/dev/null 2>&1; for i in $(seq 60); do up || break; sleep 2; done; up && kill "$(cat $T/vm.pid)"; }
+       # run under Perch (perch): no pid file here; press its power button through QEMU and wait for it to go
+       Q="${XDG_RUNTIME_DIR:-/tmp}/perch-vm-win/qmp"
+       if pgrep -A -f "qemu-system.*$T/disk.qcow2" >/dev/null && [ -S "$Q" ]; then
+           python3 -I -c 'import json,socket,sys
+c=socket.socket(socket.AF_UNIX); c.connect(sys.argv[1]); f=c.makefile("rw"); f.readline()
+for m in ({"execute": "qmp_capabilities"}, {"execute": "system_powerdown"}): f.write(json.dumps(m) + "\n"); f.flush(); f.readline()' "$Q"
+           for i in $(seq 90); do pgrep -A -f "qemu-system.*$T/disk.qcow2" >/dev/null || break; sleep 2; done
+       fi
+       if pgrep -A -f "qemu-system.*$T/disk.qcow2" >/dev/null; then echo "still running (Windows did not shut down in 3 minutes)"; exit 1; fi
+       echo stopped ;;
 ssh)   shift; exec $V "$@" ;;
 status) if up; then echo "running (VNC 127.0.0.1:5991; clipboard-enabled SPICE 127.0.0.1:5992; ssh: perch-winvm ssh)"
         elif pgrep -A -f -- '-name perch-win ' >/dev/null; then echo "running under Perch (look: perch-vmlook win; hands: perch-act win; ssh: perch-winvm ssh)"

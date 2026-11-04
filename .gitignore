@@ -24,3 +24,4 @@ __pycache__/
 site/out/
 /skill
 /perch.local.env
+libperch-text.so

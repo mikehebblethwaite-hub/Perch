@@ -211,10 +211,38 @@ try:
     last, seen = (saved["lines"], saved.get("read", {})) if isinstance(saved, dict) else (saved, {})
 except Exception:
     last, seen = None, {}
+def drawn():
+    """words apps drew themselves, caught at the drawing call by libperch-text.so (apps started with perch-run): screen box, text"""
+    d = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "perch-text", disp[1:])
+    out = []
+    for name in (os.listdir(d) if os.path.isdir(d) else []):
+        path = os.path.join(d, name)
+        if not re.fullmatch(r"0x[0-9a-f]+", name): continue
+        try:
+            body = open(path, encoding="utf-8", errors="replace").read().splitlines()
+            pid = int(body[0].split()[2]) if body and body[0].startswith("# pid ") else 0
+            if not pid or not os.path.exists(f"/proc/{pid}"): os.remove(path); continue      # the app has gone
+            g = subprocess.run(["xwininfo", "-id", name, "-display", disp], capture_output=True, text=True, timeout=5).stdout
+            ax, ay = (int(re.search(rf"Absolute upper-left {k}:\s+(-?\d+)", g).group(1)) for k in "XY")
+        except Exception:
+            continue
+        for l in body[1:]:
+            m = re.fullmatch(r"(-?\d+),(-?\d+) (\d+)x(\d+) (.+)", l)
+            if m:
+                x, y, w, h = map(int, m.groups()[:4])
+                out.append(((ax + x, ay + y, w, h), re.sub(r"\\(.)", lambda c: "\n" if c.group(1) == "n" else c.group(1), m.group(5))))
+    return out
+
 wordless = [(b, title) for b, title in x_windows() if title not in have]
+drew = drawn()                                              # also drops files of apps that have gone
 read_now, shot = {}, None
 for b, title in wordless:
     lines.append(f"X {bx(b)} {q(title)}")
+    x0, y0, w0, h0 = b
+    mine = [(db, t) for db, t in drew if x0 <= db[0] < x0 + w0 and y0 <= db[1] < y0 + h0]
+    if mine:                                                # the app's own drawn words: exact, so no reading of pixels
+        lines += [f"D {bx(db)} {q(t)}" for db, t in sorted(mine, key=lambda e: (e[0][1], e[0][0]))]
+        continue
     if os.environ.get("PERCH_READ", "on") == "off" or not reader.available():
         continue
     try:

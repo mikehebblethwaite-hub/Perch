@@ -79,6 +79,40 @@ gi.require_version("Gtk", "3.0"); gi.require_version("WebKit2", "4.1")
 from gi.repository import Gtk, WebKit2, GLib, Gio
 
 WORLD = "perch"
+# Text drawn on a canvas never reaches the page's words: it goes from the page's script straight to pixels. This runs in the
+# page's own world before its scripts and notes each fillText/strokeText (the text, where, how big, after the canvas's own
+# transform) on the canvas as data-perch-canvas, once a frame; a full clear starts a new frame. The reader turns them into
+# t lines: the words exactly as the page asked them drawn, no OCR. (A page could write that attribute itself: it can say
+# false things about its own canvas, as it can in its own text. Quoted words stay data.)
+CANVAS_HOOK = r"""(() => {
+  const P = window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype; if (!P || P.__perch) return;
+  Object.defineProperty(P, '__perch', {value: true});
+  const real = {fill: P.fillText, stroke: P.strokeText, clear: P.clearRect, rect: P.fillRect}, MAX = 400, dirty = new Set();
+  const lists = new WeakMap();
+  const flush = () => { for (const c of dirty) { try { c.setAttribute('data-perch-canvas', JSON.stringify(lists.get(c) || [])); } catch (e) {} } dirty.clear(); };
+  const touch = c => { if (!dirty.size) setTimeout(flush, 0); dirty.add(c); };
+  const whole = (ctx, x, y, w, h) => { const c = ctx.canvas, m = ctx.getTransform();
+    return m.a * x + m.e <= 0 && m.d * y + m.f <= 0 && m.a * (x + w) + m.e >= c.width && m.d * (y + h) + m.f >= c.height; };
+  const note = (ctx, text, x, y) => { try {
+    const c = ctx.canvas; if (!c || !c.setAttribute) return; text = String(text).slice(0, 200); if (!/\S/.test(text)) return;
+    const m = ctx.getTransform(), X = m.a * x + m.c * y + m.e, Y = m.b * x + m.d * y + m.f;
+    const px = parseFloat((/(\d+(?:\.\d+)?)px/.exec(ctx.font) || [0, 10])[1]) * Math.abs(m.d || 1);
+    const w = real.measure.call(ctx, text).width * Math.abs(m.a || 1);
+    const b = ctx.textBaseline, a = ctx.textAlign, rtl = ctx.direction === 'rtl';
+    const top = b === 'top' ? Y : b === 'middle' ? Y - px / 2 : (b === 'bottom' || b === 'ideographic') ? Y - px : Y - px * 0.8;
+    const left = a === 'center' ? X - w / 2 : (a === 'right' || (a === 'end' && !rtl) || (a === 'start' && rtl)) ? X - w : X;
+    let l = lists.get(c); if (!l) { l = []; lists.set(c, l); }
+    const k = Math.round(left) + ',' + Math.round(top);
+    for (let i = l.length - 1; i >= 0; i--) if (l[i][0] + ',' + l[i][1] === k) l.splice(i, 1);   // drawn again at the same place
+    l.push([Math.round(left), Math.round(top), Math.round(w), Math.round(px), text]); if (l.length > MAX) l.shift();
+    touch(c); } catch (e) {} };
+  real.measure = P.measureText;
+  P.fillText = function (t, x, y, ...r) { note(this, t, x, y); return real.fill.call(this, t, x, y, ...r); };
+  P.strokeText = function (t, x, y, ...r) { note(this, t, x, y); return real.stroke.call(this, t, x, y, ...r); };
+  const reset = (ctx, x, y, w, h) => { try { if (whole(ctx, x, y, w, h) && lists.get(ctx.canvas)?.length) { lists.set(ctx.canvas, []); touch(ctx.canvas); } } catch (e) {} };
+  P.clearRect = function (x, y, w, h) { reset(this, x, y, w, h); return real.clear.call(this, x, y, w, h); };
+  P.fillRect = function (x, y, w, h) { reset(this, x, y, w, h); return real.rect.call(this, x, y, w, h); };
+})();"""
 READER = r"""
 (function(all){
   const W = innerWidth, H = innerHeight, out = [];
@@ -147,6 +181,12 @@ READER = r"""
   }
   for (const [b, nodes] of blocks) { const r = vis(b); if (!r) continue; const tx = clean(marked(nodes, wt(b)));
     if (tx && /[\p{L}\p{N}]/u.test(tx)) out.push(['t', '', box(r), tx]); }   // no letter or digit = decoration (sparkles, dots)
+  for (const c of document.querySelectorAll('canvas[data-perch-canvas]')) {      // words the page drew on a canvas (CANVAS_HOOK)
+    const r = vis(c); if (!r || !c.width || !c.height) continue; let l; try { l = JSON.parse(c.getAttribute('data-perch-canvas')); } catch (e) { continue; }
+    if (!Array.isArray(l)) continue; const sx = r.width / c.width, sy = r.height / c.height;
+    for (const e of l.slice(-400)) { if (!Array.isArray(e) || e.length !== 5 || typeof e[4] !== 'string') continue;
+      const tx = clean(e[4]); if (!tx || !/[\p{L}\p{N}]/u.test(tx)) continue;
+      out.push(['t', '', box({left: r.left + e[0] * sx, top: r.top + e[1] * sy, width: Math.max(1, e[2] * sx), height: Math.max(1, e[3] * sy)}), tx]); } }
   return JSON.stringify({url: location.href, title: document.title.slice(0, 200), sy: Math.round(scrollY), ph: document.documentElement.scrollHeight, items: out});
 })(%s)
 """
@@ -210,7 +250,10 @@ def runs(ls):
 class Viewer:
     def __init__(self):
         ctx = WebKit2.WebContext.new_ephemeral()               # nothing on disk
-        self.web = WebKit2.WebView.new_with_context(ctx)
+        ucm = WebKit2.UserContentManager()
+        ucm.add_script(WebKit2.UserScript.new(CANVAS_HOOK, WebKit2.UserContentInjectedFrames.ALL_FRAMES,
+                                              WebKit2.UserScriptInjectionTime.START, None, None))
+        self.web = WebKit2.WebView(web_context=ctx, user_content_manager=ucm)
         st = self.web.get_settings()
         st.set_enable_developer_extras(False); st.set_enable_webaudio(False); st.set_media_playback_requires_user_gesture(True)
         st.set_enable_webgl(False); st.set_enable_page_cache(False)

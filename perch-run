@@ -1,0 +1,11 @@
+#!/bin/sh
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
+# perch-run [-d :2] APP [ARGS]: start an app on Perch's display with libperch-text.so loaded, so the words it draws itself
+# (drawing areas, custom widgets, apps with no accessibility) reach perch-look as D lines: exact, no reading of pixels.
+D=":2"; [ "$1" = "-d" ] && { D="$2"; shift 2; }
+[ $# -ge 1 ] || { echo "usage: perch-run [-d :2] APP [ARGS]"; exit 2; }
+case "$D" in :[0-9]*) ;; *) echo "perch-run: display like :2"; exit 2 ;; esac
+HERE=$(dirname "$(readlink -f "$0")")
+for L in "$HERE/libperch-text.so" /usr/lib/perch/libperch-text.so; do [ -f "$L" ] && break; done
+[ -f "$L" ] || { echo "perch-run: libperch-text.so not built (make)"; exit 1; }
+DISPLAY="$D" LD_PRELOAD="$L${LD_PRELOAD:+:$LD_PRELOAD}" exec "$@"
