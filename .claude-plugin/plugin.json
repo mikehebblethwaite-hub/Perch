@@ -1,0 +1,15 @@
+{
+  "name": "perch",
+  "displayName": "Perch",
+  "version": "0.11",
+  "description": "See screens as their own words instead of screenshots: web pages, a Linux display, and Linux or Windows virtual machines, with only what changed after the first look. A skill and a local MCP server (no network, no account).",
+  "author": { "name": "Mike J Hebblethwaite", "url": "https://github.com/mikehebblethwaite-hub" },
+  "homepage": "https://ethernest.co.uk",
+  "repository": "https://github.com/mikehebblethwaite-hub/Perch",
+  "license": "AGPL-3.0-only",
+  "keywords": ["screen", "screenshots", "accessibility", "vm", "windows", "linux", "web", "mcp", "tokens"],
+  "skills": ["./.claude/skills/"],
+  "mcpServers": {
+    "perch": { "command": "${CLAUDE_PLUGIN_ROOT}/coop-perch-mcp" }
+  }
+}

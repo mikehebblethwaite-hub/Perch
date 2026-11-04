@@ -1,0 +1,14 @@
+{
+  "name": "perch",
+  "owner": { "name": "Mike J Hebblethwaite", "url": "https://github.com/mikehebblethwaite-hub" },
+  "description": "Perch: the bot's eye on the display. Screens as words, not screenshots.",
+  "plugins": [
+    {
+      "name": "perch",
+      "source": "./",
+      "description": "See screens as their own words instead of screenshots: web pages, a Linux display, Linux and Windows VMs.",
+      "category": "productivity",
+      "tags": ["screen", "screenshots", "accessibility", "mcp"]
+    }
+  ]
+}

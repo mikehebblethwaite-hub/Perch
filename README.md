@@ -66,10 +66,18 @@ It prints a short report (nothing personal) and the page to paste it into. Every
 **The Windows demo** needs a Windows 11 VM run by Perch: see `vm-win/coop-perch-winvm` (it builds one hands-off from
 Microsoft's ISO), then `coop-perch-winvm guest` to put the helper in, and `demo/coop-perch-demo-win`.
 
-## Use it with Claude Code
+## Use it with Claude Code (or any MCP app)
 
-Perch comes with a Claude Code skill (`.claude/skills/perch/SKILL.md`). Open Claude Code in the Perch folder and type `/perch`,
-or just ask it to look at a page or a screen: it reads Perch's lines instead of taking screenshots.
+Install Perch as a plugin (Claude Code 2.1.275 or later), then build it once in the plugin's folder (`make`) for the display and VM eyes:
+
+```
+/plugin install perch --marketplace mikehebblethwaite-hub/Perch
+```
+
+It brings a skill (`/perch`) and an MCP server, `coop-perch-mcp`, with the tools perch_web, perch_display, perch_vm_look,
+perch_vm_read, perch_vm_act, perch_pixels and perch_status. The server runs on your machine only (stdin/stdout, no network,
+no account). Any other MCP app can use it too: point it at `coop-perch-mcp`. Inside a clone of this repo, Claude Code also
+finds the skill in `.claude/skills/perch`.
 
 ## Files
 

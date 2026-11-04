@@ -24,7 +24,13 @@ qemu-system-x86_64 $KVM -m "${PERCH_VM_MEM:-2048}" -smp "${PERCH_VM_CPUS:-2}" -n
     -device virtio-serial-pci -chardev "socket,id=perchtext,path=$RUN/text,server=on,wait=off" \
     -device virtserialport,chardev=perchtext,name=org.coop.perch.0 \
     -qmp "unix:$RUN/qmp,server=on,wait=off" -nic "${PERCH_VM_NIC:-user,model=virtio-net-pci}" $PERCH_VM_ARGS & Q=$!
-trap 'kill $Q 2>/dev/null; sleep 1; kill $B 2>/dev/null' INT TERM EXIT
+E=""
+trap 'kill $Q 2>/dev/null; [ -n "$E" ] && kill $E 2>/dev/null; sleep 1; kill $B 2>/dev/null; rm -f "$RUN/act" "$RUN/text"' INT TERM EXIT
 set +e
 # shellcheck disable=SC2086
-./coop-perch-vm -a "unix:path=$RUN/bus" -n "$NAME" -x "$RUN/text" -c "$RUN/act" $PERCH_EYE_ARGS
+./coop-perch-vm -a "unix:path=$RUN/bus" -n "$NAME" -x "$RUN/text" -c "$RUN/act" $PERCH_EYE_ARGS & E=$!
+# whichever stops first takes the other with it: the eye stopping stops QEMU, and the guest shutting down stops the eye
+while kill -0 $Q 2>/dev/null && kill -0 $E 2>/dev/null; do sleep 1; done
+kill -0 $Q 2>/dev/null || kill $E 2>/dev/null          # the guest is gone: the eye goes too
+wait $E 2>/dev/null; rc=$?
+exit $rc

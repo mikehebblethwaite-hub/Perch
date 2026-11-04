@@ -1,6 +1,6 @@
 ---
 name: perch
-description: Perch the screen instead of taking a screenshot. Use whenever you are asked to take a screenshot, look at the screen ("look at my screen", "what's on the screen", "what's on the page", "what does it say"), check a web page or a local HTML file, an app on a Perch display, or a virtual machine run by Perch (Linux or Windows), or whenever you were about to capture a screen or a page as an image. It gives the screen's own words and controls as short lines, and pixels only for what really is a picture, cropped to it.
+description: Replaces screenshots. Perch is a real display adapter for bots. Just say "look at my display" (or "look at the page", "what's on my screen") and the screen's own words come back as short lines, not a picture. Use it whenever you are asked to take a screenshot, look at the screen ("look at my screen", "what's on the screen", "what's on the page", "what does it say"), check a web page or a local HTML file, an app on a Perch display, or a virtual machine run by Perch (Linux or Windows), or whenever you were about to capture a screen or a page as an image. It gives the screen's own words and controls as short lines, and pixels only for what really is a picture, cropped to it.
 ---
 <!-- Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md. Perch skill (public). Paths are relative to the Perch folder; build first: make -->
 Read the screen's own words (Perch lines), not a picture of them. Run no screenshot tool to look. If a screenshot *file* is

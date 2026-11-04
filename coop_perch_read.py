@@ -138,6 +138,8 @@ class Memory:
             for j in sorted((k for k in glued if len(k) <= 3 and not any(c.isalnum() for c in k)), key=len, reverse=True):
                 if w.startswith(j) and len(w) > len(j) and w[len(j)].isalnum():
                     w = w[len(j):]              # junk stuck to the front of a word: "_|Invoice"
+                if w.endswith(j) and len(w) > len(j) and w[-len(j) - 1].isalnum() and j not in "'\"":
+                    w = w[:-len(j)]             # ...or to its end: "130*"
             s = self.subs.get(w)
             if s:
                 best, n = max(s.items(), key=lambda kv: kv[1])
