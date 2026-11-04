@@ -99,4 +99,8 @@ if pictures and other:
             pic["scored"] += 1; pic["right"] += said == "[" + t[4] + "]"
             print(f"  picture {t[4]!r} in the other window: {said or 'not recognised'}")
     print(f"pictures: {pic['learned']} learned in this window; in the other window {pic['right']} of {pic['scored']} recognised by their look")
-json.dump({"lines": len(truths), "rounds": ROUNDS, "pictures": pic, **tot}, open(os.path.join(os.environ["PERCH_LEARN_DIR"], "result.json"), "w"))
+out = os.path.join(P, "tape", "read-test"); os.makedirs(out, exist_ok=True)
+json.dump({"lines": len(truths), "rounds": ROUNDS, "pictures": pic, **tot}, open(os.path.join(out, "result.json"), "w"))
+import shutil  # noqa: E402
+shutil.rmtree(os.environ["PERCH_LEARN_DIR"], ignore_errors=True)       # the test's own fresh memories: not kept
+print("result: " + os.path.join(out, "result.json"))
