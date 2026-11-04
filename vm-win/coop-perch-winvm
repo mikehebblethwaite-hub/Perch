@@ -8,22 +8,32 @@
 #   start    run with VNC 127.0.0.1:5991 and SPICE 127.0.0.1:5992 (SPICE supports guest clipboard)
 #            remote-viewer spice://127.0.0.1:5992, or xtigervncviewer 127.0.0.1::5991
 #   perch    run it under Perch's VM eye
+#   guest    put Perch's Windows helper in (C:\perch, logon task PerchGuest)
 #   stop | ssh [cmd] | status | gone (delete it all)
+#   PERCH_WIN_NET=off: no internet for the guest; PERCH_WIN_FWD=guestfwd=tcp:10.0.2.100:80-cmd:...: reach a host service
 # Ports, 127.0.0.1 only: SSH 2293 (key only). Sign-in password: vm/win/password (600).
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); P=$(dirname "$HERE"); T=$P/vm/win
 [ -f "$P/perch.local.env" ] && . "$P/perch.local.env"   # local settings, not in git
 WINISO=Windows11_26H2_MultiEdition_en-GB_x64.iso; VIRTIO=virtio-win-stable.iso
-MEM=6144; CPUS=4; DISK=80G; SSHP=2293
+MEM=${PERCH_WIN_MEM:-4096}; CPUS=${PERCH_WIN_CPUS:-2}; DISK=80G; SSHP=2293
+# Hyper-V hints: without them an idle Windows keeps 1-2 host cores busy with timer work. The balloon hands memory Windows frees
+# back to the host (free page reporting), so QEMU holds what Windows uses, not all of MEM.
+CPU="host,hv_relaxed,hv_vapic,hv_spinlocks=0x1fff,hv_time,hv_vpindex,hv_synic,hv_stimer,hv_runtime,hv_frequencies,hv_reset"
+BALLOON="-device virtio-balloon-pci,free-page-reporting=on"
+# PERCH_WIN_NET=off: no internet for the guest (only SSH from this host and any PERCH_WIN_FWD rules get through)
+# PERCH_WIN_FWD: more -nic options, e.g. guestfwd=tcp:10.0.2.100:80-cmd:"nc 127.0.0.1 8097" to reach a host service
+NIC="user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$SSHP-:22"; [ "${PERCH_WIN_NET:-on}" = off ] && NIC="$NIC,restrict=on"
+[ -n "${PERCH_WIN_FWD:-}" ] && NIC="$NIC,$PERCH_WIN_FWD"
 V="ssh -i $T/key -p $SSHP -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 mike@127.0.0.1"
 up() { [ -f $T/vm.pid ] && kill -0 "$(cat $T/vm.pid)" 2>/dev/null; }
 qemu() {   # $@: extra args (install discs)
-    qemu-system-x86_64 -enable-kvm -cpu host -m $MEM -smp $CPUS -name perch-win -vga std -display none -vnc 127.0.0.1:91 \
+    qemu-system-x86_64 -enable-kvm -cpu $CPU $BALLOON -m $MEM -smp $CPUS -name perch-win -vga std -display none -vnc 127.0.0.1:91 \
         -spice addr=127.0.0.1,port=5992,disable-ticketing=on,disable-agent-file-xfer=on \
         -device virtio-serial-pci -chardev spicevmc,id=vdagent,name=vdagent \
         -device virtserialport,chardev=vdagent,name=com.redhat.spice.0 \
         -drive file=$T/disk.qcow2,if=virtio -device qemu-xhci -device usb-tablet -rtc base=localtime \
-        -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$SSHP-:22 -qmp unix:$T/qmp,server=on,wait=off \
+        -nic "$NIC" -qmp unix:$T/qmp,server=on,wait=off \
         -pidfile $T/vm.pid -daemonize "$@"
 }
 wait_ready() {   # until SSH answers and first sign-in has finished
@@ -97,8 +107,14 @@ start)
     qemu && wait_ready 120 && echo "running: VNC 127.0.0.1:5991; clipboard-enabled SPICE 127.0.0.1:5992; ssh: coop-perch-winvm ssh" ;;
 perch)
     up && { echo "it is running with VNC: coop-perch-winvm stop first"; exit 1; }
-    PERCH_VM_MEM=$MEM PERCH_VM_CPUS=$CPUS PERCH_VM_NIC="user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$SSHP-:22" \
-        PERCH_VM_ARGS="-rtc base=localtime" exec "$P/coop-perch-vmrun" $T/disk.qcow2 win ;;
+    PERCH_VM_MEM=$MEM PERCH_VM_CPUS=$CPUS PERCH_VM_CPU="$CPU" PERCH_VM_NIC="$NIC" PERCH_VM_KEYMAP="${PERCH_VM_KEYMAP:-gb}" \
+        PERCH_VM_ARGS="-rtc base=localtime,driftfix=slew -global kvm-pit.lost_tick_policy=discard $BALLOON" exec "$P/coop-perch-vmrun" $T/disk.qcow2 win ;;
+guest) # put Perch's Windows helper (coop-perch-guest.ps1) in: C:\perch, started at every sign-in in the desktop session
+    $V 'New-Item -ItemType Directory -Force C:\perch | Out-Null' || exit 1
+    for f in "$P/coop-perch-guest.ps1" "$HERE/perch-guest-task.ps1"; do
+        scp -q -i $T/key -P $SSHP -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$f" mike@127.0.0.1:C:/perch/ || exit 1
+    done
+    $V 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\perch\perch-guest-task.ps1' ;;
 stop)  up && { $V 'Stop-Computer -Force' >/dev/null 2>&1; for i in $(seq 60); do up || break; sleep 2; done; up && kill "$(cat $T/vm.pid)"; }; echo stopped ;;
 ssh)   shift; exec $V "$@" ;;
 status) up && echo "running (VNC 127.0.0.1:5991; clipboard-enabled SPICE 127.0.0.1:5992; ssh: coop-perch-winvm ssh)" || echo "not running" ;;

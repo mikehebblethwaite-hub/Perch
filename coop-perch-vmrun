@@ -6,7 +6,7 @@
 # $RUN/act: a bot's hands (type TEXT | key ctrl+c | move X Y | click X Y | scroll X Y up|down), one line in, "ok"/"err" back.
 # $RUN/text: the guest helper's line (virtio-serial org.coop.perch.0, not the network); the eye reads, checks and re-quotes it.
 # QMP (power, tests) at $RUN/qmp. Stops QEMU and the bus when the eye stops.
-# Env: PERCH_VM_MEM (MB, 2048), PERCH_VM_CPUS (2), PERCH_VM_NIC (QEMU -nic, default user,model=virtio-net-pci), PERCH_VM_ARGS (more QEMU args), PERCH_EYE_ARGS (more eye args, e.g. -t 60 -v).
+# Env: PERCH_VM_CPU (QEMU -cpu with KVM, host), PERCH_VM_KEYMAP (gb|us: the guest's keyboard layout for typing, us), PERCH_VM_MEM (MB, 2048), PERCH_VM_CPUS (2), PERCH_VM_NIC (QEMU -nic, default user,model=virtio-net-pci), PERCH_VM_ARGS (more QEMU args), PERCH_EYE_ARGS (more eye args, e.g. -t 60 -v).
 set -e
 [ -n "$1" ] || { echo "usage: coop-perch-vmrun DISK [NAME]"; exit 2; }
 DISK=$(realpath "$1"); NAME="${2:-guest}"
@@ -16,7 +16,7 @@ RUN="${XDG_RUNTIME_DIR:-/tmp}/coop-perch-vm-$NAME"
 mkdir -p "$RUN"; chmod 700 "$RUN"; rm -f "$RUN/bus" "$RUN/qmp" "$RUN/text" "$RUN/act"
 dbus-daemon --config-file=/usr/share/dbus-1/session.conf --address="unix:path=$RUN/bus" --nofork --nopidfile >/dev/null 2>&1 & B=$!
 i=0; until [ -S "$RUN/bus" ]; do i=$((i+1)); [ $i -gt 50 ] && { echo "bus did not start"; kill $B; exit 1; }; sleep 0.1; done
-KVM=""; [ -w /dev/kvm ] && KVM="-enable-kvm -cpu host"
+KVM=""; [ -w /dev/kvm ] && KVM="-enable-kvm -cpu ${PERCH_VM_CPU:-host}"
 # shellcheck disable=SC2086
 qemu-system-x86_64 $KVM -m "${PERCH_VM_MEM:-2048}" -smp "${PERCH_VM_CPUS:-2}" -name "perch-$NAME" \
     -drive "file=$DISK,if=virtio" -vga std -display "dbus,addr=unix:path=$RUN/bus" \

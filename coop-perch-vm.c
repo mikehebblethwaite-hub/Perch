@@ -342,13 +342,28 @@ static const KeyName KEYS[] = {
     {"slash", 0x35}, {"alt", 0x38}, {"space", 0x39}, {"capslock", 0x3a}, {"f1", 0x3b}, {"f2", 0x3c}, {"f3", 0x3d}, {"f4", 0x3e},
     {"f5", 0x3f}, {"f6", 0x40}, {"f7", 0x41}, {"f8", 0x42}, {"f9", 0x43}, {"f10", 0x44}, {"f11", 0x57}, {"f12", 0x58},
     {"home", 0xc7}, {"up", 0xc8}, {"pageup", 0xc9}, {"left", 0xcb}, {"right", 0xcd}, {"end", 0xcf}, {"down", 0xd0}, {"pagedown", 0xd1},
-    {"insert", 0xd2}, {"delete", 0xd3}, {"super", 0xdb}, {"altgr", 0xb8}, {"rctrl", 0x9d}, {NULL, 0}};
+    {"insert", 0xd2}, {"delete", 0xd3}, {"super", 0xdb}, {"altgr", 0xb8}, {"rctrl", 0x9d}, {"less", 0x56}, {NULL, 0}};
 static unsigned key_code(const char *n) {
     for (const KeyName *k = KEYS; k->name; k++) if (!g_ascii_strcasecmp(k->name, n)) return k->code;
     return 0;
 }
-/* a character on a US keyboard: the key, and whether shift is held */
+/* the guest's keyboard layout: PERCH_VM_KEYMAP=gb (UK) or us (default). QEMU sends key positions, the guest decides the character,
+ * so typing must use the guest's layout: on a UK keyboard " @ # ~ \ | sit on other keys than on a US one */
+static int keymap_gb = 0;
+/* a character on the guest's keyboard: the key, and whether shift is held */
 static unsigned char_key(gunichar ch, int *shift) {
+    if (keymap_gb) {
+        switch (ch) {
+        case '"': *shift = 1; return 0x03;            /* shift+2 */
+        case '@': *shift = 1; return 0x28;            /* shift+' */
+        case '#': *shift = 0; return 0x2b;            /* the key US calls backslash */
+        case '~': *shift = 1; return 0x2b;
+        case '\\': *shift = 0; return 0x56;          /* the key left of Z */
+        case '|': *shift = 1; return 0x56;
+        case 0xa3: *shift = 1; return 0x04;           /* pound sign: shift+3 */
+        case 0xac: *shift = 1; return 0x29;           /* not sign: shift+` */
+        }
+    }
     static const char *lower = "`1234567890-=qwertyuiop[]\\asdfghjkl;'zxcvbnm,./ \n\t";
     static const char *upper = "~!@#$%^&*()_+QWERTYUIOP{}|ASDFGHJKL:\"ZXCVBNM<>?";
     static const char *names[] = {"grave", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "minus", "equal", "q", "w", "e", "r", "t", "y", "u",
@@ -630,6 +645,7 @@ int main(int argc, char **argv) {
     if (!reply) { fprintf(stderr, "coop-perch-vm: QEMU did not take the listener: %s\n", err->message); return 1; }
     g_variant_unref(reply);
     if (getenv("PERCH_TICK_MS")) tick_ms = atoi(getenv("PERCH_TICK_MS"));
+    if (getenv("PERCH_VM_KEYMAP") && !g_ascii_strcasecmp(getenv("PERCH_VM_KEYMAP"), "gb")) keymap_gb = 1;
     if (text_path) g_timeout_add(500, text_connect, NULL);           /* until QEMU opens the port; then it stops */
     if (act_path && act_listen() != 0) { fprintf(stderr, "coop-perch-vm: cannot listen on %s\n", act_path); return 1; }
     if (verbose) fprintf(stderr, "listening to QEMU's console 0 on %s\n", addr);
