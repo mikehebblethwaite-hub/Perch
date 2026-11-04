@@ -117,7 +117,9 @@ guest) # put Perch's Windows helper (coop-perch-guest.ps1) in: C:\perch, started
     $V 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\perch\perch-guest-task.ps1' ;;
 stop)  up && { $V 'Stop-Computer -Force' >/dev/null 2>&1; for i in $(seq 60); do up || break; sleep 2; done; up && kill "$(cat $T/vm.pid)"; }; echo stopped ;;
 ssh)   shift; exec $V "$@" ;;
-status) up && echo "running (VNC 127.0.0.1:5991; clipboard-enabled SPICE 127.0.0.1:5992; ssh: coop-perch-winvm ssh)" || echo "not running" ;;
+status) if up; then echo "running (VNC 127.0.0.1:5991; clipboard-enabled SPICE 127.0.0.1:5992; ssh: coop-perch-winvm ssh)"
+        elif pgrep -A -f -- '-name perch-win ' >/dev/null; then echo "running under Perch (look: coop-perch-vmlook win; hands: coop-perch-act win; ssh: coop-perch-winvm ssh)"
+        else echo "not running"; fi ;;
 gone)  "$0" stop; rm -rf $T; echo removed ;;
 *) sed -n 2,10p "$0"; exit 1 ;;
 esac
