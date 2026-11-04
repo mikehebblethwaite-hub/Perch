@@ -5,7 +5,7 @@ Thank you. There are three ways to help, from easiest to hardest.
 ## 1. Test it and tell us (5 minutes)
 
 1. Follow "Try it" in the [README](README.md) up to the demo.
-2. Run `./coop-perch-report`.
+2. Run `./perch-report`.
 3. Paste what it prints into a [test report](https://github.com/mikehebblethwaite-hub/Perch/issues/new?template=test-report.yml).
 
 A report from a slow or unusual machine is just as useful as one from a fast one.

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md. Hands-off Windows 11 setup for Perch's Windows test VM (BIOS, one
-     virtio disk). @PASSWORD@ and @SSHKEY@ are filled in by coop-perch-winvm make. Drivers come from this disc's drivers\ folder
+     virtio disk). @PASSWORD@ and @SSHKEY@ are filled in by perch-winvm make. Drivers come from this disc's drivers\ folder
      (copied from the virtio-win disc): the disk (viostor), network (NetKVM), Perch's text line (vioserial), memory (Balloon). -->
 <unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
   <settings pass="windowsPE">

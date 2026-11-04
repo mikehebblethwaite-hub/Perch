@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         Thank you for testing Perch. Three steps:
-        1. In the Perch folder, run `./coop-perch-report`
+        1. In the Perch folder, run `./perch-report`
         2. Copy what it prints between the two lines of `=`
         3. Paste it below and fill in the rest
   - type: dropdown
@@ -25,7 +25,7 @@ body:
     id: report
     attributes:
       label: Your report
-      description: Paste what ./coop-perch-report printed.
+      description: Paste what ./perch-report printed.
       placeholder: "**Perch** 0.11 (commit ...)"
     validations:
       required: true

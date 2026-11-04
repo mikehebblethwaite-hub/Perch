@@ -11,8 +11,8 @@ What to look at: $ARGUMENTS (nothing = their display).
    - an address (http..., or a local .html file) → that web page
    - a word that names a VM (win, a guest's name) → that virtual machine
 2. Look. If the perch MCP tools are there (perch_display, perch_web, perch_vm_look, perch_status), use them. Otherwise run Perch's
-   tools from the Perch folder: `./coop-perch-look screen -d :0`, `./coop-perch-web look go URL`, `./coop-perch-vmlook NAME window`.
-   Not sure what is running? perch_status (or `ls $XDG_RUNTIME_DIR | grep coop-perch-vm-`).
+   tools from the Perch folder: `./perch-look screen -d :0`, `./perch-web look go URL`, `./perch-vmlook NAME window`.
+   Not sure what is running? perch_status (or `ls $XDG_RUNTIME_DIR | grep perch-vm-`).
 3. Answer in plain words: what is on the screen, what is in front, what needs attention. Quote words exactly when they matter.
    Lines read from pixels (R) may hold mistakes: say so if one matters. Say plainly what could not be read.
 4. Only if the answer is in a picture (a photo, a chart), take that one part's pixels, never the whole screen.

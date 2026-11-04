@@ -1,0 +1,258 @@
+#!/usr/bin/python3 -I
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
+# perch-settings: how Perch answers a bot's look (web pages, a display, VMs), saved in ~/.config/perch/settings.json.
+#   perch-settings                    what is set now
+#   perch-settings set KEY VALUE      mode auto|words|ocr|picture · cut 0|20-400 · zoom 25-100
+#   perch-settings reset              back to auto, 60, 50
+#   perch-settings page               a settings page on this machine only (127.0.0.1, a one-off key in the address,
+#                                          stops after 15 idle minutes), with a live preview of what a bot would get
+# One call can still choose for itself: --mode / --cut / --zoom on perch-web, perch-look, perch-vmlook,
+# or look_as / cut / zoom in the MCP tools.
+import html, json, os, secrets, subprocess, sys, threading, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path[:0] = [HERE, "/usr/lib/perch"]
+import perch_settings as settings                      # noqa: E402
+
+USAGE = ("usage: perch-settings [set mode auto|words|ocr|picture | set cut 0|20-400 | set zoom 25-100 | reset | page]")
+first = lambda *ps: next((p for p in ps if os.path.exists(p)), ps[0])
+# the made-up inbox shipped with Perch (the preview never opens a real page) and the site's fonts: in the repo, or packaged
+SAMPLE = first(os.path.join(HERE, "demo", "inbox.html"), "/usr/share/perch/inbox.html")
+FONTS = first(os.path.join(HERE, "site", "assets", "fonts"), "/usr/share/perch/fonts")
+SCREENSHOT = settings.tokens_picture(1280, 800)             # one full screenshot of the same window, for comparison
+
+
+def ok(k, v):
+    try: settings.check(k, v); return True
+    except ValueError: return False
+
+
+def show(s):
+    src = "saved" if os.path.exists(settings.PATH) else "defaults (nothing saved yet)"
+    try:
+        d = json.load(open(settings.PATH))
+        bad = [k for k in settings.DEFAULTS if k in d and not ok(k, d[k])]
+        if bad: src = f"saved, but {', '.join(bad)} not allowed there, so the default is used"
+    except (OSError, ValueError):
+        if os.path.exists(settings.PATH): src = "the saved file cannot be read, so the defaults are used"
+    return (f"mode {s['mode']}\ncut {s['cut']}\nzoom {s['zoom']}\n({src}: {settings.PATH})\n")
+
+
+args = sys.argv[1:]
+if not args:
+    sys.stdout.write(show(settings.saved())); sys.exit(0)
+if args[0] == "set" and len(args) == 3:
+    s = settings.saved()
+    try:
+        s[args[1]] = settings.check(args[1], args[2])
+    except ValueError as e:
+        sys.exit(f"err {e}")
+    sys.stdout.write(show(settings.save(s))); sys.exit(0)
+if args == ["reset"]:
+    sys.stdout.write(show(settings.save(dict(settings.DEFAULTS)))); sys.exit(0)
+if args != ["page"]:
+    sys.exit(USAGE)
+
+# ---------------- the page ----------------
+KEY = secrets.token_urlsafe(18)
+last_used = [time.time()]
+preview_lock = threading.Lock()
+
+MODES = [
+    ("auto", "Let Perch choose", "Words first. When the words would cost more than a small picture, the bot gets the picture."),
+    ("words", "Words", "The screen's own words and numbered buttons. Long lines are cut short; the bot asks for any line in full."),
+    ("ocr", "Read the pixels", "Words read from what is drawn, here on this machine. For apps that give no words of their own."),
+    ("picture", "Picture", "A small picture of the whole screen. The same price however busy the screen is."),
+]
+CUTS = [(0, "Never: whole lines"), (40, "40 characters"), (60, "60 characters"), (80, "80 characters"), (120, "120 characters")]
+ZOOMS = [(25, "25%: the size of a stamp"), (35, "35%"), (50, "50%: readable"), (75, "75%"), (100, "100%: a full screenshot")]
+
+
+def preview(s):
+    """what a bot would get from the sample inbox with these settings: the real answer and its cost"""
+    with preview_lock:
+        name = "settings-preview"
+        run = lambda *a: subprocess.run([os.path.join(HERE, "perch-web"), name, *a], capture_output=True, text=True, timeout=90).stdout
+        out = run(f"--mode={s['mode']}", f"--cut={s['cut']}", f"--zoom={s['zoom']}", "go", SAMPLE)
+        run("stop")
+    pic = None
+    for l in out.splitlines():
+        if l.startswith("pixels screen "):
+            path = l.split()[2]
+            try:
+                import base64
+                pic = "data:image/png;base64," + base64.b64encode(open(path, "rb").read()).decode()
+            except OSError:
+                pass
+            cost = int(l.rsplit("~", 1)[1].split()[0])
+            break
+    else:
+        cost = settings.tokens_words(out)
+    return {"text": out, "picture": pic, "tokens": cost, "screenshot": SCREENSHOT}
+
+
+def options(name, items, chosen):
+    return "".join(f'<option value="{v}"{" selected" if v == chosen else ""}>{html.escape(t)}</option>' for v, t in items)
+
+
+def page(s, note=""):
+    modes = "".join(
+        f'''<label class="mode"><input type="radio" name="mode" value="{v}"{" checked" if v == s["mode"] else ""}>
+        <span class="mode-name">{html.escape(t)}</span><span class="mode-what">{html.escape(d)}</span></label>''' for v, t, d in MODES)
+    return f'''<!doctype html><html lang="en-GB"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Perch settings</title><style>
+@font-face{{font-family:"Atkinson Hyperlegible";src:url(/{KEY}/font/r) format("truetype");font-weight:400}}
+@font-face{{font-family:"Atkinson Hyperlegible";src:url(/{KEY}/font/b) format("truetype");font-weight:700}}
+@font-face{{font-family:"Perch Mono";src:url(/{KEY}/font/m) format("truetype")}}
+:root{{--bg:#eef1f3;--panel:#fff;--ink:#17232c;--ink2:#4a5863;--muted:#6f7c87;--rule:#d3dae0;--shot:#eb6834;--perch:#2a78d6;--screen:#f7f9fa;
+  --sans:"Atkinson Hyperlegible",system-ui,sans-serif;--mono:"Perch Mono","DejaVu Sans Mono",monospace;color-scheme:light}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#11181d;--panel:#1a2329;--ink:#edf1f3;--ink2:#b9c4cc;--muted:#8d9aa5;--rule:#2c3942;
+  --shot:#d95926;--perch:#3987e5;--screen:#141c21;color-scheme:dark}}}}
+*{{box-sizing:border-box}}
+body{{margin:0;background:var(--bg);color:var(--ink);font:17px/1.5 var(--sans)}}
+main{{max-width:1080px;margin:0 auto;padding:32px 16px 48px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);gap:32px;align-items:start}}
+h1{{font-size:30px;line-height:1.15;margin:0 0 6px}}
+.lede{{color:var(--ink2);margin:0 0 24px;max-width:46ch}}
+fieldset{{border:0;margin:0 0 22px;padding:0}}
+legend{{font-weight:700;margin-bottom:8px;padding:0}}
+.mode{{display:grid;grid-template-columns:22px 1fr;column-gap:10px;padding:12px 14px;background:var(--panel);border:1px solid var(--rule);
+  border-radius:10px;margin-bottom:8px;cursor:pointer}}
+.mode:has(input:checked){{border-color:var(--perch);box-shadow:inset 4px 0 0 var(--perch)}}
+.mode input{{grid-row:span 2;margin:4px 0 0;accent-color:var(--perch);width:18px;height:18px}}
+.mode-name{{font-weight:700}}
+.mode-what{{color:var(--ink2);font-size:15px}}
+select{{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:8px 10px;width:100%}}
+.help{{color:var(--muted);font-size:15px;margin:6px 0 0}}
+button{{font:inherit;font-weight:700;color:#fff;background:var(--perch);border:0;border-radius:8px;padding:11px 20px;cursor:pointer}}
+:focus-visible{{outline:3px solid var(--perch);outline-offset:2px}}
+.saved{{color:var(--perch);font-weight:700;margin:10px 0 0;min-height:1.5em}}
+.err{{color:var(--shot);font-weight:700}}
+aside{{position:sticky;top:16px}}
+.cost{{display:grid;grid-template-columns:auto 1fr auto;gap:6px 12px;align-items:center;font-size:15px;margin:0 0 14px}}
+.bar{{height:14px;border-radius:7px;background:var(--rule);overflow:hidden}}
+.bar i{{display:block;height:100%;border-radius:7px;transition:width .4s ease}}
+.bar .p{{background:var(--perch)}} .bar .s{{background:var(--shot)}}
+.num{{font-family:var(--mono);font-size:14px;text-align:right;min-width:9ch}}
+.screen{{background:var(--screen);border:1px solid var(--rule);border-radius:10px;padding:12px;min-height:220px;max-height:62vh;overflow:auto}}
+.screen pre{{margin:0;font:12.5px/1.45 var(--mono);white-space:pre-wrap;word-break:break-word;color:var(--ink)}}
+.screen img{{display:block;max-width:100%;border-radius:4px}}
+.busy{{opacity:.45;transition:opacity .2s}}
+@media (max-width:820px){{main{{grid-template-columns:1fr}} aside{{position:static}}}}
+@media (prefers-reduced-motion:reduce){{.bar i,.busy{{transition:none}}}}
+</style></head><body><main>
+<section>
+<h1>How your bot sees a screen</h1>
+<p class="lede">Choose what Perch hands a bot when it looks. These settings are kept on this machine and used by every look,
+web pages, your display and virtual machines, unless the bot asks for something else on one call.</p>
+<form method="post" action="/{KEY}/save" id="f">
+<fieldset><legend>Each look gives the bot</legend>{modes}</fieldset>
+<fieldset><legend><label for="cut">Cut long lines after</label></legend>
+<select name="cut" id="cut">{options("cut", CUTS, s["cut"])}</select>
+<p class="help">Only on a whole look. Changes after an action always come whole.</p></fieldset>
+<fieldset><legend><label for="zoom">Picture size</label></legend>
+<select name="zoom" id="zoom">{options("zoom", ZOOMS, s["zoom"])}</select>
+<p class="help">Used by Picture, and by Let Perch choose when it picks the picture.</p></fieldset>
+<button type="submit">Save settings</button><p class="saved" id="note" role="status">{html.escape(note)}</p>
+</form>
+</section>
+<aside aria-labelledby="pv">
+<h2 id="pv" style="font-size:20px;margin:6px 0 4px">What the bot gets</h2>
+<p class="help" style="margin:0 0 12px">A first look at Perch's sample inbox with these settings, made just now.</p>
+<div class="cost">
+<span>This look</span><span class="bar"><i class="p" id="bp" style="width:0"></i></span><span class="num" id="np">…</span>
+<span>A screenshot</span><span class="bar"><i class="s" id="bs" style="width:100%"></i></span><span class="num" id="ns">{SCREENSHOT:,} tokens</span>
+</div>
+<div class="screen" id="screen"><pre>Making the preview…</pre></div>
+</aside>
+</main>
+<script>
+const f = document.getElementById('f'), screen = document.getElementById('screen'), note = document.getElementById('note');
+let ask = 0;
+function current() {{ const d = new FormData(f); return {{mode: d.get('mode'), cut: d.get('cut'), zoom: d.get('zoom')}}; }}
+async function refresh() {{
+  const n = ++ask; screen.classList.add('busy');
+  try {{
+    const r = await fetch('/{KEY}/preview?' + new URLSearchParams(current()));
+    const j = await r.json(); if (n !== ask) return;
+    if (!r.ok) throw new Error(j.error || 'the preview did not come');
+    screen.replaceChildren();
+    if (j.picture) {{ const im = new Image(); im.src = j.picture; im.alt = 'The picture the bot would get'; screen.append(im); }}
+    const pre = document.createElement('pre'); pre.textContent = j.text; screen.append(pre);
+    document.getElementById('np').textContent = '~' + j.tokens.toLocaleString('en-GB') + ' tokens';
+    document.getElementById('bp').style.width = Math.min(100, 100 * j.tokens / j.screenshot) + '%';
+  }} catch (e) {{
+    if (n === ask) {{ screen.replaceChildren(); const p = document.createElement('pre'); p.className = 'err';
+      p.textContent = 'No preview: ' + e.message + '. Is perch-web working? Try: perch-web test go ' + {json.dumps(SAMPLE)}; screen.append(p); }}
+  }} finally {{ if (n === ask) screen.classList.remove('busy'); }}
+}}
+f.addEventListener('change', () => {{ note.textContent = ''; refresh(); }});
+refresh();
+</script></body></html>'''
+
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+
+    def send(self, code, body, ctype="text/html; charset=utf-8"):
+        b = body if isinstance(body, bytes) else body.encode()
+        self.send_response(code); self.send_header("Content-Type", ctype); self.send_header("Content-Length", str(len(b)))
+        self.send_header("Cache-Control", "no-store"); self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+                         "font-src 'self'; img-src data:; connect-src 'self'; form-action 'self'; base-uri 'none'")
+        try:
+            self.end_headers(); self.wfile.write(b)
+        except (BrokenPipeError, ConnectionResetError):
+            pass                                            # the browser left (a reload, a closed tab): nothing to answer
+
+    def ok(self):
+        """only this machine, only by the address with this run's key (another site in the browser cannot guess it)"""
+        last_used[0] = time.time()
+        host = self.headers.get("Host", "")
+        return host == f"127.0.0.1:{PORT}" and self.path.startswith(f"/{KEY}/")
+
+    def do_GET(self):
+        if not self.ok(): return self.send(404, "not here\n", "text/plain")
+        p, _, qs = self.path[len(KEY) + 2:].partition("?")
+        if p == "":
+            return self.send(200, page(settings.saved()))
+        if p.startswith("font/") and p[5:] in ("r", "b", "m"):
+            f = {"r": "AtkinsonHyperlegible-Regular.ttf", "b": "AtkinsonHyperlegible-Bold.ttf", "m": "DejaVuSansMono.ttf"}[p[5:]]
+            try: return self.send(200, open(os.path.join(FONTS, f), "rb").read(), "font/ttf")
+            except OSError: return self.send(404, "", "text/plain")
+        if p == "preview":
+            from urllib.parse import parse_qs
+            q = {k: v[0] for k, v in parse_qs(qs).items()}
+            try:
+                s = {k: settings.check(k, q.get(k, settings.DEFAULTS[k])) for k in settings.DEFAULTS}
+            except ValueError as e:
+                return self.send(400, json.dumps({"error": str(e)}), "application/json")
+            try:
+                return self.send(200, json.dumps(preview(s)), "application/json")
+            except Exception as e:
+                return self.send(500, json.dumps({"error": type(e).__name__}), "application/json")
+        self.send(404, "not here\n", "text/plain")
+
+    def do_POST(self):
+        if not self.ok() or self.path != f"/{KEY}/save": return self.send(404, "not here\n", "text/plain")
+        from urllib.parse import parse_qs
+        n = int(self.headers.get("Content-Length") or 0)
+        if n > 2000: return self.send(413, "too long\n", "text/plain")
+        q = {k: v[0] for k, v in parse_qs(self.rfile.read(n).decode("utf-8", "replace")).items()}
+        try:
+            s = settings.save({k: q.get(k, settings.DEFAULTS[k]) for k in settings.DEFAULTS})
+        except ValueError as e:
+            return self.send(400, page(settings.saved(), "Not saved: " + str(e)))
+        self.send(200, page(s, "Saved. Every look uses these now."))
+
+
+srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+PORT = srv.server_address[1]
+print(f"Perch settings: http://127.0.0.1:{PORT}/{KEY}/\n(this machine only; stops after 15 idle minutes, or Ctrl+C)", flush=True)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+try:
+    while time.time() - last_used[0] < 900:
+        time.sleep(5)
+except KeyboardInterrupt:
+    pass
+srv.shutdown()

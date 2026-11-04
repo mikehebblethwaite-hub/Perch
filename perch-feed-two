@@ -1,0 +1,6 @@
+#!/bin/sh
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
+# perch-feed-two: a machine's memory once a second, as raw lines for perch-feed (meminfo, --, RSS_KB NAME, ==).
+# This machine by default; PERCH_FEED_HOST=name reads another machine over ssh instead.
+L='while :; do cat /proc/meminfo; echo --; ps -eo rss=,comm= --sort=-rss | head -16; echo ==; sleep 1; done'
+if [ -n "${PERCH_FEED_HOST:-}" ]; then exec ssh -o ServerAliveInterval=15 "$PERCH_FEED_HOST" "$L"; else exec sh -c "$L"; fi

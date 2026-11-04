@@ -18,12 +18,35 @@ Perch is an open-source tool that lets bots and automated systems see your scree
 - **Virtual machines (Linux or Windows guests):** Perch is the VM's only screen. QEMU hands it just the changed rectangles, so
   nothing is captured. A small helper inside the guest sends the apps' own words: AT-SPI on Linux, UI Automation on Windows.
   Perch's hands type and click through QEMU's own keyboard and mouse.
-- **Web pages:** `coop-perch-web` gives a page as words and numbered actions (`click 15`), then only what changed.
+- **Web pages:** `perch-web` gives a page as words and numbered actions (`click 15`), then only what changed.
 - **Apps that give no words** (games, canvas drawing, remote desktops, old or custom-drawn programs) are read from their
   pixels on the machine itself (Tesseract: `sudo apt install tesseract-ocr`) and sent as `R` lines: no tokens, and only what
-  changed. In a VM (`coop-perch-vmlook`): the parts that changed without words. On a Linux display (`coop-perch-look`): the
+  changed. In a VM (`perch-vmlook`): the parts that changed without words. On a Linux display (`perch-look`): the
   windows that give no words, read again only when their pixels change.
 - Not yet: macOS; Windows or Linux desktops without a VM.
+
+## How a look answers (your settings)
+
+Every look (web pages, the display, VMs) answers in one of four ways:
+
+| Mode | The bot gets | Best for |
+|---|---|---|
+| `auto` (the default) | words; a small picture instead when the words would cost more | most things |
+| `words` | the screen's own words and numbered actions, each line of a whole look cut short | reading and doing |
+| `ocr` | words read from the pixels here on the machine | apps that give no words |
+| `picture` | a zoomed-out picture of the screen: the same price however busy it is | layout, busy pages |
+
+A whole look cuts long lines (60 characters unless you choose otherwise); `read N` gives one line whole, `url N` a link's
+whole address, `read all` everything. A line just below the one above it, with the same left edge and size, writes `v`
+for its box. Changes after an action always come whole.
+
+Choose once for this machine:
+```bash
+./perch-settings page              # a settings page on this machine only, with a live preview and its cost
+./perch-settings set mode words    # or: set cut 80 · set zoom 35 · reset · (nothing: what is set now)
+```
+Or for one call: `--mode picture --zoom 35` on `perch-web`, `perch-look` and `perch-vmlook`, or `look_as`, `cut`
+and `zoom` in the MCP tools. Saved in `~/.config/perch/settings.json`.
 
 ## Try it (Ubuntu 24.04 or similar)
 
@@ -40,31 +63,31 @@ make
 
 **2. A first look (one minute)**
 ```bash
-./coop-perch-test 60
+./perch-test 60
 ```
 It draws your machine's memory on Perch's display and prints what the eye saw and what it cost.
 
 **3. The web for bots**
 ```bash
-./coop-perch-web mytest go https://example.org
-./coop-perch-web mytest stop
+./perch-web mytest go https://example.org
+./perch-web mytest stop
 ```
 
 **4. The demo: a screenshot bot against a Perch bot** (needs [Ollama](https://ollama.com) with a model that can see
 pictures, and Google Chrome for the screenshot bot)
 ```bash
 ollama pull gemma3:4b
-PERCH_MODEL=gemma3:4b demo/coop-perch-demo run
+PERCH_MODEL=gemma3:4b demo/perch-demo run
 ```
 
 **5. Send us your result**
 ```bash
-./coop-perch-report
+./perch-report
 ```
 It prints a short report (nothing personal) and the page to paste it into. Every report helps, slow machines too.
 
-**The Windows demo** needs a Windows 11 VM run by Perch: see `vm-win/coop-perch-winvm` (it builds one hands-off from
-Microsoft's ISO), then `coop-perch-winvm guest` to put the helper in, and `demo/coop-perch-demo-win`.
+**The Windows demo** needs a Windows 11 VM run by Perch: see `vm-win/perch-winvm` (it builds one hands-off from
+Microsoft's ISO), then `perch-winvm guest` to put the helper in, and `demo/perch-demo-win`.
 
 ## Use it with Claude Code (or any MCP app)
 
@@ -74,25 +97,26 @@ Install Perch as a plugin (Claude Code 2.1.275 or later), then build it once in 
 /plugin install perch --marketplace mikehebblethwaite-hub/Perch
 ```
 
-It brings a skill (`/perch`) and an MCP server, `coop-perch-mcp`, with the tools perch_web, perch_display, perch_vm_look,
+It brings a skill (`/perch`) and an MCP server, `perch-mcp`, with the tools perch_web, perch_display, perch_vm_look,
 perch_vm_read, perch_vm_act, perch_pixels and perch_status. The server runs on your machine only (stdin/stdout, no network,
-no account). Any other MCP app can use it too: point it at `coop-perch-mcp`. Inside a clone of this repo, Claude Code also
+no account). Any other MCP app can use it too: point it at `perch-mcp`. Inside a clone of this repo, Claude Code also
 finds the skill in `.claude/skills/perch`.
 
 ## Files
 
-- `coop-perch-display`, `coop-perch-tap.c`, `coop-perch-eye.c`: the display, the tap on its data line, the eye
-- `coop-perch-vm.c`, `coop-perch-vmrun`: a VM whose only screen is Perch; `coop-perch-act` (hands), `coop-perch-vmlook` (a bot's look)
-- `coop-perch-guest` (Linux) and `coop-perch-guest.ps1` (Windows): the helper inside a guest
-- `coop-perch-web`: the web for bots; `coop-perch-look`: a bot's look at a Linux display
-- `coop_perch_read.py`: reading words from pixels where an app gives none
-- `demo/`: the demos; `coop-perch-report`: your result as a report
+- `perch-display`, `perch-tap.c`, `perch-eye.c`: the display, the tap on its data line, the eye
+- `perch-vm.c`, `perch-vmrun`: a VM whose only screen is Perch; `perch-act` (hands), `perch-vmlook` (a bot's look)
+- `perch-guest` (Linux) and `perch-guest.ps1` (Windows): the helper inside a guest
+- `perch-web`: the web for bots; `perch-look`: a bot's look at a Linux display
+- `perch-settings`, `perch_settings.py`: how a look answers (mode, line cut, picture size)
+- `perch_read.py`: reading words from pixels where an app gives none
+- `demo/`: the demos; `perch-report`: your result as a report
 - `vm-win/`: the Windows test VM
 - `site/`: the Perch website (`python3 site/build.py`), with the measured runs it shows in `site/data/`
 
 ## Help make it better
 
-- **Tested it?** Run `./coop-perch-report` and paste it into a [test report](https://github.com/mikehebblethwaite-hub/Perch/issues/new?template=test-report.yml).
+- **Tested it?** Run `./perch-report` and paste it into a [test report](https://github.com/mikehebblethwaite-hub/Perch/issues/new?template=test-report.yml).
 - **Something broke?** Tell us in [Something went wrong](https://github.com/mikehebblethwaite-hub/Perch/issues/new?template=problem.yml).
 - **Want to change the code?** See [CONTRIBUTING.md](CONTRIBUTING.md). It is short.
 

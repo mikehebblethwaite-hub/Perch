@@ -1,0 +1,47 @@
+{
+ "about": "Seed lessons for perch_read: what any reader of screen pixels gets wrong, known before it has learned anything on a screen. A screen's own lessons (learned against its apps' words) count first; these only fill in. Junk: bits read at the ends of a line that are not words (window borders, icons, cursors). Numbers and words: look-alike characters, changed only where the rest of the word says which it is.",
+ "junk": [
+  "|",
+  "_|",
+  "|_",
+  "®",
+  "©",
+  "~",
+  "»",
+  "«",
+  "—",
+  "–",
+  "_",
+  "=",
+  "¢",
+  "§",
+  "°",
+  "*",
+  "•",
+  "‘",
+  "’",
+  "'",
+  "\"",
+  "@"
+ ],
+ "in_numbers": {
+  "O": "0",
+  "o": "0",
+  "D": "0",
+  "Q": "0",
+  "l": "1",
+  "I": "1",
+  "|": "1",
+  "i": "1",
+  "S": "5",
+  "B": "8",
+  "Z": "2",
+  "z": "2"
+ },
+ "in_words": {
+  "0": "o",
+  "1": "l",
+  "5": "s",
+  "|": "l"
+ }
+}

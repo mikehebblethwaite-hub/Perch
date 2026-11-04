@@ -1,0 +1,21 @@
+#!/bin/sh
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
+# perch-bench: bots vs screenshots on the same scripted screen (perch-scene on :2, 30 s).
+#   Perch bot: the tap + eye on :2, perch-wait -f (a line per settled change; crops counted from its areas).
+#   Screenshot bot: a full PNG screenshot every second, read straight from Xvfb :12 so its traffic does not load the tap.
+# Scores with bench-score.py: tokens, CPU, time to notice each event, events caught, false alarms.
+cd "$(dirname "$0")"
+O="tape/bench-$(date +%H%M%S)"; mkdir -p "$O"
+started=""
+if ! xdpyinfo -display :2 >/dev/null 2>&1; then ./perch-display >/dev/null 2>&1 & started=1; sleep 3; fi
+E=$(pgrep -A -f 'perch-eye -d :2' | head -1); T=$(pgrep -A -f 'perch-tap -d 2' | head -1)
+tk() { awk '{print $14+$15}' "/proc/$1/stat" 2>/dev/null || echo 0; }
+e0=$(tk "$E"); t0=$(tk "$T")
+/usr/bin/time -f "%U %S" -o "$O/wait.cpu" ./perch-wait -f -t 33 -q 300 > "$O/perch.txt" & pw=$!
+/usr/bin/time -f "%U %S" -o "$O/shot.cpu" ./perch-shotbot -d :12 -p 1000 -t 32 -o "$O/shots.txt" & ps=$!
+./perch-scene -d :2 -o "$O/truth.txt"
+wait $pw $ps                                                # only the two bots (the display runs on)
+e1=$(tk "$E"); t1=$(tk "$T")
+echo "$e0 $e1 $t0 $t1" > "$O/perch.cpu"
+[ -n "$started" ] && { pkill -A -f 'perch-display'; pkill -A -f 'perch-tap -d 2'; pkill -A -f 'perch-eye -d :2'; pkill -A -f 'Xvfb :12'; }
+python3 -I bench-score.py "$O"

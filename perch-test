@@ -1,0 +1,19 @@
+#!/bin/sh
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
+# perch-test [SECONDS]: display :2 (tap + Xvfb :12) up, a machine's memory drawn on it (perch-feed-two), the eye watching, the tap on the line.
+# Prints the eye's stats (its CPU, strikes, tokens text vs screenshots) and the last tape lines.
+cd "$(dirname "$0")"
+[ -f perch.local.env ] && . ./perch.local.env   # local settings, not in git
+T="${1:-120}"; D="${PERCH_DISPLAY:-2}"; OUT="${PERCH_TAPE:-$PWD/tape}"
+mkdir -p "$OUT"
+started=""
+if ! xdpyinfo -display ":$D" >/dev/null 2>&1; then ./perch-display & started=$!; sleep 1; fi
+./perch-feed-two | ./perch-feed -d ":$D" &
+sleep 2
+./perch-eye -d ":$D" -o "$OUT" -t "$T"
+pkill -A -f 'perch-feed -d' 2>/dev/null
+pkill -A -f 'while :; do cat /proc/meminfo' 2>/dev/null
+[ -n "$started" ] && { pkill -A -f 'perch-tap -d' 2>/dev/null; sleep 0.5; }
+echo "--- stats ($OUT/stats.txt)"; tail -n "$(( T / 10 + 2 ))" "$OUT/stats.txt"
+echo "--- tape ($OUT/tape.txt)"; tail -n 25 "$OUT/tape.txt"
+true

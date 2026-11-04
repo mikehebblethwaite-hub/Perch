@@ -300,5 +300,5 @@ es.onmessage = e => { const ev = JSON.parse(e.data);
   if (ev.kind === "start") { timers.forEach(clearTimeout); timers = []; replaying = false; reset(); }
   if (replaying) return; show(ev); };
 lastRun();
-es.onerror = () => { $("status").textContent = "Lost the demo server on this box. Start it with: coop-perch-demo"; };
+es.onerror = () => { $("status").textContent = "Lost the demo server on this box. Start it with: perch-demo"; };
 </script></body></html>

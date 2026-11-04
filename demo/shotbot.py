@@ -9,7 +9,7 @@ W, H = 1280, 800
 
 class Chrome:
     def __init__(self):
-        self.prof = tempfile.mkdtemp(prefix="coop-perch-demo-chrome-")
+        self.prof = tempfile.mkdtemp(prefix="perch-demo-chrome-")
         r1, w1 = os.pipe()            # we write -> chrome reads on fd 3
         r2, w2 = os.pipe()            # chrome writes on fd 4 -> we read
         def fds():

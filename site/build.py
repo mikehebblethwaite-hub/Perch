@@ -46,7 +46,7 @@ X_TOK = S["claude"] / P["claude"]
 X_TIME = S["wall"] / P["wall"]
 E_SHARE = P["j"] / S["j"]
 PERCH_SEE = [e for e in EV if e.get("lane") == "perch" and e["kind"] == "see"]
-# the same job on a Windows desktop (demo/coop-perch-demo-win): its own measured run
+# the same job on a Windows desktop (demo/perch-demo-win): its own measured run
 WRUN = os.path.join(HERE, "data", "demo-win")
 
 
@@ -78,7 +78,7 @@ only where the app said nothing. It costs no tokens: the bot is sent short lines
 
 
 def learn_section():
-    """the learning reader: one measured fair test (data/learn-test.json, from demo/coop-perch-read-test on the Windows VM)"""
+    """the learning reader: one measured fair test (data/learn-test.json, from demo/perch-read-test on the Windows VM)"""
     try:
         d = json.load(open(os.path.join(HERE, "data", "learn-test.json")))
     except (OSError, ValueError):
@@ -257,16 +257,16 @@ help_page("index.html", f"""
 help_page("getting-started.html", """
 <h2>Install</h2>
 <p>Perch comes as one Debian package. After buying, install the file from your download link:</p>
-<pre class="code">sudo apt install ./coop-perch_0.10_amd64.deb</pre>
+<pre class="code">sudo apt install ./perch_0.10_amd64.deb</pre>
 <p>It needs Ubuntu 24.04 or similar, and pulls in what it uses (a browser engine and a virtual display) by itself.</p>
 <h2>Give your bot its first look at a web page</h2>
 <p>Each session has a name, so several bots can look at once. Open a page:</p>
-<pre class="code">coop-perch-web mybot go https://example.com/</pre>
+<pre class="code">perch-web mybot go https://example.com/</pre>
 <p>The bot gets the page as lines. Then it acts by number and gets back only what changed:</p>
-<pre class="code">coop-perch-web mybot click 3
-coop-perch-web mybot type 5 hello
-coop-perch-web mybot enter 5
-coop-perch-web mybot scroll down</pre>
+<pre class="code">perch-web mybot click 3
+perch-web mybot type 5 hello
+perch-web mybot enter 5
+perch-web mybot scroll down</pre>
 <p><code>read</code> sends the whole visible page again if the bot ever needs it, <code>read all</code> the whole page, and <code>stop</code> ends the session. Sessions keep nothing on disk and end by themselves after 30 idle minutes.</p>
 <h2>Hand the lines to your model</h2>
 <p>Pass the output to your model as plain text, in the same conversation each time. The first line of a session explains the shape of every line, once; after that the lines carry bare values. <a href="reading-the-lines.html">Reading the lines</a> explains each one.</p>

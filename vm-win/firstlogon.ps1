@@ -25,15 +25,6 @@ if ($ok) {
     # QEMU's own network (reachable only from the host) comes up as Public, and Windows 11's SSH rule covers Private only
     Get-NetConnectionProfile | Set-NetConnectionProfile -NetworkCategory Private
     Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True -DefaultInboundAction Block
-    foreach ($rule in @(
-        @{ Name = 'Block inbound MySQL for Coop Dev'; Ports = @(3307, 33060) },
-        @{ Name = 'Block inbound Apache for Coop Dev'; Ports = @(8080) }
-    )) {
-        if (-not (Get-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue)) {
-            New-NetFirewallRule -DisplayName $rule.Name -Direction Inbound -Action Block `
-                -Protocol TCP -LocalPort $rule.Ports -Profile Any | Out-Null
-        }
-    }
     if (Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue) {
         Set-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -Enabled True -Profile Private
     } else {

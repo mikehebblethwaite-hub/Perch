@@ -1,0 +1,121 @@
+#!/usr/bin/python3 -I
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
+# perch-report: makes a test report from your demo runs for GitHub. Run it after a demo:
+#   ./perch-report          shows the report and how to send it
+#   ./perch-report --send   sends it: straight to GitHub if the gh tool is signed in (gh auth login), otherwise it opens
+#                                your browser on the report form with everything filled in, and you press Submit
+# It reads the results the demos saved (tape/demo/result.json, tape/demo-win/result.json) and a few plain facts about the
+# machine (processor, memory, system). Nothing personal: no names, no addresses, no file paths, no hostname. Read it before you send it.
+import json, os, platform, re, shutil, subprocess, sys, urllib.parse, webbrowser
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+TAPE = os.environ.get("PERCH_TAPE_ROOT", os.path.join(HERE, "tape"))
+REPO = "mikehebblethwaite-hub/Perch"
+NEW = f"https://github.com/{REPO}/issues/new?template=test-report.yml"
+
+
+def cpu():
+    try:
+        for l in open("/proc/cpuinfo"):
+            if l.startswith("model name"):
+                return l.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return platform.processor() or "?"
+
+
+def mem_gb():
+    try:
+        kb = int(re.search(r"MemTotal:\s+(\d+)", open("/proc/meminfo").read()).group(1))
+        return f"{kb / 1024 / 1024:.0f} GB"
+    except (OSError, AttributeError):
+        return "?"
+
+
+def system():
+    try:
+        d = dict(l.rstrip().split("=", 1) for l in open("/etc/os-release") if "=" in l)
+        return d.get("PRETTY_NAME", "?").strip('"') + ", kernel " + platform.release()
+    except OSError:
+        return platform.platform()
+
+
+def version():
+    try:
+        return open(os.path.join(HERE, "VERSION")).read().strip()
+    except OSError:
+        return "?"
+
+
+def commit():
+    try:
+        return subprocess.run(["git", "-C", HERE, "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=5).stdout.strip() or "?"
+    except (OSError, subprocess.SubprocessError):
+        return "?"
+
+
+def one(name, title):
+    f = os.path.join(TAPE, name, "result.json")
+    if not os.path.exists(f):
+        return None
+    r = json.load(open(f))
+    s, p, truth = r["shot"], r["perch"], set(r["truth"])
+    def right(b):
+        n = set(b["names"])
+        return f"{len(n & truth)} of {len(truth)} right" + (f", {len(n - truth)} wrong" if n - truth else "")
+    row = lambda k, f: f"| {k} | {f(p)} | {f(s)} |"
+    out = [f"### {title}", "", "| | Perch bot | Screenshot bot |", "|---|---|---|",
+           row("Tokens (Claude's count)", lambda b: f"{b['claude']:,}"),
+           row("Time", lambda b: f"{b['wall']:.0f} s"),
+           row("Energy", lambda b: f"{b['j'] / 1000:.1f} kJ" if b.get("j") else "not measured"),
+           row("Processor time", lambda b: f"{b['cpu']:.0f} s"),
+           row("Emails needing a reply", right), "",
+           "<details><summary>The result file</summary>", "", "```json", json.dumps(r, indent=1, ensure_ascii=False), "```", "</details>", ""]
+    return "\n".join(out)
+
+
+parts = [x for x in (one("demo", "Web demo (Linux)"), one("demo-win", "Windows demo")) if x]
+if not parts:
+    sys.exit("No demo results yet. Run a demo first:\n  demo/perch-demo run        (the web demo)\n"
+             "  demo/perch-demo-win        (the Windows demo: needs the Windows VM running under Perch)")
+report = "\n".join([
+    "**Perch** " + version() + " (commit " + commit() + ")",
+    "**Processor:** " + cpu(), "**Memory:** " + mem_gb(), "**System:** " + system(), "",
+    *parts])
+demos = [n for n, t in (("demo", "The web demo (Linux)"), ("demo-win", "The Windows demo")) if os.path.exists(os.path.join(TAPE, n, "result.json"))]
+which = "Both" if len(demos) == 2 else ("The web demo (Linux)" if demos == ["demo"] else "The Windows demo")
+title = "Test report: " + which.lower().replace("the ", "") + ", " + cpu()[:40]
+
+if "--send" in sys.argv:
+    print(report)
+    if input("\nSend this report to the Perch project on GitHub? Type yes and press Enter: ").strip().lower() not in ("y", "yes"):
+        sys.exit("Not sent.")
+    gh = shutil.which("gh")
+    if gh and subprocess.run([gh, "auth", "status"], capture_output=True, timeout=30).returncode == 0:
+        body = "**Which demo:** " + which + "\n**Ran start to end:** yes\n\n" + report
+        r = subprocess.run([gh, "issue", "create", "-R", REPO, "-t", title, "-b", body, "-l", "test report"], capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:      # the label may be missing: send without it
+            r = subprocess.run([gh, "issue", "create", "-R", REPO, "-t", title, "-b", body], capture_output=True, text=True, timeout=60)
+        if r.returncode == 0:
+            sys.exit("Sent, thank you: " + r.stdout.strip())
+        print("GitHub said: " + (r.stderr.strip() or "no"), file=sys.stderr)
+    # no gh: the form, filled in, in the browser (a long report is cut to its tables: GitHub's links have a length limit)
+    short = re.sub(r"<details>.*?</details>", "", report, flags=re.S).strip()
+    url = NEW + "&" + urllib.parse.urlencode({"title": title, "demo": which, "worked": "Yes", "report": short})
+    if len(url) > 7500:
+        url = NEW + "&" + urllib.parse.urlencode({"title": title, "demo": which, "worked": "Yes", "report": short[:3000]})
+    opened = webbrowser.open(url)
+    print("\nYour browser " + ("is opening" if opened else "did not open; open this link yourself") + ": the form is filled in.")
+    print("Check it, then press the green Submit button (you need a free GitHub account).")
+    if not opened:
+        print(url)
+    sys.exit(0)
+
+print("=" * 72)
+print(report)
+print("=" * 72)
+print(f"""
+To send it, the easy way:   ./perch-report --send
+Or by hand: open {NEW}
+  and paste everything between the two lines of = into the box called "Your report", then press Submit.
+Thank you.""")

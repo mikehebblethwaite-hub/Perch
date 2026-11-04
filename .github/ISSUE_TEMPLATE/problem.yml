@@ -10,7 +10,7 @@ body:
       description: The commands you ran, in order.
       placeholder: |
         make
-        ./coop-perch-test 60
+        ./perch-test 60
     validations:
       required: true
   - type: textarea

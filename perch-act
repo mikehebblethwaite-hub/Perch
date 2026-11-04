@@ -1,0 +1,23 @@
+#!/usr/bin/python3 -I
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
+# perch-act NAME [ACTION...]: a bot's hands on a Perch VM (perch-vmrun NAME). Each ACTION (or each stdin line if none):
+#   type TEXT | key ctrl+alt+t | move X Y | click X Y [left|middle|right] [N] | scroll X Y up|down [N]
+# Prints the eye's answer per action ("ok" / "err why"). Exit 1 if any action failed.
+import os, socket, sys
+if len(sys.argv) < 2:
+    sys.exit(__doc__ if __doc__ else "usage: perch-act NAME [ACTION...]")
+path = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "perch-vm-" + sys.argv[1], "act")
+try:
+    s = socket.socket(socket.AF_UNIX); s.connect(path)
+except OSError as e:
+    sys.exit(f"perch-act: no Perch VM '{sys.argv[1]}' ({e})")
+f = s.makefile("rw", encoding="utf-8")
+bad = 0
+for a in (sys.argv[2:] or (l.rstrip("\n") for l in sys.stdin)):
+    if not a.strip():
+        continue
+    f.write(a.replace("\n", " ") + "\n"); f.flush()
+    r = f.readline().rstrip("\n")
+    print(r, flush=True)
+    bad |= not r.startswith("ok")
+sys.exit(1 if bad else 0)
