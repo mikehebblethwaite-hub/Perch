@@ -25,3 +25,4 @@ check before acting on one; `[name]` in an R line = a picture recognised by its 
 Pixels only when the answer is in a picture (p line, X window, photo, chart bars, video) or is about how a part looks; that part only:
 web `./coop-perch-web NAME pixels N|x,y,w,h`, display `./coop-perch-look pixels x,y,w,h -d :2`, VM `./coop-perch-vmlook NAME pixels x,y,w,h`
 → `pixels FILE wxh ~T tokens`, then read FILE. Say plainly what could not be read.
+Secrets: if the screen shows a password, a key, a 2FA secret or code, a token or card numbers, never repeat it or any part of it: say only that something secret is visible, where, and that it should be hidden or changed.
