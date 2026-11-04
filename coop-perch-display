@@ -4,14 +4,18 @@
 #   Xvfb :12  the real X screen (DAMAGE/XFIXES/MIT-SHM, no TCP), any app thinks it is a monitor
 #   coop-perch-tap on :2  sits on the data line, passes every byte to :12 and reads the requests as they go by
 #   coop-perch-eye on :2  watches it, strikes into the box (coop-perch-wait reads them)
+#   its own accessibility bus  apps on :2 hand their words to it (AT-SPI; skill/coop-perch-look reads them). Never the desktop's:
+#                         the session's bus belongs to display :0 and dies with it. Apps find it on :2's root window (AT_SPI_BUS).
 # Size by PERCH_SIZE (default 1280x800). Stops both when either stops.
 S="${PERCH_SIZE:-1280x800}"; D="${PERCH_DISPLAY:-2}"; R="${PERCH_REAL:-12}"
 cd "$(dirname "$0")"
 if xdpyinfo -display ":$D" >/dev/null 2>&1; then echo "perch display :$D already up"; exit 0; fi
 Xvfb ":$R" -screen 0 "${S}x24" -nolisten tcp +extension DAMAGE +extension XFIXES +extension MIT-SHM -noreset 2>/dev/null & x=$!
 i=0; until xdpyinfo -display ":$R" >/dev/null 2>&1; do i=$((i+1)); [ $i -gt 50 ] && { echo "Xvfb :$R did not start"; kill $x 2>/dev/null; exit 1; }; sleep 0.1; done
-trap 'kill $x $t $e 2>/dev/null' INT TERM EXIT
+trap 'pkill -P "$a" 2>/dev/null; kill $x $t $e $a 2>/dev/null' INT TERM EXIT
 ./coop-perch-tap -d "$D" -s "$R" & t=$!
 i=0; until xdpyinfo -display ":$D" >/dev/null 2>&1; do i=$((i+1)); [ $i -gt 50 ] && break; sleep 0.1; done
 ./coop-perch-eye -d ":$D" & e=$!
+a=; L=/usr/libexec/at-spi-bus-launcher
+[ -x "$L" ] && command -v dbus-run-session >/dev/null && { DISPLAY=":$D" dbus-run-session -- "$L" --launch-immediately >/dev/null 2>&1 & a=$!; }
 wait $t

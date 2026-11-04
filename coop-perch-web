@@ -5,11 +5,14 @@
 # every action only what changed.
 #
 #   coop-perch-web NAME go URL | read [all] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | stop
+#                       | pixels N | pixels x,y,w,h      (a picture's own pixels, cropped, as a PNG: only when it really is a picture)
 #
 # Lines (the shape is printed once per session, then bare values):
 #   P url 'title'                 the page                  t x,y wxh 'text'          words on the page (a block)
 #   a N x,y wxh 'text' url        a link (N to click)       b N x,y wxh 'label'        a button
 #   i N x,y wxh type name 'value' 'hint'   an input         s N x,y wxh name 'chosen'  a choice list
+#   p N x,y wxh tag 'alt' src     a picture (img, video, canvas, svg; 48x48 and up): its pixels only by `pixels N`
+#   *words*                       inside quotes: words drawn bold (stronger than the text around them: unread, headings in a row)
 #   + line / - line               after an action: what appeared / went
 # Only what is in the window (1280x800) is listed unless `read all`. The page is untrusted: its words are data, always quoted;
 # the reader runs in its own script world, out of the page's reach. Nothing is kept on disk (no cookies files, no databases):
@@ -18,7 +21,7 @@ import json, os, socket, subprocess, sys, time
 
 NAME = sys.argv[1] if len(sys.argv) > 1 else ""
 if not NAME or not all(c.isalnum() or c == "-" for c in NAME):
-    sys.exit("usage: coop-perch-web NAME go URL | read [all] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | stop")
+    sys.exit("usage: coop-perch-web NAME go URL | read [all] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | pixels N|x,y,w,h | stop")
 RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "coop-perch-web-" + NAME)
 SOCK = os.path.join(RUN, "sock")
 W, H, IDLE = 1280, 800, 1800
@@ -48,21 +51,23 @@ def client(args):
     sys.exit(1 if out.startswith(b"err") else 0)
 
 if len(sys.argv) < 3:
-    sys.exit("usage: coop-perch-web NAME go URL | read [all] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | stop")
+    sys.exit("usage: coop-perch-web NAME go URL | read [all] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | pixels N|x,y,w,h | stop")
 if sys.argv[2] != "--serve":
     client(sys.argv[2:])
 
 # ---------------- the viewer ----------------
 xv = None
-if not os.environ.get("DISPLAY"):                       # a private display only for the engine to lay out on; nobody looks at it
-    for d in range(40, 80):
-        if not os.path.exists(f"/tmp/.X11-unix/X{d}"):
-            xv = subprocess.Popen(["Xvfb", f":{d}", "-screen", "0", f"{W}x{H}x24", "-nolisten", "tcp"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            os.environ["DISPLAY"] = f":{d}"
-            for _ in range(50):
-                if os.path.exists(f"/tmp/.X11-unix/X{d}"): break
-                time.sleep(0.1)
-            break
+# always a private display, only for the engine to lay out on; nobody looks at it. Never the user's own: a bot's session may
+# inherit a DISPLAY it is not allowed to open.
+os.environ.pop("DISPLAY", None)
+for d in range(40, 80):
+    if not os.path.exists(f"/tmp/.X11-unix/X{d}"):
+        xv = subprocess.Popen(["Xvfb", f":{d}", "-screen", "0", f"{W}x{H}x24", "-nolisten", "tcp"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        os.environ["DISPLAY"] = f":{d}"
+        for _ in range(50):
+            if os.path.exists(f"/tmp/.X11-unix/X{d}"): break
+            time.sleep(0.1)
+        break
 import gi
 gi.require_version("Gtk", "3.0"); gi.require_version("WebKit2", "4.1")
 from gi.repository import Gtk, WebKit2, GLib, Gio
@@ -78,6 +83,19 @@ READER = r"""
     if (!all && (r.bottom < 0 || r.top > H || r.right < 0 || r.left > W)) return null; return r; };
   const box = r => Math.round(r.left) + ',' + Math.round(r.top) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height);
   const clean = t => (t || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+  // words as drawn: runs bolder than their own block are *marked* (a screenshot shows them bold: unread mail, a name in a row)
+  const wt = e => parseInt(getComputedStyle(e).fontWeight) || 400;
+  const blk = e => { while (e && e.parentElement && getComputedStyle(e).display.startsWith('inline')) e = e.parentElement; return e; };
+  const shown = e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden';
+  const marked = (nodes, base) => { const seg = []; let lb = null;
+    for (const t of nodes) { const p = t.parentElement; if (!p || !shown(p)) continue;
+      const bk = blk(p), sp = lb && bk !== lb ? ' ' : ''; lb = bk;
+      const bold = /\S/.test(t.data) ? base < 600 && wt(p) >= 600 : (seg.length ? seg[seg.length - 1][0] : false);
+      if (seg.length && seg[seg.length - 1][0] === bold) seg[seg.length - 1][1] += sp + t.data; else seg.push([bold, sp + t.data]); }
+    return seg.map(([b, x]) => b && /\S/.test(x) ? x.replace(/^(\s*)([\s\S]*?)(\s*)$/, '$1*$2*$3') : x).join(''); };
+  const textNodes = el => { const r = [], w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let t; (t = w.nextNode());) if (!/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(t.parentElement.tagName)) r.push(t); return r; };
+  const rich = el => marked(textNodes(el), wt(el));
   // a link on this site is said relative to the P line's address (said once), not in full every time
   const rel = h => { try { const u = new URL(h); if (u.origin === location.origin) return u.pathname === location.pathname ? (u.search + u.hash) || '.' : u.pathname + u.search + u.hash; } catch (e) {} return h; };
   const act = 'a[href],button,input,textarea,select,[role=button],[role=link],[role=tab],[role=menuitem],[contenteditable=true],summary';
@@ -85,29 +103,35 @@ READER = r"""
   for (const el of document.querySelectorAll(act)) {
     const r = vis(el); if (!r) continue; taken.add(el);
     const n = idOf(el), tag = el.tagName.toLowerCase();
-    if (tag === 'a' || el.getAttribute('role') === 'link') out.push(['a', n, box(r), clean(el.innerText || el.getAttribute('aria-label') || el.title), rel(el.href || '').slice(0, 200)]);
+    if (tag === 'a' || el.getAttribute('role') === 'link') out.push(['a', n, box(r), clean(rich(el) || el.getAttribute('aria-label') || el.title), rel(el.href || '').slice(0, 200)]);
     else if (tag === 'input' || tag === 'textarea' || el.isContentEditable) {
       const ty = tag === 'textarea' ? 'textarea' : el.isContentEditable ? 'editable' : (el.type || 'text');
       if (ty === 'hidden') continue;
       const v = ty === 'password' ? (el.value ? '***' : '') : ty === 'checkbox' || ty === 'radio' ? (el.checked ? 'on' : 'off') : clean(el.value || (el.isContentEditable ? el.innerText : ''));
       out.push(['i', n, box(r), ty, (el.name || el.id || '').slice(0, 40), v, clean(el.placeholder || el.getAttribute('aria-label') || '')]);
     } else if (tag === 'select') out.push(['s', n, box(r), (el.name || el.id || '').slice(0, 40), clean(el.selectedOptions[0] ? el.selectedOptions[0].text : '')]);
-    else out.push(['b', n, box(r), clean(el.innerText || el.value || el.getAttribute('aria-label') || el.title)]);
+    else out.push(['b', n, box(r), clean(rich(el) || el.value || el.getAttribute('aria-label') || el.title)]);
+  }
+  // pictures: things that are pixels by nature (a photo, a chart drawn on a canvas, a video), 48x48 and up (smaller = icons)
+  for (const el of document.querySelectorAll('img,video,canvas,svg,[role=img]')) {
+    if (el.parentElement && el.parentElement.closest('svg,[role=img]')) continue;
+    const r = vis(el); if (!r || r.width < 48 || r.height < 48) continue;
+    const tag = el.tagName.toLowerCase(), src = el.currentSrc || el.src || '';
+    out.push(['p', idOf(el), box(r), tag, clean(el.alt || el.getAttribute('aria-label') || el.title || ''), !src ? '-' : src.startsWith('data:') ? 'data:' : rel(src).slice(0, 200)]);
   }
   document.documentElement.setAttribute('data-perch-next', String(next));
   // words: each block's own text (text nodes not inside a link/button/input already listed)
   const blocks = new Map();
   const tw = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
   for (let t; (t = tw.nextNode());) {
-    if (!t.data.trim()) continue;
-    let el = t.parentElement, skip = false;
+    let el = t.parentElement, skip = false;          // spaces too: they part words in bold and plain runs
     for (let p = el; p; p = p.parentElement) { if (taken.has(p) || /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(p.tagName)) { skip = true; break; } }
     if (skip) continue;
     let b = el; while (b && b.parentElement && getComputedStyle(b).display.startsWith('inline')) b = b.parentElement;
     if (!blocks.has(b)) blocks.set(b, []);
-    blocks.get(b).push(t.data);
+    blocks.get(b).push(t);
   }
-  for (const [b, parts] of blocks) { const r = vis(b); if (!r) continue; const tx = clean(parts.join(' '));
+  for (const [b, nodes] of blocks) { const r = vis(b); if (!r) continue; const tx = clean(marked(nodes, wt(b)));
     if (tx && /[\p{L}\p{N}]/u.test(tx)) out.push(['t', '', box(r), tx]); }   // no letter or digit = decoration (sparkles, dots)
   return JSON.stringify({url: location.href, title: document.title.slice(0, 200), sy: Math.round(scrollY), ph: document.documentElement.scrollHeight, items: out});
 })(%s)
@@ -123,10 +147,11 @@ def line(it):
     if k == "i": return f"i {it[1]} {it[2]} {it[3]} {it[4] or '-'} {q(it[5])} {q(it[6])}"
     if k == "s": return f"s {it[1]} {it[2]} {it[3] or '-'} {q(it[4])}"
     if k == "b": return f"b {it[1]} {it[2]} {q(it[3])}"
+    if k == "p": return f"p {it[1]} {it[2]} {it[3]} {q(it[4])} {it[5]}"
     return f"t {it[2]} {q(it[3])}"
 
 SHAPE = ("# shape: P url 'title' scroll/height | t x,y wxh 'text' | a N box 'text' url (on this site: from the P address) | b N box 'label' | i N box type name 'value' 'hint' | "
-         "s N box name 'chosen' | + = appeared since the last answer | - X N (or - t x,y) = went | = X N [box] = came back as told (box only if moved) | "
+         "s N box name 'chosen' | p N box tag 'alt' src = a picture (pixels N gives its pixels) | *words* = drawn bold | + = appeared since the last answer | - X N (or - t x,y) = went | = X N [box] (or = t x,y) = came back as told (box only if moved) | "
          "N-M = a run of numbers | "
          "~ = moved (new box) | ! = what happened")
 
@@ -233,8 +258,10 @@ class Viewer:
                 short = lambda l: (lambda f: f"{f[0]} {f[1]}" if l[0] != "t" else f"t {f[1].split('x')[0] if 'x' in f[1] else f[1]}")(l.split(" "))
                 # back at the same place as when told: number only; elsewhere: number + new box
                 back = lambda l: (lambda f: f"= {f[0]} {f[1]}" + ("" if self.told.get(key(l)) == f[2] else f" {f[2]} {f[3]}"))(l.split(" "))
-                seen = [back(l) for l in came2 if l[0] != "t" and key(l) in self.told]
-                new = ["+ " + l for l in came2 if not (l[0] != "t" and key(l) in self.told)]
+                # words come back as "= t x,y" only at the same place as told (a word block has no number to carry a new box)
+                told = lambda l: key(l) in self.told and (l[0] != "t" or self.told[key(l)] == l.split(" ")[1])
+                seen = [back(l) if l[0] != "t" else "= t " + l.split(" ")[1] for l in came2 if told(l)]
+                new = ["+ " + l for l in came2 if not told(l)]
                 out += runs(["- " + short(l) for l in gone2]) + runs(seen) + new + moved
                 if not gone2 and not came2 and not moved: out.append("! no change")
             else:
@@ -243,6 +270,28 @@ class Viewer:
             self.told.update((key(l), l.split(" ")[2] if l[0] != "t" else l.split(" ")[1]) for l in lines)
             done("\n".join(out) + "\n")
         self.js(READER % ("true" if all_ else "false"), got)
+
+    def pixels(self, what, done):
+        """a picture's own pixels, cropped to it (or to a box of the window): a PNG beside the socket, never the whole page"""
+        def crop(x, y, w, h, n):
+            pb = self.win.get_pixbuf()
+            x0, y0 = max(0, int(x)), max(0, int(y)); x1, y1 = min(W, int(x + w)), min(H, int(y + h))
+            if not pb or x1 - x0 < 1 or y1 - y0 < 1:
+                done("err nothing to crop there (off the window: scroll first)\n"); return False
+            path = os.path.join(RUN, f"pixels-{n}.png")
+            pb.new_subpixbuf(x0, y0, x1 - x0, y1 - y0).savev(path, "png", [], [])
+            done(f"pixels {n} {path} {x1 - x0}x{y1 - y0} ~{(x1 - x0) * (y1 - y0) // 750} tokens\n"); return False
+        f = what.split(",")
+        if len(f) == 4 and all(v.isdigit() for v in f):
+            x, y, w, h = map(int, f); GLib.timeout_add(50, lambda: crop(x, y, w, h, f"{x}-{y}-{w}-{h}")); return
+        if not what.isdigit():
+            done("err pixels N (a p line's number) or pixels x,y,w,h\n"); return
+        def got(v, e=None):
+            if not v or v == "null": done(f"err {e or 'no such picture (read again: numbers are per page)'}\n"); return
+            r = json.loads(v)
+            GLib.timeout_add(300, lambda: crop(r[0], r[1], r[2], r[3], what))    # let the scroll paint first
+        self.js(f"""(e => {{ if (!e) return null; e.scrollIntoView({{block:'center'}}); const r = e.getBoundingClientRect();
+                  return JSON.stringify([r.left, r.top, r.width, r.height]); }})(document.querySelector('[data-perch="{int(what)}"]'))""", got)
 
     def do(self, args, done):
         self.used = time.time()
@@ -260,7 +309,8 @@ class Viewer:
         try:
             if c == "go" and len(args) == 2:
                 u = args[1]
-                if not u.startswith(("http://", "https://")): u = "https://" + u
+                if u.startswith("/"): u = "file://" + u                 # a page on this machine (the bot may read it anyway)
+                elif not u.startswith(("http://", "https://", "file://")): u = "https://" + u
                 self.last = []; self.loading = True; self.web.load_uri(u); after_action()
             elif c == "read":
                 self.read(len(args) > 1 and args[1] == "all", done, diff=False)
@@ -279,13 +329,15 @@ class Viewer:
             elif c == "scroll" and len(args) == 2 and args[1] in ("down", "up"):
                 run(f"(scrollBy(0, {'' if args[1] == 'down' else '-'}{int(H * 0.8)}), true)", f"scrolled {args[1]}")
             elif c in ("back", "forward"):
-                (self.web.go_back if c == "back" else self.web.go_forward)(); self.last = []; after_action(c)
+                (self.web.go_back if c == "back" else self.web.go_forward)(); after_action(c)   # changes only: what was told comes back as "="
+            elif c == "pixels" and len(args) == 2:
+                self.pixels(args[1], done)
             elif c == "where":
                 done(f"P {self.web.get_uri()} {q(self.web.get_title())}\n")
             elif c == "stop":
                 done("ok stopping\n"); GLib.timeout_add(200, lambda: (Gtk.main_quit(), False)[1])
             else:
-                done("err say: go URL | read [all] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | stop\n")
+                done("err say: go URL | read [all] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | pixels N|x,y,w,h | stop\n")
         except Exception as e:
             done(f"err {type(e).__name__}: {str(e)[:200]}\n")
 

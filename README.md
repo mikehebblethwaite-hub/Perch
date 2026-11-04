@@ -1,6 +1,6 @@
 # coop-perch
 
-The bot's mind's eye (design and decisions: NOTES.md; progress: PROGRESS.md; fails: FAILS.md). Version 0.10.
+The bot's mind's eye (design and decisions: NOTES.md; progress: PROGRESS.md; fails: FAILS.md). Version 0.11.
 
 - `coop-perch-display` : display :2. Apps connect to :2; `coop-perch-tap` sits there on the data line and passes every byte to the real
   X screen, Xvfb :12 (DAMAGE/XFIXES/MIT-SHM, local socket only). Any app on it thinks it is a monitor.
@@ -76,5 +76,20 @@ the page's scripts and lay it out. The bot gets lines (`t` words, `a N` links wi
 lists, each with its box) and acts by number (`click N`, `type N TEXT`, `enter N`); after every action only the changes (`+ - ~`).
 The reader runs in its own script world (out of the page's reach); page text is always quoted data. Decoration (no letter or digit)
 is left out. A live website: the page ~550 tokens (a screenshot ~1,365); a search job (open, type, search) ~1,050 vs ~5,460.
+
+0.11: `p N box tag 'alt' src` lines for pictures (img, video, canvas, svg; 48x48 and up) and `pixels N` / `pixels x,y,w,h` (a PNG of that
+picture only, from the viewer's own window); words drawn bolder than their block are quoted as `*words*` (unread mail); `back` and
+`forward` answer with changes like every other action, and unchanged words come back as `= t x,y`; a local file opens by its path.
+The viewer always makes its own private display (a bot's session may inherit a DISPLAY it may not open).
+
+## The bot skill (skill 0.01)
+
+`skill/SKILL.md` (linked from ~/.claude/skills/perch/SKILL.md) makes Claude Code perch a screen instead of taking a screenshot: it
+triggers on "take a screenshot", "look at my screen", "what's on the page", picks the eye (coop-perch-web for pages and .html files,
+`skill/coop-perch-look` for an app on a display, the tape for a Perch VM), states the line shapes once, and takes pixels only for
+pictures, cropped. `coop-perch-look screen|changes|pixels x,y,w,h [-d :2]` reads a display's apps from their accessibility tree
+(W window, F focus, t words per text line, b buttons/menus, i inputs, p pictures, X windows with no words). `coop-perch-display` now
+gives :2 its own accessibility bus (the session's belongs to :0). Tests: `skill/test/run-tests [REPEATS] [CASE..]` (headless
+`claude -p`, local pages and display :2 only).
 
 Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT.
