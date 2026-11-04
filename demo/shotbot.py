@@ -1,4 +1,5 @@
-# Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT. CONFIDENTIAL.
+# Copyright (c) 2026 Mike J Hebblethwaite
+# Licensed under the MIT License - see LICENSE.md
 # The screenshot bot for the Perch demo: the usual way bots see a page today. Google Chrome (headless, its own throwaway profile)
 # driven over Chrome's DevTools pipe (fd 3/4, no network port), a full 1280x800 PNG after every step, clicks at screen points.
 import base64, json, os, subprocess, tempfile, time

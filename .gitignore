@@ -17,3 +17,11 @@ site/out/
 skill/run.log
 skill/.done
 skill/.lock
+NOTES.md
+PROGRESS.md
+FAILS.md
+COPYRIGHT
+QUICKSTART.txt
+__pycache__/
+*.pyc
+skill/TASK.md
