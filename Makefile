@@ -31,7 +31,7 @@ coop-perch-vm: coop-perch-vm.c coop-perch-core.h coop-perch-box.h
 VERSION ?= $(shell cat VERSION)
 PREFIX ?= /usr/local
 PRODUCT_BIN = coop-perch-vm coop-perch-box coop-perch-wait
-PRODUCT_SCRIPTS = coop-perch-vmrun coop-perch-act coop-perch-web coop-perch-vmlook
+PRODUCT_SCRIPTS = coop-perch-vmrun coop-perch-act coop-perch-web coop-perch-vmlook coop-perch-report
 install: $(PRODUCT_BIN)
 	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/share/coop-perch/guest
 	install -s -m 755 $(PRODUCT_BIN) $(DESTDIR)$(PREFIX)/bin/

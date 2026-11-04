@@ -1,0 +1,20 @@
+# Checks the agreement box in a pull request is ticked. Without it the change cannot be taken (see CONTRIBUTING.md).
+name: Agreement
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize]
+permissions: {}
+jobs:
+  ticked:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Is the agreement box ticked?
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if printf '%s' "$BODY" | grep -Eq '^\s*-\s*\[[xX]\]\s*I wrote this change myself'; then
+            echo "Ticked. Thank you."
+          else
+            echo "::error::Please tick the agreement box in your pull request's description: edit the description, change [ ] to [x] in front of 'I wrote this change myself', and save. This check runs again by itself."
+            exit 1
+          fi

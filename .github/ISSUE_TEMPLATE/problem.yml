@@ -1,0 +1,32 @@
+name: Something went wrong
+description: Perch did not build, did not start, or did something wrong.
+title: "Problem: "
+labels: ["problem"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What did you do?
+      description: The commands you ran, in order.
+      placeholder: |
+        make
+        ./coop-perch-test 60
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened?
+      description: Paste the error message exactly as it came.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+  - type: input
+    id: system
+    attributes:
+      label: Your system
+      placeholder: Ubuntu 24.04, 16 GB

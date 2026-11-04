@@ -12,54 +12,70 @@ Perch is an open-source tool that lets bots and automated systems see your scree
 - Input coordination (keyboard and mouse, with proper queuing)
 - Low latency, minimal token cost
 
-## Features
+## What works today
 
-- **Linux:** Virtual framebuffer via Xvfb with DAMAGE extension for change detection
-- **Windows:** Indirect display driver support
-- **macOS:** Virtual display API integration
-- **Cross-platform:** Core library works on Linux, Windows, and macOS
-- **Real-time:** Dirty rectangle tracking for efficient updates
-- **Text-first:** Accessibility layers (AT-SPI, DOM, terminal buffers) before pixel fallback
+- **Linux desktop apps:** Perch is the display (`:2`). It sees what changed and reads the apps' own words (AT-SPI).
+- **Virtual machines (Linux or Windows guests):** Perch is the VM's only screen. QEMU hands it just the changed rectangles, so
+  nothing is captured. A small helper inside the guest sends the apps' own words: AT-SPI on Linux, UI Automation on Windows.
+  Perch's hands type and click through QEMU's own keyboard and mouse.
+- **Web pages:** `coop-perch-web` gives a page as words and numbered actions (`click 15`), then only what changed.
+- Not yet: macOS; Windows or Linux desktops without a VM.
 
-## Architecture
+## Try it (Ubuntu 24.04 or similar)
 
-```
-Display Stream
-     ↓
-Perch (virtual display adaptor)
-     ├→ Text Layer (DOM, AT-SPI, terminal, accessibility)
-     ├→ Region Layer (dirty rectangles, layout)
-     ├→ Image Layer (pixel fallback)
-     └→ >SCR Bus (text, regions, watch, input commands)
-```
+Copy each block into a terminal, one at a time.
 
-## Interface: >SCR Commands
-
-- `>SCR text` — all readable text on screen, with positions
-- `>SCR region x1,y1,x2,y2` — one area, as text where possible
-- `>SCR changed` — only the dirty rectangles since last look
-- `>SCR watch region x1,y1,x2,y2` — subscribe to changes in a region
-- `>SCR read terminal` — read a region by name (terminal, error panel, etc.)
-- `>SCR pixels region` — last resort, actual image crop
-- Input: `>KEY`, `>CLICK x,y`, `>TYPE` — share one input queue with humans
-
-## Building
-
+**1. Get it and build it**
 ```bash
+sudo apt install build-essential libx11-dev libxdamage-dev libxext-dev libxfixes-dev libglib2.0-dev \
+     xvfb x11-utils python3-pyatspi gir1.2-atspi-2.0 gir1.2-webkit2-4.1 qemu-system-x86
+git clone https://github.com/mikehebblethwaite-hub/Perch.git
+cd Perch
 make
 ```
 
+**2. A first look (one minute)**
+```bash
+./coop-perch-test 60
+```
+It draws your machine's memory on Perch's display and prints what the eye saw and what it cost.
+
+**3. The web for bots**
+```bash
+./coop-perch-web mytest go https://example.org
+./coop-perch-web mytest stop
+```
+
+**4. The demo: a screenshot bot against a Perch bot** (needs [Ollama](https://ollama.com) with a model that can see
+pictures, and Google Chrome for the screenshot bot)
+```bash
+ollama pull gemma3:4b
+PERCH_MODEL=gemma3:4b demo/coop-perch-demo run
+```
+
+**5. Send us your result**
+```bash
+./coop-perch-report
+```
+It prints a short report (nothing personal) and the page to paste it into. Every report helps, slow machines too.
+
+**The Windows demo** needs a Windows 11 VM run by Perch: see `vm-win/coop-perch-winvm` (it builds one hands-off from
+Microsoft's ISO), then `coop-perch-winvm guest` to put the helper in, and `demo/coop-perch-demo-win`.
+
 ## Files
 
-- `coop-perch-eye.c` — Core display capture and text extraction
-- `coop-perch-feed.c` — Feed daemon and message passing
-- `coop-perch-web` — Web interface for viewing live screen and replay
-- `coop-perch-vm*` — Virtual machine integration
-- `demo/` — Example usage and tests
+- `coop-perch-display`, `coop-perch-tap.c`, `coop-perch-eye.c`: the display, the tap on its data line, the eye
+- `coop-perch-vm.c`, `coop-perch-vmrun`: a VM whose only screen is Perch; `coop-perch-act` (hands), `coop-perch-vmlook` (a bot's look)
+- `coop-perch-guest` (Linux) and `coop-perch-guest.ps1` (Windows): the helper inside a guest
+- `coop-perch-web`: the web for bots
+- `demo/`: the demos; `coop-perch-report`: your result as a report
+- `vm-win/`: the Windows test VM
 
-## Quick Start
+## Help make it better
 
-See `demo/` for examples and the included demo scripts.
+- **Tested it?** Run `./coop-perch-report` and paste it into a [test report](https://github.com/mikehebblethwaite-hub/Perch/issues/new?template=test-report.yml).
+- **Something broke?** Tell us in [Something went wrong](https://github.com/mikehebblethwaite-hub/Perch/issues/new?template=problem.yml).
+- **Want to change the code?** See [CONTRIBUTING.md](CONTRIBUTING.md). It is short.
 
 ## Support Perch
 

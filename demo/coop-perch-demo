@@ -22,7 +22,8 @@ PORT = 8097
 BASE = f"http://127.0.0.1:{PORT}"
 WEB = os.path.join(os.path.dirname(HERE), "coop-perch-web")
 OUT = os.path.join(os.path.dirname(HERE), "tape", "demo")
-MODEL, OLLAMA = "gemma-chuck", "http://127.0.0.1:11434/api/chat"
+OLLAMA = os.environ.get("PERCH_OLLAMA", "http://127.0.0.1:11434") + "/api/chat"
+MODEL = os.environ.get("PERCH_MODEL", "gemma-chuck")      # any Ollama model that can see pictures, e.g. PERCH_MODEL=gemma3:4b
 RAPL = "/sys/class/powercap/intel-rapl:0/"
 IMG_TOKENS = round(shotbot.W * shotbot.H / 750)
 TRUTH = ["Priya Shah", "Tom Wright", "Bright Smile Dental", "Oakfield Primary School"]   # Mum asks by Saturday: not today
@@ -269,6 +270,7 @@ def run():
                            "j": round(b.meter.j, 1) if b.meter.jok else None, "cpu": round(b.meter.cpu, 1),
                            "bytes": b.bytes, "calls": b.calls, "looks": b.looks, "names": b.names, "replies": b.replies}
         res["truth"] = TRUTH
+        res["model"] = MODEL
         json.dump(res, open(os.path.join(OUT, "result.json"), "w"), indent=1)
         res["g_img"] = G_IMG[0]
         res["total_wall"] = round(time.time() - t_run, 1)

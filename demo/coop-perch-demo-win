@@ -150,7 +150,7 @@ class PerchBot(WinBot, demo.Bot):
 
     def look(self, n):
         with self.meter:
-            lines = "\n".join(self.seen)
+            lines = "\n".join(l.split(" ", 1)[1] for l in self.seen)     # the eye's clock time tells the model nothing
         self.looks += 1
         demo.emit(lane="perch", kind="see", lines=lines, bytes=len(lines.encode()), tokens=demo.ctok(lines))
         return lines
@@ -197,6 +197,7 @@ def main():
                        "j": round(b.meter.j, 1) if b.meter.jok else None, "cpu": round(b.meter.cpu, 1),
                        "bytes": b.bytes, "calls": b.calls, "looks": b.looks, "names": b.names, "replies": b.replies}
     res["truth"] = demo.TRUTH
+    res["model"] = demo.MODEL
     res["g_img"] = demo.G_IMG[0]
     res["img_tokens"] = demo.IMG_TOKENS
     res["screen"] = f"Windows 11 VM, Edge, {W}x{H}"

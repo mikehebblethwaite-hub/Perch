@@ -1,0 +1,51 @@
+name: Test report
+description: You ran a Perch demo. Tell us how it went (good or bad, both help).
+title: "Test report: "
+labels: ["test report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for testing Perch. Three steps:
+        1. In the Perch folder, run `./coop-perch-report`
+        2. Copy what it prints between the two lines of `=`
+        3. Paste it below and fill in the rest
+  - type: dropdown
+    id: demo
+    attributes:
+      label: Which demo did you run?
+      options:
+        - The web demo (Linux)
+        - The Windows demo
+        - Both
+        - Something else (say below)
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Your report
+      description: Paste what ./coop-perch-report printed.
+      placeholder: "**Perch** 0.11 (commit ...)"
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Which model did the bots use?
+      description: The demo's own model is a 7.5B model run locally. If you changed it, say which.
+      placeholder: the demo's own
+  - type: dropdown
+    id: worked
+    attributes:
+      label: Did it run from start to end?
+      options:
+        - "Yes"
+        - "No, it stopped part way (say where below)"
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else?
+      description: Anything odd, slow, or wrong. Error messages help most.
