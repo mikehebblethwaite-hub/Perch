@@ -1,36 +1,34 @@
 {
  "perch": {
-  "wall": 417.7,
-  "claude": 10968,
-  "local": 10968,
-  "s": 417.5,
-  "j": 6163.8,
-  "cpu": 1615.8,
-  "bytes": 6224,
+  "wall": 333.8,
+  "claude": 8219,
+  "local": 8219,
+  "s": 333.6,
+  "j": 4890.7,
+  "cpu": 1259.4,
+  "bytes": 4608,
   "calls": 5,
   "looks": 10,
   "names": [
    "Priya Shah",
    "Tom Wright",
-   "Mum",
    "Bright Smile Dental",
    "Oakfield Primary School"
   ],
   "replies": {
-   "Priya Shah": "Please send the final pricing slide before 12 noon today so I can sign off before the 1pm call.",
-   "Tom Wright": "Yes, someone will be in to let the engineer in tomorrow between 9 and 11 am.",
-   "Mum": "I will let you know by Saturday if I can make it for Sunday lunch.",
+   "Priya Shah": "Thanks for the reminder, I will get the final pricing slide to you before noon.",
+   "Tom Wright": "I can confirm someone will be in to let the engineer in tomorrow between 9 and 11 am.",
    "Bright Smile Dental": "Yes, please confirm my appointment for Monday at 10:30.",
-   "Oakfield Primary School": "I consent to the Year 4 museum trip and will arrange the \u00a38 payment today."
+   "Oakfield Primary School": "I consent to the museum trip and will arrange the \u00a38 payment today."
   }
  },
  "shot": {
-  "wall": 887.0,
+  "wall": 891.4,
   "claude": 42477,
   "local": 15357,
-  "s": 886.7,
-  "j": 13160.4,
-  "cpu": 3674.3,
+  "s": 891.1,
+  "j": 13212.3,
+  "cpu": 3683.9,
   "bytes": 1344072,
   "calls": 5,
   "looks": 10,
@@ -54,5 +52,6 @@
   "Tom Wright",
   "Bright Smile Dental",
   "Oakfield Primary School"
- ]
+ ],
+ "model": "gemma-chuck"
 }

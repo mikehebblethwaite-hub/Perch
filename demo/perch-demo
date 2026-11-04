@@ -186,7 +186,7 @@ class PerchBot(Bot):
         if what == "go":
             self.pending = self.web("go", BASE + "/inbox.html")
             return True
-        want = (lambda t: t.startswith("← Back")) if what == "back" else (lambda t: t.startswith(who + " "))
+        want = (lambda t: t.startswith("← Back")) if what == "back" else (lambda t: t.replace("*", "").startswith(who + " "))   # *bold* marks unread rows
         n = next((k for k, t in self.known.items() if want(t)), None)
         if n is None:
             return False
