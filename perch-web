@@ -4,7 +4,7 @@
 # page's scripts and lay it out; the bot gets the page's words, links, buttons and inputs as short lines with boxes, and after
 # every action only what changed.
 #
-#   perch-web NAME go URL | read [all|N|x,y] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | url N | stop
+#   perch-web NAME go URL | read [all|N|x,y] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | url N | data [N [all]] | stop
 #                       | pixels N | pixels x,y,w,h      (a picture's own pixels, cropped, as a PNG: only when it really is a picture)
 #
 # Lines (the key is in the skill and the MCP tool description; PERCH_WEB_SHAPE=1 prints it once per session):
@@ -21,7 +21,7 @@ import json, os, re, socket, subprocess, sys, time
 
 NAME = sys.argv[1] if len(sys.argv) > 1 else ""
 if not NAME or not all(c.isalnum() or c == "-" for c in NAME):
-    sys.exit("usage: perch-web NAME [--mode auto|words|ocr|picture] [--cut N] [--zoom N] go URL | read [all|N|x,y] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | url N | pixels N|x,y,w,h | stop")
+    sys.exit("usage: perch-web NAME [--mode auto|words|ocr|picture] [--cut N] [--zoom N] go URL | read [all|N|x,y] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | url N | data [N [all]] | pixels N|x,y,w,h | stop")
 RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "perch-web-" + NAME)
 SOCK = os.path.join(RUN, "sock")
 W, H, IDLE = 1280, 800, 1800
@@ -51,7 +51,7 @@ def client(args):
     sys.exit(1 if out.startswith(b"err") else 0)
 
 if len(sys.argv) < 3:
-    sys.exit("usage: perch-web NAME [--mode auto|words|ocr|picture] [--cut N] [--zoom N] go URL | read [all|N|x,y] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | url N | pixels N|x,y,w,h | stop")
+    sys.exit("usage: perch-web NAME [--mode auto|words|ocr|picture] [--cut N] [--zoom N] go URL | read [all|N|x,y] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | url N | data [N [all]] | pixels N|x,y,w,h | stop")
 sys.path[:0] = [os.path.dirname(os.path.realpath(__file__)), "/usr/lib/perch"]   # the shared settings: next to this, or packaged
 import perch_settings as settings                      # noqa: E402
 if sys.argv[2] != "--serve":
@@ -84,6 +84,31 @@ WORLD = "perch"
 # transform) on the canvas as data-perch-canvas, once a frame; a full clear starts a new frame. The reader turns them into
 # t lines: the words exactly as the page asked them drawn, no OCR. (A page could write that attribute itself: it can say
 # false things about its own canvas, as it can in its own text. Quoted words stay data.)
+# The data a page's own script fetches (fetch, XMLHttpRequest): WebKit keeps no copy of those bodies, so the page world notes
+# each JSON/text answer as the script receives it, in a hidden <perch-feed> element outside <body> that the reader can see.
+# Capped (1 MB an answer, 200 answers, 4 MB a page). Headers (cookies, tokens) are never noted.
+FEED_HOOK = r"""(() => {
+  if (window.__perchFeedHook) return; Object.defineProperty(window, '__perchFeedHook', {value: true});
+  let total = 0, n = 0;
+  const keep = (url, type, text) => { try {
+    if (!/json|text\/|xml|csv/i.test(type || '') || n >= 200 || total > 4e6) return;
+    text = String(text).slice(0, 1e6); total += text.length; n++;
+    let box = document.querySelector('perch-feed');
+    if (!box) { box = document.createElement('perch-feed'); box.hidden = true; document.documentElement.appendChild(box); }
+    const e = document.createElement('p'); e.setAttribute('data-u', String(url).slice(0, 500)); e.setAttribute('data-t', String(type).slice(0, 100));
+    e.textContent = text; box.appendChild(e); } catch (x) {} };
+  const f = window.fetch;
+  if (f) window.fetch = function (...a) { return f.apply(this, a).then((r) => { try { const ct = r.headers.get('content-type') || '';
+    if (/json|text\/|xml|csv/i.test(ct)) r.clone().text().then((t) => keep(r.url, ct, t)).catch(() => {}); } catch (x) {} return r; }); };
+  const send = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.send = function (...a) { this.addEventListener('load', () => { try {
+    const ct = this.getResponseHeader('content-type') || '';
+    if (this.responseType === '' || this.responseType === 'text') keep(this.responseURL, ct, this.responseText);
+    else if (this.responseType === 'json') keep(this.responseURL, ct, JSON.stringify(this.response)); } catch (x) {} });
+    return send.apply(this, a); };
+})();"""
+FEED_READ = r"""JSON.stringify([...document.querySelectorAll('perch-feed > p')].map((e) => [e.getAttribute('data-u') || '', e.getAttribute('data-t') || '', e.textContent]))"""
+
 CANVAS_HOOK = r"""(() => {
   const P = window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype; if (!P || P.__perch) return;
   Object.defineProperty(P, '__perch', {value: true});
@@ -181,13 +206,15 @@ READER = r"""
   }
   for (const [b, nodes] of blocks) { const r = vis(b); if (!r) continue; const tx = clean(marked(nodes, wt(b)));
     if (tx && /[\p{L}\p{N}]/u.test(tx)) out.push(['t', '', box(r), tx]); }   // no letter or digit = decoration (sparkles, dots)
+  // (the hidden <perch-feed> notes sit outside <body> and are hidden: the reader's walk does not reach them)
   for (const c of document.querySelectorAll('canvas[data-perch-canvas]')) {      // words the page drew on a canvas (CANVAS_HOOK)
     const r = vis(c); if (!r || !c.width || !c.height) continue; let l; try { l = JSON.parse(c.getAttribute('data-perch-canvas')); } catch (e) { continue; }
     if (!Array.isArray(l)) continue; const sx = r.width / c.width, sy = r.height / c.height;
     for (const e of l.slice(-400)) { if (!Array.isArray(e) || e.length !== 5 || typeof e[4] !== 'string') continue;
       const tx = clean(e[4]); if (!tx || !/[\p{L}\p{N}]/u.test(tx)) continue;
       out.push(['t', '', box({left: r.left + e[0] * sx, top: r.top + e[1] * sy, width: Math.max(1, e[2] * sx), height: Math.max(1, e[3] * sy)}), tx]); } }
-  return JSON.stringify({url: location.href, title: document.title.slice(0, 200), sy: Math.round(scrollY), ph: document.documentElement.scrollHeight, items: out});
+  return JSON.stringify({url: location.href, title: document.title.slice(0, 200), sy: Math.round(scrollY), ph: document.documentElement.scrollHeight, items: out,
+                         feed: document.querySelectorAll('perch-feed > p').length});
 })(%s)
 """
 
@@ -251,8 +278,9 @@ class Viewer:
     def __init__(self):
         ctx = WebKit2.WebContext.new_ephemeral()               # nothing on disk
         ucm = WebKit2.UserContentManager()
-        ucm.add_script(WebKit2.UserScript.new(CANVAS_HOOK, WebKit2.UserContentInjectedFrames.ALL_FRAMES,
-                                              WebKit2.UserScriptInjectionTime.START, None, None))
+        for hook in (CANVAS_HOOK, FEED_HOOK):
+            ucm.add_script(WebKit2.UserScript.new(hook, WebKit2.UserContentInjectedFrames.ALL_FRAMES,
+                                                  WebKit2.UserScriptInjectionTime.START, None, None))
         self.web = WebKit2.WebView(web_context=ctx, user_content_manager=ucm)
         st = self.web.get_settings()
         st.set_enable_developer_extras(False); st.set_enable_webaudio(False); st.set_media_playback_requires_user_gesture(True)
@@ -260,6 +288,8 @@ class Viewer:
         self.win = Gtk.OffscreenWindow(); self.win.set_default_size(W, H); self.win.add(self.web); self.win.show_all()
         self.loading = False; self.last = []; self.told = {}; self.shape_sent = False; self.used = time.time(); self.opt = dict(settings.DEFAULTS)
         self.web.connect("load-changed", self.on_load)
+        self.feed = []                                          # the data this page received (data / data N): see on_res
+        self.web.connect("resource-load-started", self.on_res)
         self.web.connect("create", lambda *a: None)             # no pop-up windows
         self.web.connect("script-dialog", self.on_dialog)
         self.dialog = ""
@@ -270,6 +300,26 @@ class Viewer:
 
     def on_load(self, w, ev):
         self.loading = ev != WebKit2.LoadEvent.FINISHED
+        if ev == WebKit2.LoadEvent.STARTED: self.feed = []        # a new page: a new feed
+
+    # The data a page receives before it becomes a page: the stored data a site sends (an inbox as JSON records, a list, a
+    # document), caught as it arrives at this browser, ahead of layout and pixels. Kept: JSON, text, XML, CSV, HTML; never
+    # pictures, styles, scripts or fonts, and never any request or response headers (cookies, tokens). At most 2 MB a page.
+    FEED_KEEP = ("json", "text/plain", "text/html", "xml", "csv", "text/event-stream")
+    def on_res(self, w, res, req):
+        res.connect("finished", self.res_done)
+
+    def res_done(self, res):
+        r = res.get_response(); mime = (r.get_mime_type() if r else "") or ""
+        if not any(k in mime for k in self.FEED_KEEP) or sum(len(f["text"]) for f in self.feed) > 2_000_000: return
+        if res is self.web.get_main_resource(): return          # the page itself: the bot has its words; data is what it received
+        def got(rr, result):
+            try: b = rr.get_data_finish(result)
+            except GLib.Error: return
+            if b is None: return
+            t = bytes(b)[:1_000_000].decode("utf-8", "replace")
+            self.feed.append({"uri": rr.get_uri(), "mime": mime.split(";")[0], "size": len(b), "text": t})
+        res.get_data(None, got)
 
     def js(self, script, done):
         def cb(w, res):
@@ -307,7 +357,7 @@ class Viewer:
             if not v: done(f"err the page could not be read{': ' + e if e else ''}\n"); return
             d = json.loads(v)
             lines = [line(it) for it in d["items"]]
-            head = f"P {d['url'][:300]} {q(d['title'])} {d['sy']}/{d['ph']}"
+            head = f"P {d['url'][:300]} {q(d['title'])} {d['sy']}/{d['ph']}" + (f" data:{d['feed']}" if d.get("feed") else "")   # the page received data: `data` lists it
             out = []
             if SHAPE_ON and not self.shape_sent: out.append(SHAPE); self.shape_sent = True   # the skill and the MCP tools carry the key
             if self.dialog: out.append("! dialog " + q(self.dialog)); self.dialog = ""
@@ -376,6 +426,37 @@ class Viewer:
                 r = reader.read(im, [(0, 0, im.width, im.height)], page=True)
                 out += [settings.cut(f"R {x},{y} {w}x{h} {reader.quote(t)}", self.opt["cut"]) for x, y, w, h, t in r] or ["! no words read"]
         done("\n".join(out) + "\n")
+
+    @staticmethod
+    def shape(o, depth=0):
+        """a JSON value's shape in a few characters: {mailbox,messages[14]{id,from,subject,...}}"""
+        if depth > 2: return "…"
+        if isinstance(o, dict):
+            ks = list(o)[:12]
+            return "{" + ",".join(k + (Viewer.shape(o[k], depth + 1) if isinstance(o[k], (dict, list)) else "") for k in ks) + (",…" if len(o) > 12 else "") + "}"
+        if isinstance(o, list):
+            return f"[{len(o)}]" + (Viewer.shape(o[0], depth + 1) if o and isinstance(o[0], (dict, list)) else "")
+        return ""
+
+    def feed_list(self):
+        if not self.feed: return "! no data received by this page yet (read it, or act, then data again)\n"
+        out = []
+        for i, f in enumerate(self.feed, 1):
+            sh = ""
+            if "json" in f["mime"]:
+                try: sh = " " + self.shape(json.loads(f["text"]))
+                except ValueError: pass
+            out.append(f"d {i} {f['mime']} {f['size']} {q(f['uri'][:200])}{sh}")
+        return "\n".join(out) + "\n"
+
+    def feed_one(self, n, whole):
+        if not 1 <= n <= len(self.feed): return "err no such data (data lists them)\n"
+        f = self.feed[n - 1]; t = f["text"]
+        if "json" in f["mime"]:
+            try: t = json.dumps(json.loads(t), ensure_ascii=False, separators=(",", ":"))     # compact: the same data, fewer tokens
+            except ValueError: pass
+        cap = 1_000_000 if whole else 20_000
+        return t[:cap] + (f"\n! {len(t) - cap} more characters: data {n} all\n" if len(t) > cap else "\n")
 
     def read_one(self, what, done):
         """read N: line N whole (a link, button, box, picture); read x,y: the words at that place whole"""
@@ -453,6 +534,18 @@ class Viewer:
                 (self.web.go_back if c == "back" else self.web.go_forward)(); after_action(c)   # changes only: what was told comes back as "="
             elif c == "pixels" and len(args) == 2:
                 self.pixels(args[1], done)
+            elif c == "data" and (len(args) == 1 or (len(args) in (2, 3) and args[1].isdigit() and (len(args) == 2 or args[2] == "all"))):
+                def got(v, e=None):
+                    try: page = json.loads(v or "[]")
+                    except ValueError: page = []
+                    for u, t, x in page[:200]:                  # the page's copy wins over WebKit's empty one for the same address
+                        if not isinstance(x, str): continue
+                        f = {"uri": u, "mime": t.split(";")[0].strip(), "size": len(x.encode()), "text": x}
+                        old = next((g for g in self.feed if g["uri"] == u), None)
+                        if old is None: self.feed.append(f)
+                        elif old["size"] <= 1 or old["text"] != x: old.update(f)
+                    done(self.feed_list() if len(args) == 1 else self.feed_one(int(args[1]), len(args) == 3))
+                self.js(FEED_READ, got)
             elif c == "url" and len(args) == 2 and args[1].isdigit():
                 self.js(f"(e => e ? String(e.href || e.currentSrc || e.src || '') : null)({by(args[1])})",
                         lambda v, e=None: done(f"url {args[1]} {v}\n" if v and v != "null" else "err no such number (read again: numbers are per page)\n"))
@@ -461,7 +554,7 @@ class Viewer:
             elif c == "stop":
                 done("ok stopping\n"); GLib.timeout_add(200, lambda: (Gtk.main_quit(), False)[1])
             else:
-                done("err say: go URL | read [all|N|x,y] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | url N | pixels N|x,y,w,h | stop\n")
+                done("err say: go URL | read [all|N|x,y] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | url N | data [N [all]] | pixels N|x,y,w,h | stop\n")
         except Exception as e:
             done(f"err {type(e).__name__}: {str(e)[:200]}\n")
 

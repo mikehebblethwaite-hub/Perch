@@ -75,14 +75,14 @@ def flags(a):
 TOOLS = [
     {"name": "perch_web",
      "description": "Look at and use a web page as words and numbered actions instead of a screenshot. Start with action go and a url "
-                    "(or a local .html path); then click/type/enter by number, scroll, back, read, url N (a link's whole address; the lines carry a short one); each action answers with only what "
+                    "(or a local .html path); then click/type/enter by number, scroll, back, read, url N (a link's whole address; the lines carry a short one), data (what the page received from its server: JSON records such as an inbox; data with n gives one whole: read content there first); each action answers with only what "
                     "changed. Lines: P url 'title' · t box 'words' · a N box 'text' url · b N box 'label' · i N box type name 'value' · "
                     "p N box (a picture) · + appeared · - went. End with action stop.",
      "inputSchema": {"type": "object", "properties": {
          "session": {"type": "string", "description": "one short name for the whole task (a-z, 0-9, -)"},
-         "action": {"type": "string", "enum": ["go", "click", "type", "enter", "scroll", "back", "read", "url", "pixels", "stop"]},
+         "action": {"type": "string", "enum": ["go", "click", "type", "enter", "scroll", "back", "read", "url", "data", "pixels", "stop"]},
          "url": {"type": "string", "description": "for go: an http(s) address or a local .html path"},
-         "n": {"type": "integer", "description": "for click, type, enter, url (a link's whole address), pixels: the number from a line"},
+         "n": {"type": "integer", "description": "for click, type, enter, url (a link's whole address), data (one received answer whole), pixels: the number from a line"},
          "text": {"type": "string", "description": "for type: the words to type"},
          "direction": {"type": "string", "enum": ["down", "up"], "description": "for scroll"},
          "all": {"type": "boolean", "description": "for read: the whole page, not only what is in view"}, **LOOK},
@@ -146,6 +146,8 @@ def call(name, a):
             args += ["go", u]
         elif act in ("click", "enter", "url"):
             args += [act, str(need(a, "n", kind=int))]
+        elif act == "data":
+            args += ["data"] + ([str(need(a, "n", kind=int))] + (["all"] if a.get("all") else []) if "n" in a else [])
         elif act == "type":
             t = need(a, "text")
             if len(t) > 5000 or "\n" in t:
