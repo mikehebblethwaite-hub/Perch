@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-# Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT. CONFIDENTIAL: local only, never published.
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
 # coop-perch-demo: one everyday job people give an LLM, done twice with the same model and the same hands:
 #   the screenshot bot (Chrome, a full screenshot after every action, as bots see screens today) and
 #   the Perch bot (coop-perch-web lines: words, numbered actions, then only what changed).

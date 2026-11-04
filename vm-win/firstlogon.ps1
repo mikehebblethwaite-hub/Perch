@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Mike J Hebblethwaite. CONFIDENTIAL. First sign-in on Perch's Windows test VM (run once by autounattend).
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md. First sign-in on Perch's Windows test VM (run once by autounattend).
 # Never sleeps or blanks the screen (Perch watches it), SSH for building in it (key only), then writes C:\perch-ready.txt.
 $done = 'C:\perch-ready.txt'
 if (Test-Path $done) { exit 0 }                      # the answer disc offers this script on D:, E: and F:; run once

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. CONFIDENTIAL.
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
 # coop-perch-winvm: Perch's Windows test VM on the host (Mike, 1 Nov 2026: "install windows vm ... to build a windows bot skill and
 # exe install of perch"). Windows 11 with the host's embedded OEM product key, BIOS, one virtio disk, so Perch's own runner
 # (coop-perch-vmrun) can be its monitor unchanged. Rebuildable: lives in ~/coop-perch/vm/win; old disks are backed up to build-2.
