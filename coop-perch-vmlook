@@ -1,15 +1,19 @@
 #!/usr/bin/python3 -I
 # Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
-# coop-perch-vmlook NAME [changes|window|pixels x,y,w,h]: a bot's look at a Perch VM (coop-perch-vmrun NAME) through the guest
-# helper's lines: W app 'title' box (window in front), F app role 'name' box (focus), T app box +'words'.
-#   changes (default)  the lines that came since this bot's last look (the first look: the window in front now)
+# coop-perch-vmlook NAME [changes|window|read x,y,w,h|pixels x,y,w,h]: a bot's look at a Perch VM (coop-perch-vmrun NAME) through
+# the guest helper's lines: W app 'title' box (window in front), F app role 'name' box (focus), T app box +'words'.
+#   changes (default)  the lines that came since this bot's last look (the first look: the window in front now). Parts of the
+#                      screen that changed but brought no words (a game, a canvas, a remote desktop, an app that tells the
+#                      accessibility layer nothing) are read from their pixels, here on the host (Tesseract, no tokens):
+#                      R x,y wxh +'text'  = read from pixels: may hold mistakes. PERCH_READ=off: not read.
 #   window             the window in front now: its W line and everything after it
+#   read x,y,w,h       that part of the screen read from its pixels, as R lines
 #   pixels x,y,w,h     only that part of the screen as a PNG (QEMU's own screendump, cropped) -> "pixels FILE wxh ~T tokens"
 # The screen settling first: coop-perch-wait -t 10 -p vm-NAME.
-import json, os, re, socket, sys
+import json, os, re, shutil, socket, subprocess, sys
 
 if len(sys.argv) < 2 or not re.fullmatch(r"[a-z0-9-]+", sys.argv[1]):
-    sys.exit("usage: coop-perch-vmlook NAME [changes|window|pixels x,y,w,h]")
+    sys.exit("usage: coop-perch-vmlook NAME [changes|window|read x,y,w,h|pixels x,y,w,h]")
 NAME, what = sys.argv[1], (sys.argv[2] if len(sys.argv) > 2 else "changes")
 HERE = os.path.dirname(os.path.realpath(__file__))
 RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "coop-perch-vm-" + NAME)
@@ -18,6 +22,118 @@ MARK = os.path.join(RUN, "look-mark")
 if not os.path.isdir(RUN):
     sys.exit(f"coop-perch-vmlook: no Perch VM '{NAME}' running")
 HELPER = re.compile(r"^\S+ ([WFT]) ")
+STRIKE = re.compile(r"@(\d+),(\d+) (\d+)x(\d+)")
+TBOX = re.compile(r"^\S+ T \S+ (-?\d+),(-?\d+) (\d+)x(\d+)")
+
+
+def screen():
+    """the whole screen now, from QEMU itself"""
+    from PIL import Image
+    ppm = os.path.join(RUN, "look.ppm")
+    c = socket.socket(socket.AF_UNIX); c.connect(os.path.join(RUN, "qmp")); f = c.makefile("rw"); f.readline()
+    for cmd in ({"execute": "qmp_capabilities"}, {"execute": "screendump", "arguments": {"filename": ppm}}):
+        f.write(json.dumps(cmd) + "\n"); f.flush(); f.readline()
+    c.close()
+    im = Image.open(ppm); im.load(); os.remove(ppm)
+    return im
+
+
+def read_boxes(boxes, im=None):
+    """R lines: each box's words read from its pixels (Tesseract on this host), one line per text line, with its own box"""
+    if not boxes or not shutil.which("tesseract"):
+        return []
+    from PIL import Image, ImageOps
+    im = im or screen()
+    out = []
+    for b in boxes:
+        x, y, w, h = b[:4]
+        ox, oy, ow, oh = b[4:] if len(b) == 8 else b
+        w, h = w + min(0, x), h + min(0, y); x, y = max(0, x), max(0, y); w, h = min(w, im.width - x), min(h, im.height - y)
+        if w < 8 or h < 8:
+            continue
+        g = ImageOps.grayscale(im.crop((x, y, x + w, y + h))).resize((w * 2, h * 2), Image.LANCZOS)
+        if sum(g.resize((1, 1)).getdata()) < 128:          # light words on a dark ground: turned round for the reader
+            g = ImageOps.invert(g)
+        g = ImageOps.expand(g, 16, fill=255)
+        tsv = subprocess.run(["tesseract", "-", "-", "--psm", "11" if w * h > 120000 else "6", "-l", "eng", "tsv"], input=_png(g),
+                             capture_output=True, timeout=60).stdout.decode("utf-8", "replace")
+        lines = {}
+        for row in tsv.splitlines()[1:]:
+            c = row.split("\t")
+            if len(c) < 12 or not c[11].strip() or float(c[10]) < 55:
+                continue
+            k = (c[2], c[3], c[4])                              # block, paragraph, line
+            bx, by, bw, bh = ((int(c[6]) - 16) // 2 + x, (int(c[7]) - 16) // 2 + y, int(c[8]) // 2, int(c[9]) // 2)
+            l = lines.setdefault(k, [[], [bx, by, bx + bw, by + bh]])
+            l[0].append(c[11].strip()); b = l[1]
+            b[0], b[1], b[2], b[3] = min(b[0], bx), min(b[1], by), max(b[2], bx + bw), max(b[3], by + bh)
+        for words, b in sorted(lines.values(), key=lambda v: (v[1][1], v[1][0])):
+            if b[2] < ox or b[0] > ox + ow or b[3] < oy or b[1] > oy + oh:
+                continue                                        # a line near the change, not the change
+            t = " ".join(words)
+            if len(t) >= 2 and re.search(r"[A-Za-z0-9]{2}", t):
+                q = t.replace("\\", "\\\\").replace("'", "\\'")
+                out.append(f"R {b[0]},{b[1]} {b[2] - b[0]}x{b[3] - b[1]} +'{q}'")
+    return out
+
+
+def _png(im):
+    import io
+    b = io.BytesIO(); im.save(b, "PNG"); return b.getvalue()
+
+
+def wordless(pos):
+    """the parts that changed since pos and brought no words: strikes merged, those the helper's W/T boxes cover dropped"""
+    with open(TAPE, encoding="utf-8", errors="replace") as f:
+        f.seek(pos)
+        tape = f.read().splitlines()
+    strikes, words = [], []
+    for l in tape:
+        p = l.split(" ", 2)
+        if len(p) > 2 and p[1] == "S":
+            strikes += [tuple(map(int, m)) for m in STRIKE.findall(p[2])]
+        m = TBOX.match(l)
+        if m:
+            words.append(tuple(map(int, m.groups())))
+    boxes = [[x, y, x + w, y + h] for x, y, w, h in strikes if w >= 4 and h >= 8]
+    merged = True
+    while merged:                                           # touching boxes become one
+        merged = False
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                a, b = boxes[i], boxes[j]
+                if a[0] <= b[2] + 8 and b[0] <= a[2] + 8 and a[1] <= b[3] + 8 and b[1] <= a[3] + 8:
+                    boxes[i] = [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])]
+                    del boxes[j]; merged = True; break
+            if merged:
+                break
+    out = []
+    for x0, y0, x1, y1 in boxes:
+        area = (x1 - x0) * (y1 - y0); cov = 0
+        for wx, wy, ww, wh in words:
+            ix, iy = min(x1, wx + ww) - max(x0, wx), min(y1, wy + wh) - max(y0, wy)
+            if ix > 0 and iy > 0:
+                cov += ix * iy
+        if cov < 0.4 * area:
+            # read with the line around it (one changed digit cannot be read alone); only lines touching the change are kept
+            out.append((x0 - 200, y0 - 8, x1 - x0 + 400, y1 - y0 + 16, x0, y0, x1 - x0, y1 - y0))
+    return sorted(out, key=lambda b: -b[6] * b[7])[:6], words
+
+
+def not_told(rlines, words):
+    """an R line the apps already told as words (a T line over at least half of it) is not sent twice"""
+    keep = []
+    for r in rlines:
+        m = re.match(r"R (-?\d+),(-?\d+) (\d+)x(\d+)", r)
+        x, y, w, h = map(int, m.groups())
+        cov = 0
+        for wx, wy, ww, wh in words:
+            ix, iy = min(x + w, wx + ww) - max(x, wx), min(y + h, wy + wh) - max(y, wy)
+            if ix > 0 and iy > 0:
+                cov += ix * iy
+        if cov < 0.5 * w * h:
+            keep.append(r)
+    return keep
 
 
 def lines_from(pos):
@@ -38,13 +154,16 @@ if what == "pixels":
     if not m:
         sys.exit("pixels x,y,w,h")
     x, y, w, h = map(int, m.groups())
-    from PIL import Image
-    ppm, png = os.path.join(RUN, "look.ppm"), os.path.join(RUN, f"look-{x}-{y}-{w}x{h}.png")
-    c = socket.socket(socket.AF_UNIX); c.connect(os.path.join(RUN, "qmp")); f = c.makefile("rw"); f.readline()
-    for cmd in ({"execute": "qmp_capabilities"}, {"execute": "screendump", "arguments": {"filename": ppm}}):
-        f.write(json.dumps(cmd) + "\n"); f.flush(); f.readline()
-    im = Image.open(ppm).crop((x, y, x + w, y + h)); im.save(png); os.remove(ppm)
+    png = os.path.join(RUN, f"look-{x}-{y}-{w}x{h}.png")
+    im = screen().crop((x, y, x + w, y + h)); im.save(png)
     print(f"pixels {png} {im.width}x{im.height} ~{max(1, round(im.width * im.height / 750))} tokens")
+    sys.exit(0)
+
+if what == "read":
+    m = re.fullmatch(r"(\d+),(\d+),(\d+),(\d+)", sys.argv[3] if len(sys.argv) > 3 else "")
+    if not m:
+        sys.exit("read x,y,w,h")
+    print("\n".join(read_boxes([tuple(map(int, m.groups()))])) or "(no words read)")
     sys.exit(0)
 
 try:
@@ -55,6 +174,9 @@ if what == "window" or pos is None or pos > os.path.getsize(TAPE):
     out, end = window_now()
 elif what == "changes":
     out, end = lines_from(pos)
+    if os.environ.get("PERCH_READ", "on") != "off":
+        boxes, words = wordless(pos)
+        out += ["00:00:00 " + r for r in not_told(read_boxes(boxes), words)]
 else:
     sys.exit("usage: coop-perch-vmlook NAME [changes|window|pixels x,y,w,h]")
 open(MARK, "w").write(str(end))

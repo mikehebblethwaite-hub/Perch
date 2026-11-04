@@ -19,6 +19,9 @@ Perch is an open-source tool that lets bots and automated systems see your scree
   nothing is captured. A small helper inside the guest sends the apps' own words: AT-SPI on Linux, UI Automation on Windows.
   Perch's hands type and click through QEMU's own keyboard and mouse.
 - **Web pages:** `coop-perch-web` gives a page as words and numbered actions (`click 15`), then only what changed.
+- **Apps that give no words** (games, canvas drawing, remote desktops, custom-drawn programs): in a VM, the parts that changed
+  without words are read from their pixels on the host (`coop-perch-vmlook`, with Tesseract: `sudo apt install tesseract-ocr`)
+  and sent as `R` lines: no tokens, and only what changed.
 - Not yet: macOS; Windows or Linux desktops without a VM.
 
 ## Try it (Ubuntu 24.04 or similar)
@@ -28,7 +31,7 @@ Copy each block into a terminal, one at a time.
 **1. Get it and build it**
 ```bash
 sudo apt install build-essential libx11-dev libxdamage-dev libxext-dev libxfixes-dev libglib2.0-dev \
-     xvfb x11-utils python3-pyatspi gir1.2-atspi-2.0 gir1.2-webkit2-4.1 qemu-system-x86
+     xvfb x11-utils python3-pyatspi gir1.2-atspi-2.0 gir1.2-webkit2-4.1 qemu-system-x86 tesseract-ocr
 git clone https://github.com/mikehebblethwaite-hub/Perch.git
 cd Perch
 make

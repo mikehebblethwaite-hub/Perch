@@ -1,0 +1,21 @@
+<!doctype html>
+<!-- Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md. Test page: words drawn as pixels only (a canvas), so the
+     accessibility layer has nothing: what a game or a custom-drawn app looks like to a bot. Used to test reading from pixels. -->
+<meta charset="utf-8"><title>Board</title>
+<style>body{margin:0;background:#f3f3f3}canvas{display:block}</style>
+<canvas id="c" width="1000" height="640" aria-hidden="true"></canvas>
+<script>
+const c = document.getElementById("c").getContext("2d");
+function draw(score) {
+  c.fillStyle = "#ffffff"; c.fillRect(20, 20, 600, 260);
+  c.fillStyle = "#222222"; c.font = "bold 30px Segoe UI, sans-serif"; c.fillText("Team board", 40, 70);
+  c.font = "22px Segoe UI, sans-serif";
+  c.fillText("Meeting moved to 3pm in room 4", 40, 120);
+  c.fillText("Invoice 4471 is due on Friday", 40, 160);
+  c.fillText("Ask Sam about the boiler visit", 40, 200);
+  c.fillStyle = "#1d2a38"; c.fillRect(20, 320, 600, 140);
+  c.fillStyle = "#f5f5f5"; c.font = "bold 34px Segoe UI, sans-serif"; c.fillText("Score " + score + "   Level 3", 40, 400);
+}
+let s = 120; draw(s);
+document.addEventListener("keydown", e => { if (e.key === "ArrowUp") { s += 10; draw(s); } });
+</script>

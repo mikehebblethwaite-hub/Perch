@@ -42,6 +42,6 @@ install: $(PRODUCT_BIN)
 deb: $(PRODUCT_BIN)
 	rm -rf dist/pkg && mkdir -p dist/pkg/DEBIAN
 	$(MAKE) install DESTDIR=$(CURDIR)/dist/pkg PREFIX=/usr
-	printf 'Package: coop-perch\nVersion: $(VERSION)\nArchitecture: amd64\nMaintainer: Mike J Hebblethwaite\nDepends: qemu-system-x86 (>= 1:8.0), dbus-daemon | dbus, libglib2.0-0t64 | libglib2.0-0, python3, python3-pyatspi, gir1.2-atspi-2.0, gir1.2-webkit2-4.1, xvfb\nSection: misc\nPriority: optional\nDescription: Perch: a virtual machine screen for bots, without screenshots\n The guest screen comes straight from the hypervisor as changed boxes and\n raw vectors; text from the guest helper; keys and mouse back the same way.\n' > dist/pkg/DEBIAN/control
+	printf 'Package: coop-perch\nVersion: $(VERSION)\nArchitecture: amd64\nMaintainer: Mike J Hebblethwaite\nDepends: qemu-system-x86 (>= 1:8.0), dbus-daemon | dbus, libglib2.0-0t64 | libglib2.0-0, python3, python3-pyatspi, gir1.2-atspi-2.0, gir1.2-webkit2-4.1, xvfb\nSection: misc\nPriority: optional\nRecommends: tesseract-ocr\nDescription: Perch: a virtual machine screen for bots, without screenshots\n The guest screen comes straight from the hypervisor as changed boxes and\n raw vectors; text from the guest helper; keys and mouse back the same way.\n' > dist/pkg/DEBIAN/control
 	printf 'Copyright (c) 2026 Mike J Hebblethwaite. GNU AGPL-3.0 or a commercial licence: see /usr/share/coop-perch/LICENSE.md\n' > dist/pkg/DEBIAN/copyright
 	dpkg-deb --root-owner-group --build dist/pkg dist/coop-perch_$(VERSION)_amd64.deb
