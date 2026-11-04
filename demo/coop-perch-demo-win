@@ -104,8 +104,9 @@ def screendump():
     f.readline()
     ppm = os.path.join(demo.OUT, "screen.ppm")
     for cmd in ({"execute": "qmp_capabilities"}, {"execute": "screendump", "arguments": {"filename": ppm}}):
-        f.write(json.dumps(cmd) + "\n"); f.flush(); f.readline()
-    c.close()
+        f.write(json.dumps(cmd) + "\n"); f.flush()
+        while not re.search(r'"(return|error)"', f.readline() or '"error"'): pass
+    f.close(); c.close()
     from PIL import Image
     b = io.BytesIO()
     Image.open(ppm).save(b, "PNG")

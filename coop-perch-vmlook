@@ -8,12 +8,13 @@
 #                      R x,y wxh +'text'  = read from pixels: may hold mistakes. PERCH_READ=off: not read.
 #   window             the window in front now: its W line and everything after it
 #   read x,y,w,h       that part of the screen read from its pixels, as R lines
+#   learned            what the reader learned on this screen (it checks itself against the apps' own words as it goes)
 #   pixels x,y,w,h     only that part of the screen as a PNG (QEMU's own screendump, cropped) -> "pixels FILE wxh ~T tokens"
 # The screen settling first: coop-perch-wait -t 10 -p vm-NAME.
 import json, os, re, shutil, socket, subprocess, sys
 
 if len(sys.argv) < 2 or not re.fullmatch(r"[a-z0-9-]+", sys.argv[1]):
-    sys.exit("usage: coop-perch-vmlook NAME [changes|window|read x,y,w,h|pixels x,y,w,h]")
+    sys.exit("usage: coop-perch-vmlook NAME [changes|window|read x,y,w,h|pixels x,y,w,h|learned]")
 NAME, what = sys.argv[1], (sys.argv[2] if len(sys.argv) > 2 else "changes")
 HERE = os.path.dirname(os.path.realpath(__file__))
 RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "coop-perch-vm-" + NAME)
@@ -26,6 +27,8 @@ import coop_perch_read as reader                            # noqa: E402
 HELPER = re.compile(r"^\S+ ([WFT]) ")
 STRIKE = re.compile(r"@(\d+),(\d+) (\d+)x(\d+)")
 TBOX = re.compile(r"^\S+ T \S+ (-?\d+),(-?\d+) (\d+)x(\d+)")
+TTEXT = re.compile(r"^\S+ T \S+ (-?\d+),(-?\d+) (\d+)x(\d+) \+'((?:[^'\\]|\\.)*)'$")
+memory = reader.Memory("vm-" + NAME)
 
 
 def screen():
@@ -34,8 +37,9 @@ def screen():
     ppm = os.path.join(RUN, "look.ppm")
     c = socket.socket(socket.AF_UNIX); c.connect(os.path.join(RUN, "qmp")); f = c.makefile("rw"); f.readline()
     for cmd in ({"execute": "qmp_capabilities"}, {"execute": "screendump", "arguments": {"filename": ppm}}):
-        f.write(json.dumps(cmd) + "\n"); f.flush(); f.readline()
-    c.close()
+        f.write(json.dumps(cmd) + "\n"); f.flush()
+        while not re.search(r'"(return|error)"', f.readline() or '"error"'): pass
+    f.close(); c.close()
     im = Image.open(ppm); im.load(); os.remove(ppm)
     return im
 
@@ -105,11 +109,14 @@ if what == "pixels":
     print(f"pixels {png} {im.width}x{im.height} ~{max(1, round(im.width * im.height / 750))} tokens")
     sys.exit(0)
 
+if what == "learned":
+    print(memory.report())
+    sys.exit(0)
 if what == "read":
     m = re.fullmatch(r"(\d+),(\d+),(\d+),(\d+)", sys.argv[3] if len(sys.argv) > 3 else "")
     if not m:
         sys.exit("read x,y,w,h")
-    print("\n".join(R(reader.read(screen(), [tuple(map(int, m.groups()))]))) or "(no words read)")
+    print("\n".join(R(reader.read(screen(), [tuple(map(int, m.groups()))], memory=memory))) or "(no words read)")
     sys.exit(0)
 
 try:
@@ -122,8 +129,14 @@ elif what == "changes":
     out, end = lines_from(pos)
     if os.environ.get("PERCH_READ", "on") != "off":
         boxes, words = wordless(pos)
-        if boxes and reader.available():
-            out += ["00:00:00 " + r for r in R(reader.not_told(reader.read(screen(), boxes), words))]
+        truths = [(int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4)), re.sub(r"\\(.)", r"\1", m.group(5)))
+                  for m in map(TTEXT.match, out) if m]
+        if (boxes or truths) and reader.available():
+            im = screen()
+            if truths and os.environ.get("PERCH_LEARN", "on") != "off":
+                reader.calibrate(im, truths, memory, budget=4)        # learning as it goes: a few known words a look
+            if boxes:
+                out += ["00:00:00 " + r for r in R(reader.not_told(reader.read(im, boxes, memory=memory), words))]
 else:
     sys.exit("usage: coop-perch-vmlook NAME [changes|window|pixels x,y,w,h]")
 open(MARK, "w").write(str(end))

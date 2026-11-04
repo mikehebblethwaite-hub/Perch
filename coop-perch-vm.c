@@ -409,7 +409,7 @@ static gboolean ev_tick(gpointer u) {
         }
         if (e->kind == 0) qcall("org.qemu.Display1.Keyboard", e->b ? "Press" : "Release", g_variant_new("(u)", e->a));
         else if (e->kind == 1) qcall("org.qemu.Display1.Mouse", e->b ? "Press" : "Release", g_variant_new("(u)", e->a));
-        else if (e->kind == 2) qcall("org.qemu.Display1.Mouse", "SetAbsPosition", g_variant_new("(uu)", e->a, e->b));
+        else if (e->kind == 2) { qcall("org.qemu.Display1.Mouse", "SetAbsPosition", g_variant_new("(uu)", e->a, e->b)); perch_pointer(&eye, (int)e->a, (int)e->b, perch_now()); }
         g_free(e);
         if (tick_ms > 0 || ++burst >= BURST) return G_SOURCE_CONTINUE;
     }

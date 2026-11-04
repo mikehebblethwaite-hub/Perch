@@ -66,6 +66,11 @@ It prints a short report (nothing personal) and the page to paste it into. Every
 **The Windows demo** needs a Windows 11 VM run by Perch: see `vm-win/coop-perch-winvm` (it builds one hands-off from
 Microsoft's ISO), then `coop-perch-winvm guest` to put the helper in, and `demo/coop-perch-demo-win`.
 
+## Use it with Claude Code
+
+Perch comes with a Claude Code skill (`.claude/skills/perch/SKILL.md`). Open Claude Code in the Perch folder and type `/perch`,
+or just ask it to look at a page or a screen: it reads Perch's lines instead of taking screenshots.
+
 ## Files
 
 - `coop-perch-display`, `coop-perch-tap.c`, `coop-perch-eye.c`: the display, the tap on its data line, the eye

@@ -206,7 +206,27 @@ typedef struct {
     long ev_total, looks, strikes_total, habit_total, frames_with_strike, tape_bytes, px_read;
     long w_ev, w_looks, w_strikes, w_frames, w_tape, w_px, w_habit;
     char last_line[400];
+    /* None Bot Items: changes that exist only for a human eye are dropped here, before anything is written. First: the pointer
+     * the guest draws into its own pixels (Windows does), where the eye's own hands just put it (now and the place before) */
+    int ptr_x, ptr_y, ptr_px, ptr_py;
+    double ptr_t;
+    long nonbot_total;
 } PerchEye;
+
+/* the hands moved the pointer to x,y (screen pixels) at time t */
+static void __attribute__((unused)) perch_pointer(PerchEye *e, int x, int y, double t) {
+    e->ptr_px = e->ptr_x; e->ptr_py = e->ptr_y;
+    e->ptr_x = x; e->ptr_y = y; e->ptr_t = t;
+}
+/* a change box that is only the pointer being drawn or taken away: small, at the pointer's place, soon after it moved */
+static int perch_nonbot(const PerchEye *e, int x0, int y0, int x1, int y1, double t) {
+    if (e->ptr_t <= 0 || t - e->ptr_t > 3.0 || x1 - x0 > 48 || y1 - y0 > 48) return 0;
+    for (int k = 0; k < 2; k++) {
+        int px = k ? e->ptr_px : e->ptr_x, py = k ? e->ptr_py : e->ptr_y;
+        if (x0 < px + 40 && x1 > px - 8 && y0 < py + 40 && y1 > py - 8) return 1;
+    }
+    return 0;
+}
 
 /* open the tape folder; kind = "eye"/"vm", name = display or guest, plane = box plane name. The screen comes later (perch_screen). */
 static int perch_open(PerchEye *e, const char *dir, const char *kind, const char *name, const char *plane, int gx, int gy) {
@@ -337,7 +357,9 @@ static int perch_look(PerchEye *e, double t, int (*fetch)(int, int, int, int)) {
         if (bx1 > bx0) { zb[i * 5 + 1] = (float)bx0; zb[i * 5 + 2] = (float)by0; zb[i * 5 + 3] = (float)(bx1 - bx0); zb[i * 5 + 4] = (float)(by1 - by0); }
         if (hab == 3) { fprintf(e->tape, "%s H %d,%d %.1f\n", ts, c, r, k->beat); e->habit_total++; e->w_habit++; }
         else if (hab == 4) fprintf(e->tape, "%s B %d,%d\n", ts, c, r);
-        if (hab == 0 || hab == 4) {
+        int nonbot = bx1 > bx0 && perch_nonbot(e, bx0, by0, bx1, by1, t);
+        if (nonbot) e->nonbot_total++;
+        if ((hab == 0 || hab == 4) && !nonbot) {
             if (bx1 > bx0) { e->sbox[i * 4] = bx0; e->sbox[i * 4 + 1] = by0; e->sbox[i * 4 + 2] = bx1; e->sbox[i * 4 + 3] = by1; e->smark[i] = 1; }
             nstrike++;
         }
@@ -406,9 +428,9 @@ static void perch_stats(PerchEye *e, double t, int final) {
         if (dt <= 0) dt = 1e-9;
         double scr = W > 0 && H > 0 ? (double)W * H : 1;
         clock_txt(t, ts, sizeof ts);
-        fprintf(e->stats, "%s TOTAL %.0fs cpu %.2f%% | damage %ld looks %ld strikes %ld (frames %ld) tuned-out %ld | px read %.1f%% of screen/s | "
+        fprintf(e->stats, "%s TOTAL %.0fs cpu %.2f%% | damage %ld looks %ld strikes %ld (frames %ld) tuned-out %ld not-for-bots %ld | px read %.1f%% of screen/s | "
                           "tokens: text %.0f, shots-on-strike %.0f, shot-per-sec %.0f\n",
-                ts, dt, 100.0 * dc / dt, e->ev_total, e->looks, e->strikes_total, e->frames_with_strike, e->habit_total, 100.0 * e->px_read / (scr * dt),
+                ts, dt, 100.0 * dc / dt, e->ev_total, e->looks, e->strikes_total, e->frames_with_strike, e->habit_total, e->nonbot_total, 100.0 * e->px_read / (scr * dt),
                 e->tape_bytes / 4.0, e->frames_with_strike * SHOT_TOKENS(W, H), dt * SHOT_TOKENS(W, H));
         return;
     }
