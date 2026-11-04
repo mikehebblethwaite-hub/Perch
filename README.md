@@ -35,7 +35,12 @@ Perch is an open-source tool that lets bots and automated systems see your scree
 words, scene cuts, the words on screen at each scene (read here), what moved from where to where, and with `--describe` one
 line per scene from your local vision model (Ollama). A 12-second course video: 410 characters for the bot, where one
 screenshot a second would be about 16,000 tokens. `--live` paces the lines at the video's own speed; `--frame T` gives one
-small picture when the answer really is in the picture. Not yet: speech without subtitles (a local Whisper is next).
+small picture when the answer really is in the picture.
+
+Its sound comes as a few numbers when it changes (`s` lines; `./perch-sound FILE` for any sound file), the way a ZX81 tape
+held a program in a few kilobytes: loudness 1-11; quiet, a tone and its pitch, voice?, music?, noise or a bang; and five bands
+1-11 from low to high. A test file of silence, two tones, hiss, one knock and a short tune: every sound named and timed
+(the knock at 6.5 s exactly). Not yet: speech as words (a local Whisper) and sounds by name (a small sound tagger).
 
 ## How a look answers (your settings)
 

@@ -33,11 +33,11 @@ perch-vm: perch-vm.c perch-core.h perch-box.h
 VERSION ?= $(shell cat VERSION)
 PREFIX ?= /usr/local
 PRODUCT_BIN = perch-vm perch-box perch-wait perch-crop
-PRODUCT_SCRIPTS = perch-vmrun perch-act perch-web perch-vmlook perch-report perch-look perch-mcp perch-settings perch-run perch-video
+PRODUCT_SCRIPTS = perch-vmrun perch-act perch-web perch-vmlook perch-report perch-look perch-mcp perch-settings perch-run perch-video perch-sound
 install: $(PRODUCT_BIN)
 	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/share/perch/guest $(DESTDIR)$(PREFIX)/lib/perch
 	install -m 644 perch_read.py perch_read_seed.json $(DESTDIR)$(PREFIX)/lib/perch/
-	install -m 644 perch_settings.py $(DESTDIR)$(PREFIX)/lib/perch/
+	install -m 644 perch_settings.py perch_sound.py $(DESTDIR)$(PREFIX)/lib/perch/
 	install -m 644 libperch-text.so $(DESTDIR)$(PREFIX)/lib/perch/
 	install -d $(DESTDIR)$(PREFIX)/share/perch/fonts
 	install -m 644 demo/inbox.html $(DESTDIR)$(PREFIX)/share/perch/

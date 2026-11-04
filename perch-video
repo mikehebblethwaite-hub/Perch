@@ -8,6 +8,8 @@
 #   cut 0:03.0 2                                      a new scene (shot 2): the picture changed all at once
 #   text 0:03.0 'Step 1: turn off the gas'            words on the screen at a cut (slides, signs), read here (no tokens)
 #   see 0:03.0 'a man pointing at a boiler'           with --describe: one line from the local vision model at each cut
+#   s 0:03.2 L7 tone 440Hz b 2-9-3-1-1                its sound, when it changes (perch_sound.py): loudness 1-11, quiet/tone/
+#                                                     voice?/music?/noise/bang, five bands 1-11 (low..high); --no-sound: none
 #   moves 0:04.2-0:07.9 bottom-left > bottom-right    something moved, from where to where (a 3x3 grid), in one line
 #   ! ...                                             what happened (no subtitles, cannot read the file ...)
 # Usage: perch-video [--fps N] [--live] [--describe] [--from T] [--to T] FILE|URL
@@ -44,6 +46,7 @@ try:
         if a == "--fps": opt["fps"] = float(args.pop(0)); assert 0.2 <= opt["fps"] <= 30
         elif a == "--live": opt["live"] = True
         elif a == "--describe": opt["describe"] = True
+        elif a == "--no-sound": opt["nosound"] = True
         elif a in ("--from", "--to", "--frame"): opt[a[2:]] = secs(args.pop(0))
         elif a.startswith("-"): raise ValueError
         elif src is None: src = a
@@ -141,6 +144,14 @@ while True:
     prev = fr
 p.wait()
 end_seg(opt["from"] + k / opt["fps"])
+
+# ---------- its sound, as a few numbers when it changes (perch_sound.py) ----------
+if sound and not opt.get("nosound"):
+    try:
+        import perch_sound
+        for t, l in perch_sound.lines(src, opt["from"], opt["to"], ts): lines.append((t, 6, l))
+    except Exception as e:
+        lines.append((opt["from"], 6, f"! sound not read: {type(e).__name__}"))
 
 # ---------- at each scene: the words on the screen (read here) and, if asked, one line from the local model ----------
 def frame_at(t):

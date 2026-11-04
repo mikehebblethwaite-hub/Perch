@@ -1,0 +1,21 @@
+#!/usr/bin/python3 -I
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
+# perch-sound [--from T] [--to T] FILE|URL: any sound file (or a video's sound) as a few numbers when the sound changes, for a bot:
+#   s 0:03.2 L7 tone 440Hz b 2-9-3-1-1   (loudness 1-11; quiet | tone NHz | voice? | music? | noise | bang; five bands 1-11)
+import os, re, sys
+sys.path[:0] = [os.path.dirname(os.path.realpath(__file__)), "/usr/lib/perch"]
+import perch_sound                                                         # noqa: E402
+def secs(v): return sum(float(x) * 60 ** i for i, x in enumerate(reversed(str(v).split(":"))))
+def ts(t): m, s = divmod(max(0.0, t), 60); return f"{int(m)}:{s:04.1f}"
+a, opt, src = sys.argv[1:], {"from": 0.0, "to": None}, None
+try:
+    while a:
+        x = a.pop(0)
+        if x in ("--from", "--to"): opt[x[2:]] = secs(a.pop(0))
+        elif x.startswith("-") or src: raise ValueError
+        else: src = x
+except (ValueError, IndexError):
+    sys.exit("usage: perch-sound [--from T] [--to T] FILE|URL")
+if not src or not (re.match(r"^https?://\S+$", src) or os.path.isfile(src)): sys.exit("usage: perch-sound [--from T] [--to T] FILE|URL")
+out = perch_sound.lines(src, opt["from"], opt["to"], ts)
+print("\n".join(l for _, l in out) if out else "! no sound read")
