@@ -29,6 +29,14 @@ Perch is an open-source tool that lets bots and automated systems see your scree
   left for what has no words anywhere before the screen: remote desktops, video, games that draw their own letters.
 - Not yet: macOS; Windows or Linux desktops without a VM.
 
+## Video, the bot's way
+
+`./perch-video FILE|URL` plays a video as what it carries, not as pictures at x frames a second: its chapters, its subtitle
+words, scene cuts, the words on screen at each scene (read here), what moved from where to where, and with `--describe` one
+line per scene from your local vision model (Ollama). A 12-second course video: 410 characters for the bot, where one
+screenshot a second would be about 16,000 tokens. `--live` paces the lines at the video's own speed; `--frame T` gives one
+small picture when the answer really is in the picture. Not yet: speech without subtitles (a local Whisper is next).
+
 ## How a look answers (your settings)
 
 Every look (web pages, the display, VMs) answers in one of four ways:
@@ -115,6 +123,7 @@ finds the skill in `.claude/skills/perch`.
 - `perch-settings`, `perch_settings.py`: how a look answers (mode, line cut, picture size)
 - `perch_read.py`: reading words from pixels where an app gives none
 - `perch-text.c` (`libperch-text.so`), `perch-run`: the words an app draws, caught at the drawing call
+- `perch-video`: a video player for bots (timed lines, not frames)
 - `demo/`: the demos; `perch-report`: your result as a report
 - `vm-win/`: the Windows test VM
 - `site/`: the Perch website (`python3 site/build.py`), with the measured runs it shows in `site/data/`

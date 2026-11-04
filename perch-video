@@ -1,0 +1,182 @@
+#!/usr/bin/python3 -I
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
+# perch-video 0.01: a video player for bots. A video is played the bot's way: not pictures at x frames a second but what the
+# video carries as information, earliest first, as short timed lines (only what changed):
+#   V 'title' 1:30 1280x720 25fps sound subs:en      the video itself (one line)
+#   ch 0:00.0 'Introduction'                          a chapter, from the file
+#   sub 0:01.2 'Welcome to the course'                the subtitle/caption track: the exact words, with times
+#   cut 0:03.0 2                                      a new scene (shot 2): the picture changed all at once
+#   text 0:03.0 'Step 1: turn off the gas'            words on the screen at a cut (slides, signs), read here (no tokens)
+#   see 0:03.0 'a man pointing at a boiler'           with --describe: one line from the local vision model at each cut
+#   moves 0:04.2-0:07.9 bottom-left > bottom-right    something moved, from where to where (a 3x3 grid), in one line
+#   ! ...                                             what happened (no subtitles, cannot read the file ...)
+# Usage: perch-video [--fps N] [--live] [--describe] [--from T] [--to T] FILE|URL
+#   --fps N      how often motion is checked (default 4 a second; the scene/motion pass sees a 64x36 grey copy only)
+#   --live       lines come out at the video's own pace (a bot watching along); default: as fast as the box can go
+#   --describe   a line from the local vision model (Ollama, PERCH_MODEL, default gemma-chuck) at each cut: local, no tokens
+# Pictures for the bot only on request: perch-video --frame T FILE -> "pixels FILE wxh ~T tokens" (one frame, small).
+# Not yet: speech (a local Whisper), motion vectors from the codec itself.
+import json, os, re, subprocess, sys, time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path[:0] = [HERE, "/usr/lib/perch"]
+USAGE = "usage: perch-video [--fps N] [--live] [--describe] [--from T] [--to T] FILE|URL   |   perch-video --frame T FILE|URL"
+GW, GH = 64, 36                                   # the grey copy the scene/motion pass looks at: numbers, never shown
+RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "perch-video"); os.makedirs(RUN, mode=0o700, exist_ok=True)
+
+def ts(t):
+    m, s = divmod(max(0.0, t), 60); h, m = divmod(int(m), 60)
+    return (f"{h}:{m:02d}:{s:04.1f}" if h else f"{m}:{s:04.1f}")
+
+def secs(v):
+    p = [float(x) for x in str(v).split(":")]
+    return sum(x * 60 ** i for i, x in enumerate(reversed(p)))
+
+def q(t):
+    t = re.sub(r"\s+", " ", str(t or "")).strip()[:300]
+    return "'" + t.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+args, opt = sys.argv[1:], {"fps": 4.0, "live": False, "describe": False, "from": 0.0, "to": None, "frame": None}
+src = None
+try:
+    while args:
+        a = args.pop(0)
+        if a == "--fps": opt["fps"] = float(args.pop(0)); assert 0.2 <= opt["fps"] <= 30
+        elif a == "--live": opt["live"] = True
+        elif a == "--describe": opt["describe"] = True
+        elif a in ("--from", "--to", "--frame"): opt[a[2:]] = secs(args.pop(0))
+        elif a.startswith("-"): raise ValueError
+        elif src is None: src = a
+        else: raise ValueError
+except (ValueError, IndexError, AssertionError):
+    sys.exit(USAGE)
+if not src: sys.exit(USAGE)
+if not (re.match(r"^https?://\S+$", src) or os.path.isfile(src)): sys.exit(f"err no such file: {src}")
+FF = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]
+
+# ---------- one frame, only when asked ----------
+if opt["frame"] is not None:
+    out = os.path.join(RUN, "frame.png")
+    r = subprocess.run(FF + ["-ss", str(opt["frame"]), "-i", src, "-frames:v", "1", "-vf", "scale='min(640,iw)':-2", "-y", out], capture_output=True)
+    if r.returncode or not os.path.exists(out): sys.exit("err no frame there")
+    from PIL import Image
+    w, h = Image.open(out).size
+    print(f"pixels {out} {w}x{h} ~{w * h // 750} tokens"); sys.exit(0)
+
+# ---------- the video itself: its own information ----------
+try:
+    info = json.loads(subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", "-show_chapters", src],
+                                     capture_output=True, text=True, timeout=60).stdout or "{}")
+except (subprocess.TimeoutExpired, ValueError):
+    info = {}
+streams = info.get("streams", [])
+v = next((s for s in streams if s.get("codec_type") == "video" and not s.get("disposition", {}).get("attached_pic")), None)
+if not v: sys.exit("err no video in it (or it cannot be read)")
+dur = float(info.get("format", {}).get("duration") or v.get("duration") or 0)
+num, _, den = (v.get("avg_frame_rate") or "0/1").partition("/"); fps = float(num) / float(den or 1) if float(den or 1) else 0
+title = (info.get("format", {}).get("tags", {}) or {}).get("title") or os.path.basename(src.split("?")[0])
+subs = [s for s in streams if s.get("codec_type") == "subtitle"]
+textsubs = [s for s in subs if s.get("codec_name") in ("subrip", "ass", "ssa", "mov_text", "webvtt", "text")]
+langs = ",".join(sorted({(s.get("tags") or {}).get("language", "und") for s in textsubs}))
+sound = any(s.get("codec_type") == "audio" for s in streams)
+lines = []                                       # (time, order, text): merged and sorted at the end (or paced, --live)
+head = f"V {q(title)} {ts(dur)} {v.get('width')}x{v.get('height')} {fps:.4g}fps" + (" sound" if sound else "") + (f" subs:{langs}" if textsubs else "")
+for c in info.get("chapters", []):
+    lines.append((float(c.get("start_time", 0)), 0, f"ch {ts(float(c.get('start_time', 0)))} {q((c.get('tags') or {}).get('title', ''))}"))
+
+# ---------- the words the video carries: its subtitle tracks ----------
+def srt(text):
+    for block in re.split(r"\n\s*\n", text.replace("\r", "")):
+        m = re.search(r"(\d+):(\d+):(\d+)[,.](\d+)\s*-->\s*(\d+):(\d+):(\d+)[,.](\d+)\s*\n(.*)", block, re.S)
+        if m:
+            g = [int(x) for x in m.groups()[:8]]
+            yield g[0] * 3600 + g[1] * 60 + g[2] + g[3] / 1000, re.sub(r"<[^>]+>|\{[^}]*\}", "", m.group(9)).strip()
+if textsubs:
+    s0 = textsubs[0]                               # the first text track (its language is in the V line)
+    r = subprocess.run(FF + ["-i", src, "-map", f"0:{s0['index']}", "-f", "srt", "-"], capture_output=True, text=True, timeout=300)
+    for t, words in srt(r.stdout):
+        if words: lines.append((t, 1, f"sub {ts(t)} {q(words)}"))
+elif subs:
+    lines.append((0, 1, "! subtitles are pictures (not text) in this file: not read"))
+
+# ---------- scenes and movement: a 64x36 grey copy, as numbers ----------
+cuts = []
+def grid_name(i):
+    return ("top", "middle", "bottom")[i // 3] + "-" + ("left", "centre", "right")[i % 3] if i != 4 else "centre"
+cmd = FF + (["-ss", str(opt["from"])] if opt["from"] else []) + ["-i", src] + (["-t", str(opt["to"] - opt["from"])] if opt["to"] else []) + \
+      ["-an", "-sn", "-vf", f"fps={opt['fps']},scale={GW}:{GH},format=gray", "-f", "rawvideo", "-"]
+p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+prev, k, seg = None, 0, None                       # seg: a run of movement [start, first cells' centre, last centre, end]
+def centre(cells):
+    return (sum(i % 3 for i in cells) / len(cells), sum(i // 3 for i in cells) / len(cells))
+def place(c):
+    i = round(c[1]) * 3 + round(c[0]); return grid_name(i)
+def end_seg(t):
+    global seg
+    if seg:
+        a, b = place(seg[1]), place(seg[2])
+        lines.append((seg[0], 3, f"moves {ts(seg[0])}-{ts(t)} {a}" + (f" > {b}" if b != a else "")))
+    seg = None
+size = GW * GH
+while True:
+    fr = p.stdout.read(size)
+    if len(fr) < size: break
+    t = opt["from"] + k / opt["fps"]; k += 1
+    if prev is not None:
+        d = [abs(a - b) for a, b in zip(fr, prev)]
+        whole = sum(d) / size
+        if whole > 28:                                  # most of the picture changed at once: a new scene
+            end_seg(t); cuts.append(t); lines.append((t, 2, f"cut {ts(t)} {len(cuts) + 1}"))
+        else:
+            cells = []
+            for i in range(9):
+                cx, cy = i % 3, i // 3
+                cd = [d[y * GW + x] for y in range(cy * GH // 3, (cy + 1) * GH // 3) for x in range(cx * GW // 3, (cx + 1) * GW // 3)]
+                if sum(1 for x in cd if x > 18) > len(cd) * 0.04: cells.append(i)
+            if cells:
+                c = centre(cells)
+                if seg is None: seg = [t, c, c, t]
+                else: seg[2] = c; seg[3] = t
+            elif seg and t - seg[3] > 0.6: end_seg(seg[3] + 1 / opt["fps"])    # still for a moment: that movement is over
+    prev = fr
+p.wait()
+end_seg(opt["from"] + k / opt["fps"])
+
+# ---------- at each scene: the words on the screen (read here) and, if asked, one line from the local model ----------
+def frame_at(t):
+    out = os.path.join(RUN, "scene.png")
+    r = subprocess.run(FF + ["-ss", f"{t + 0.15:.3f}", "-i", src, "-frames:v", "1", "-y", out], capture_output=True)
+    return out if not r.returncode and os.path.exists(out) else None
+try:
+    import perch_read as reader
+except ImportError:
+    reader = None
+seen_text = set()
+for i, t in enumerate([opt["from"]] + cuts):
+    f = frame_at(t)
+    if not f: continue
+    if reader and reader.available():
+        from PIL import Image
+        im = Image.open(f); im.load()
+        for x, y, w, h, words in reader.read(im, [(0, 0, im.width, im.height)], page=True):
+            if words not in seen_text: lines.append((t, 4, f"text {ts(t)} {q(words)}")); seen_text.add(words)
+    if opt["describe"]:
+        import base64, urllib.request
+        body = json.dumps({"model": os.environ.get("PERCH_MODEL", "gemma-chuck"), "stream": False, "keep_alive": "10m",
+                           "messages": [{"role": "user", "content": "Say in one short line what this video frame shows. No preamble.",
+                                         "images": [base64.b64encode(open(f, "rb").read()).decode()]}]}).encode()
+        try:
+            a = json.load(urllib.request.urlopen(urllib.request.Request(os.environ.get("PERCH_OLLAMA", "http://127.0.0.1:11434") + "/api/chat", body), timeout=300))
+            lines.append((t, 5, f"see {ts(t)} {q(a.get('message', {}).get('content', ''))}"))
+        except Exception as e:
+            lines.append((t, 5, f"! no description at {ts(t)}: {type(e).__name__}")); opt["describe"] = False
+
+# ---------- out: sorted by time; --live: at the video's own pace ----------
+print(head, flush=True)
+t0 = time.time()
+for t, _, l in sorted(lines, key=lambda e: (e[0], e[1])):
+    if t < opt["from"] - 0.01 or (opt["to"] is not None and t > opt["to"]): continue      # only the part asked for
+    if opt["live"]:
+        wait = (t - opt["from"]) - (time.time() - t0)
+        if wait > 0: time.sleep(wait)
+    print(l, flush=True)

@@ -129,6 +129,18 @@ TOOLS = [
          "box": {"type": "string", "description": "x,y,w,h"},
          "n": {"type": "integer", "description": "for web: the number of a picture line instead of a box"}},
          "required": ["where", "name"]}},
+    {"name": "perch_video",
+     "description": "Play a video file or address the bot's way: not pictures at x frames a second but what it carries, as short timed "
+                    "lines: V (the video), ch (chapters), sub (its subtitle words), cut (a new scene), text (words on screen at a "
+                    "scene), moves (what moved, from where to where), see (one line from the local vision model, with describe). "
+                    "frame gives one small picture at a time, only when the answer is in the picture.",
+     "inputSchema": {"type": "object", "properties": {
+         "src": {"type": "string", "description": "a video file on this machine or an http(s) address"},
+         "from": {"type": "string", "description": "start, like 1:30"}, "to": {"type": "string", "description": "end, like 2:00"},
+         "fps": {"type": "number", "description": "how often movement is checked a second (0.2-30, default 4)"},
+         "describe": {"type": "boolean", "description": "a line from the local vision model at each scene (slower, no tokens)"},
+         "frame": {"type": "string", "description": "instead: one picture at this time, like 0:04"}},
+         "required": ["src"]}},
     {"name": "perch_status",
      "description": "What Perch can see on this machine now: the VMs running under Perch, and whether display :2 is up.",
      "inputSchema": {"type": "object", "properties": {}}},
@@ -188,6 +200,22 @@ def call(name, a):
             run([tool("perch-wait"), "-t", "10", "-p", "vm-" + vm], timeout=30)
             out += "\n(settled: look with perch_vm_look)"
         return text(ok, out)
+    if name == "perch_video":
+        src = need(a, "src")
+        if not (re.match(r"^https?://[^\s]+$", src) or (src.startswith("/") and os.path.isfile(src))):
+            raise Bad("src: an http(s) address or a video file's full path")
+        T = re.compile(r"^\d{1,2}(:\d{1,2}){0,2}(\.\d+)?$")
+        if "frame" in a:
+            return pixels_file(*run([tool("perch-video"), "--frame", need(a, "frame", T), src], timeout=120))
+        args = [tool("perch-video")]
+        for k in ("from", "to"):
+            if k in a: args += ["--" + k, need(a, k, T)]
+        if "fps" in a:
+            f = a["fps"]
+            if isinstance(f, bool) or not isinstance(f, (int, float)) or not 0.2 <= f <= 30: raise Bad("fps: 0.2 to 30")
+            args += ["--fps", str(f)]
+        if a.get("describe"): args.append("--describe")
+        return text(*run(args + [src], timeout=1800))
     if name == "perch_pixels":
         return pixels(a)
     if name == "perch_status":
@@ -235,6 +263,15 @@ def result(ok, out):
     if ok and m and os.path.realpath(m.group(1)).startswith(rt) and os.path.isfile(m.group(1)):
         data = base64.b64encode(open(m.group(1), "rb").read()).decode()
         return {"content": [{"type": "text", "text": out}, {"type": "image", "data": data, "mimeType": "image/png"}]}
+    return text(ok, out)
+
+
+def pixels_file(ok, out):
+    """an answer naming one picture ("pixels FILE wxh ~T tokens"): the picture comes with it"""
+    m = re.search(r"^pixels (\S+\.png) \d+x\d+", out, re.M)
+    rt = os.path.realpath(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) + os.sep
+    if ok and m and os.path.realpath(m.group(1)).startswith(rt) and os.path.isfile(m.group(1)):
+        return {"content": [{"type": "text", "text": out}, {"type": "image", "data": base64.b64encode(open(m.group(1), "rb").read()).decode(), "mimeType": "image/png"}]}
     return text(ok, out)
 
 
