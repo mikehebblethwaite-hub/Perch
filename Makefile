@@ -28,7 +28,7 @@ coop-perch-vm: coop-perch-vm.c coop-perch-core.h coop-perch-box.h
 	$(CC) $(CFLAGS) -o $@ $< $(shell pkg-config --cflags --libs gio-2.0 gio-unix-2.0) -lm
 
 # ---- the product: install, and a .deb of the VM eye (binaries only, stripped; no source goes out) ----
-VERSION ?= $(shell sed -n 's/.*Version \([0-9.]*\)\..*/\1/p' README.md | head -1)
+VERSION ?= $(shell cat VERSION)
 PREFIX ?= /usr/local
 PRODUCT_BIN = coop-perch-vm coop-perch-box coop-perch-wait
 PRODUCT_SCRIPTS = coop-perch-vmrun coop-perch-act coop-perch-web
@@ -37,10 +37,10 @@ install: $(PRODUCT_BIN)
 	install -s -m 755 $(PRODUCT_BIN) $(DESTDIR)$(PREFIX)/bin/
 	install -m 755 $(PRODUCT_SCRIPTS) $(DESTDIR)$(PREFIX)/bin/
 	install -m 755 coop-perch-guest $(DESTDIR)$(PREFIX)/share/coop-perch/guest/
-	install -m 644 COPYRIGHT QUICKSTART.txt $(DESTDIR)$(PREFIX)/share/coop-perch/
+	install -m 644 LICENSE LICENSE.md README.md $(DESTDIR)$(PREFIX)/share/coop-perch/
 deb: $(PRODUCT_BIN)
 	rm -rf dist/pkg && mkdir -p dist/pkg/DEBIAN
 	$(MAKE) install DESTDIR=$(CURDIR)/dist/pkg PREFIX=/usr
 	printf 'Package: coop-perch\nVersion: $(VERSION)\nArchitecture: amd64\nMaintainer: Mike J Hebblethwaite\nDepends: qemu-system-x86 (>= 1:8.0), dbus-daemon | dbus, libglib2.0-0t64 | libglib2.0-0, python3, python3-pyatspi, gir1.2-atspi-2.0, gir1.2-webkit2-4.1, xvfb\nSection: misc\nPriority: optional\nDescription: Perch: a virtual machine screen for bots, without screenshots\n The guest screen comes straight from the hypervisor as changed boxes and\n raw vectors; text from the guest helper; keys and mouse back the same way.\n' > dist/pkg/DEBIAN/control
-	printf 'Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved.\n' > dist/pkg/DEBIAN/copyright
+	printf 'Copyright (c) 2026 Mike J Hebblethwaite. GNU AGPL-3.0 or a commercial licence: see /usr/share/coop-perch/LICENSE.md\n' > dist/pkg/DEBIAN/copyright
 	dpkg-deb --root-owner-group --build dist/pkg dist/coop-perch_$(VERSION)_amd64.deb

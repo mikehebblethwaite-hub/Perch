@@ -1,4 +1,6 @@
 #!/bin/sh
-# Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT.
-# coop-perch-feed-two: build-2's memory once a second, as raw lines for coop-perch-feed (meminfo, --, RSS_KB NAME, ==).
-exec ssh -o ServerAliveInterval=15 build-2 'while :; do cat /proc/meminfo; echo --; ps -eo rss=,comm= --sort=-rss | head -16; echo ==; sleep 1; done'
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
+# coop-perch-feed-two: a machine's memory once a second, as raw lines for coop-perch-feed (meminfo, --, RSS_KB NAME, ==).
+# This machine by default; PERCH_FEED_HOST=name reads another machine over ssh instead.
+L='while :; do cat /proc/meminfo; echo --; ps -eo rss=,comm= --sort=-rss | head -16; echo ==; sleep 1; done'
+if [ -n "${PERCH_FEED_HOST:-}" ]; then exec ssh -o ServerAliveInterval=15 "$PERCH_FEED_HOST" "$L"; else exec sh -c "$L"; fi

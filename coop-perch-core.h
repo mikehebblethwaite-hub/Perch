@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT. */
+/* Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md. */
 /* coop-perch-core.h: Perch's own way of seeing, shared by every eye (desktop X: coop-perch-eye, virtual machine: coop-perch-vm).
  *
  * An eye only has to say WHERE the screen changed (perch_damage) and keep `cur` holding the screen's pixels (x8r8g8b8 rows of

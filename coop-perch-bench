@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT.
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
 # coop-perch-bench: bots vs screenshots on the same scripted screen (coop-perch-scene on :2, 30 s).
 #   Perch bot: the tap + eye on :2, coop-perch-wait -f (a line per settled change; crops counted from its areas).
 #   Screenshot bot: a full PNG screenshot every second, read straight from Xvfb :12 so its traffic does not load the tap.

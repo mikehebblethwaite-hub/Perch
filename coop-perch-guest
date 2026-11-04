@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-# Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT.
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
 # coop-perch-guest: Perch's helper inside a guest. The meaning layer: what the screen SAYS, read where it already exists (the apps'
 # accessibility tree, AT-SPI), never read back from pixels. One short line per event, out through the virtio-serial port
 # org.coop.perch.0 (not the network) to coop-perch-vm on the host, which checks, caps and quotes everything (the guest is not trusted).

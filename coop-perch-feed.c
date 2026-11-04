@@ -1,7 +1,7 @@
-/* Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT. */
-/* coop-perch-feed: draws build-2's memory onto a Perch display, live, as raw blocks (no text needed to see it change).
+/* Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md. */
+/* coop-perch-feed: draws a machine's memory onto a Perch display, live, as raw blocks (no text needed to see it change).
  *
- * Reads blocks from stdin, one per second, as sent by coop-perch-feed-two (ssh build-2):
+ * Reads blocks from stdin, one per second, as sent by coop-perch-feed-two:
  *   /proc/meminfo lines, then "--", then "RSS_KB NAME" lines for the biggest processes, then "==" to end the block.
  * Draws on the display (default :2), a 1280x800 window over the whole screen:
  *   top:    the memory map, one block per slice of RAM: used (red), buffers/cache (blue), free (dark)
@@ -34,7 +34,7 @@ int main(int argc, char **argv) {
     int scr = DefaultScreen(dpy);
     int W = DisplayWidth(dpy, scr), H = DisplayHeight(dpy, scr);
     Window win = XCreateSimpleWindow(dpy, RootWindow(dpy, scr), 0, 0, (unsigned)W, (unsigned)H, 0, 0, rgb(12, 12, 16));
-    XStoreName(dpy, win, "coop-perch-feed: build-2 memory");
+    XStoreName(dpy, win, "coop-perch-feed: memory");
     XMapWindow(dpy, win);
     GC gc = XCreateGC(dpy, win, 0, NULL);
     XFontStruct *font = XLoadQueryFont(dpy, "fixed");      /* labels are a bonus; a display without fonts still gets the blocks */

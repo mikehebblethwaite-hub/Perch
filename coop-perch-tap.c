@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT. */
+/* Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md. */
 /* coop-perch-tap: sits on the data line of the Perch display. Apps connect to :2 as usual; the tap passes every byte on to the
  * real X server (Xvfb on :12, started by coop-perch-display) and reads the requests as they go by.
  *   - no bytes on the line = nothing changed: the tap writes nothing, does nothing (it sleeps in poll)

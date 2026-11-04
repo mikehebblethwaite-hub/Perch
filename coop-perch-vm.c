@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT. */
+/* Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md. */
 /* coop-perch-vm: the Perch eye on a virtual machine's screen.
  *
  * QEMU (-display dbus) is the guest's monitor. This eye registers as that monitor's listener on a private peer-to-peer

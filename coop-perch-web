@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-# Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT.
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
 # coop-perch-web: a web viewer for bots. No window, no screenshots, no human browser: a web engine runs off-screen only to run the
 # page's scripts and lay it out; the bot gets the page's words, links, buttons and inputs as short lines with boxes, and after
 # every action only what changed.

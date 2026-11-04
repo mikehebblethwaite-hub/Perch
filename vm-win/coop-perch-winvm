@@ -1,17 +1,19 @@
 #!/bin/bash
 # Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
-# coop-perch-winvm: Perch's Windows test VM on the host (Mike, 1 Nov 2026: "install windows vm ... to build a windows bot skill and
-# exe install of perch"). Windows 11 with the host's embedded OEM product key, BIOS, one virtio disk, so Perch's own runner
-# (coop-perch-vmrun) can be its monitor unchanged. Rebuildable: lives in ~/coop-perch/vm/win; old disks are backed up to build-2.
-#   make     hands-off install using Microsoft's multi-edition ISO and the host's embedded OEM key
+# coop-perch-winvm: Perch's Windows test VM. Windows 11 with the host's embedded OEM product key, BIOS, one virtio disk,
+# so Perch's own runner (coop-perch-vmrun) can be its monitor unchanged. Rebuildable: lives in vm/win next to this repo's files.
+#   make     hands-off install from Microsoft's multi-edition ISO and the host's embedded OEM key
+#            ISOs: put Windows11_26H2_MultiEdition_en-GB_x64.iso and virtio-win-stable.iso in vm/win (or PERCH_ISO_DIR),
+#            or set PERCH_ISO_FETCH to a command run as: $PERCH_ISO_FETCH NAME DEST (local settings: perch.local.env)
 #   start    run with VNC 127.0.0.1:5991 and SPICE 127.0.0.1:5992 (SPICE supports guest clipboard)
-#            Mike: remote-viewer spice://127.0.0.1:5992; TigerVNC: xtigervncviewer 127.0.0.1::5991
+#            remote-viewer spice://127.0.0.1:5992, or xtigervncviewer 127.0.0.1::5991
 #   perch    run it under Perch's VM eye
 #   stop | ssh [cmd] | status | gone (delete it all)
-# Ports, 127.0.0.1 only: SSH 2293 (user mike, key only). Sign-in password: vm/win/password (600).
+# Ports, 127.0.0.1 only: SSH 2293 (key only). Sign-in password: vm/win/password (600).
 set -uo pipefail
-T=~/coop-perch/vm/win; HERE=$(cd "$(dirname "$0")" && pwd); P=$(dirname "$HERE")
-CACHE=/path/to/iso; WINISO=Windows11_26H2_MultiEdition_en-GB_x64.iso; VIRTIO=virtio-win-stable.iso
+HERE=$(cd "$(dirname "$0")" && pwd); P=$(dirname "$HERE"); T=$P/vm/win
+[ -f "$P/perch.local.env" ] && . "$P/perch.local.env"   # local settings, not in git
+WINISO=Windows11_26H2_MultiEdition_en-GB_x64.iso; VIRTIO=virtio-win-stable.iso
 MEM=6144; CPUS=4; DISK=80G; SSHP=2293
 V="ssh -i $T/key -p $SSHP -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 mike@127.0.0.1"
 up() { [ -f $T/vm.pid ] && kill -0 "$(cat $T/vm.pid)" 2>/dev/null; }
@@ -37,13 +39,12 @@ make)
     mkdir -p $T; chmod 700 $T; cd $T || exit 1
     for f in $WINISO $VIRTIO; do
         [ -s "$T/$f" ] && continue
-        source=$CACHE/$f
-        [ "$f" != "$WINISO" ] || source=/path/to/iso/$f
-        if ssh build-2 "sudo -n cat $source" > "$T/$f.part" && [ -s "$T/$f.part" ]; then
+        if [ -n "${PERCH_ISO_DIR:-}" ] && [ -s "$PERCH_ISO_DIR/$f" ]; then cp "$PERCH_ISO_DIR/$f" "$T/$f"; continue; fi
+        if [ -n "${PERCH_ISO_FETCH:-}" ] && $PERCH_ISO_FETCH "$f" "$T/$f.part" && [ -s "$T/$f.part" ]; then
             mv "$T/$f.part" "$T/$f"
         else
             rm -f "$T/$f.part"
-            echo "could not fetch $f from build-2"
+            echo "missing $f: put it in $T (or PERCH_ISO_DIR), or set PERCH_ISO_FETCH"
             exit 1
         fi
     done

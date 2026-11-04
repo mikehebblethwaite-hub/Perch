@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT. */
+/* Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md. */
 /* coop-perch-shotbot: the way bots look at screens today, for the bench. Every PERIOD ms it takes a full screenshot and encodes it
  * as PNG (what would be sent to the model), and logs "unix_time png_bytes w h". Connect it to the real X server (:12), not the tap.
  *   coop-perch-shotbot [-d :12] [-p 1000] [-t 32] [-o shots.txt]

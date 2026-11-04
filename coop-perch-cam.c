@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT. */
+/* Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md. */
 /* coop-perch-cam: the Perch eye on a camera's video, in memory. No browser, no display, no screenshots.
  *
  * Frames come in as raw greyscale bytes (1 byte a pixel) on stdin, decoded from the camera's data by ffmpeg, e.g.

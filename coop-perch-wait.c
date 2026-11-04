@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT. */
+/* Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md. */
 /* coop-perch-wait: sleep until the screen changes, then say where, in one line. For bots (Claude) instead of screenshots.
  *
  * Reads the eye's plane in the box of bot vectors (the eye must be running on the display). Sleeps on the plane's wake word; on the

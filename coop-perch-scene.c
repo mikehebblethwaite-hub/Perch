@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT. */
+/* Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md. */
 /* coop-perch-scene: a scripted 30 s screen for the bench (bots vs screenshots). Same events every run; each event's box and time
  * are written to the truth file as "unix_time x y w h name" so both bots can be scored against what really happened.
  *   coop-perch-scene [-d :2] [-o truth.txt]

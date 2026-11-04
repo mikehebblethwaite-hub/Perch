@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT. */
+/* Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md. */
 /* coop-perch-eye: the local eye on a Perch display (default :2).
  *
  * The display (Xvfb :2, started by coop-perch-display) is a real X screen: any app drawn on it thinks it is a monitor.

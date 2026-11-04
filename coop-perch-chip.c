@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT. */
+/* Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md. */
 /* coop-perch-chip: the Perch eye on the video card's own RAM, as a 32x32 box of bits on the screen.
  *
  * The zoom (Mike, 31 Oct 2026):
@@ -14,7 +14,7 @@
  * pixel if the memory holds pixels (blue, green, red, spare). Beside it, "How a bot sees this": the 32 rows as the numbers a bot
  * gets (R G B, changed), also written to the box of bot vectors as plane "chip" (u8: 32 x R G B + 32 changed bits).
  *
- * The RAM is read straight from the GPU driver (amdgpu debugfs amdgpu_vram; on the host's AMD APU a 512 MB slice of main memory).
+ * The RAM is read straight from the GPU driver (amdgpu debugfs amdgpu_vram; on an AMD APU a 512 MB slice of main memory).
  * Needs root to open it: run with sudo; it opens the RAM, then drops to the user who ran sudo before it touches the screen.
  *
  *   sudo coop-perch-chip                  zoom (above)

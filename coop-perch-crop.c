@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT. */
+/* Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md. */
 /* coop-perch-crop: save one box of the screen as a small PNG (the fovea: only where it changed, never the whole screen).
  *   coop-perch-crop x,y,w,h [-d :2] [-o FILE.png] [-p PAD]      (default out: ~/coop-perch/tape/crop.png, pad 4 px)
  * Prints the file path and its size.

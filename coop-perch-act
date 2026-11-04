@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-# Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT.
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
 # coop-perch-act NAME [ACTION...]: a bot's hands on a Perch VM (coop-perch-vmrun NAME). Each ACTION (or each stdin line if none):
 #   type TEXT | key ctrl+alt+t | move X Y | click X Y [left|middle|right] [N] | scroll X Y up|down [N]
 # Prints the eye's answer per action ("ok" / "err why"). Exit 1 if any action failed.

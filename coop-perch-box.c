@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT. */
+/* Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md. */
 /* coop-perch-box: a reader of the box of bot vectors (see coop-perch-box.h), for testing and for bots that take a pipe.
  *   coop-perch-box info                 each plane: dims, fields, frames written, ring, last frame time
  *   coop-perch-box raw PLANE [N]        the last N frames (default 1) as raw bytes: double time + values, little-endian

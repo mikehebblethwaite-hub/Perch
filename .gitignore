@@ -13,15 +13,14 @@ coop-perch-cam
 vm/
 coop-perch-vm
 dist/
-site/out/
-skill/run.log
-skill/.done
-skill/.lock
-NOTES.md
-PROGRESS.md
-FAILS.md
-COPYRIGHT
-QUICKSTART.txt
 __pycache__/
 *.pyc
-skill/TASK.md
+# local links to private files (never in this repo)
+/NOTES.md
+/PROGRESS.md
+/FAILS.md
+/COPYRIGHT
+/QUICKSTART.txt
+/site
+/skill
+/perch.local.env

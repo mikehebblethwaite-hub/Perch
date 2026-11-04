@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT.
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
 # coop-perch-vmrun DISK [NAME]: run a guest whose only monitor is Perch.
 #   a private bus (this user only) -> QEMU -display dbus on it (no window, no VNC, nothing on the network)
 #   -> coop-perch-vm registers as the monitor: QEMU hands it each changed rectangle; plane vm-NAME, tape ~/coop-perch/tape/vm-NAME.

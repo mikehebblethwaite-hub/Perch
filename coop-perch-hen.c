@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT. */
+/* Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md. */
 /* coop-perch-hen: one hen pecking in a small window, for testing the Perch eye. Drag it anywhere.
  * The peck is 11 fixed frames of 50 ms (0.55 s), drawn exactly the same every time, so its memory repeats exactly: the eye has
  * to find it by that beat alone, never by asking where the window is.

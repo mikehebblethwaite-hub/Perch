@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-# Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT.
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
 # coop-perch-vmkeys NAME TEXT... : type into a Perch guest (QMP send-key). "\n" in TEXT = Enter. --shot FILE: QEMU's own
 # screendump (PPM) of the guest screen, for checking Perch's numbers in tests only (Perch itself never takes one).
 import json, os, socket, sys, time

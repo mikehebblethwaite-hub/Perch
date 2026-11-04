@@ -1,10 +1,10 @@
 #!/bin/sh
-# Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. See COPYRIGHT.
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
 # coop-perch-display: the Perch display. Apps use :2 as usual. Behind it:
 #   Xvfb :12  the real X screen (DAMAGE/XFIXES/MIT-SHM, no TCP), any app thinks it is a monitor
 #   coop-perch-tap on :2  sits on the data line, passes every byte to :12 and reads the requests as they go by
 #   coop-perch-eye on :2  watches it, strikes into the box (coop-perch-wait reads them)
-#   its own accessibility bus  apps on :2 hand their words to it (AT-SPI; skill/coop-perch-look reads them). Never the desktop's:
+#   its own accessibility bus  apps on :2 hand their words to it (AT-SPI; a bot reads them there). Never the desktop's:
 #                         the session's bus belongs to display :0 and dies with it. Apps find it on :2's root window (AT_SPI_BUS).
 # Size by PERCH_SIZE (default 1280x800). Stops both when either stops.
 S="${PERCH_SIZE:-1280x800}"; D="${PERCH_DISPLAY:-2}"; R="${PERCH_REAL:-12}"

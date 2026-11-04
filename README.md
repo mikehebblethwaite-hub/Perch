@@ -55,12 +55,11 @@ make
 - `coop-perch-feed.c` — Feed daemon and message passing
 - `coop-perch-web` — Web interface for viewing live screen and replay
 - `coop-perch-vm*` — Virtual machine integration
-- `site/` — Demo site and documentation
 - `demo/` — Example usage and tests
 
 ## Quick Start
 
-See `site/demo/` for examples and the included demo scripts.
+See `demo/` for examples and the included demo scripts.
 
 ## Support Perch
 
