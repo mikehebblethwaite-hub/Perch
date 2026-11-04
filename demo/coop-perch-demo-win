@@ -1,0 +1,210 @@
+#!/usr/bin/python3 -I
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
+# coop-perch-demo-win: the demo's everyday job (coop-perch-demo) on a Windows desktop: the same made-up inbox, open in Edge
+# inside a Windows VM run by Perch (coop-perch-winvm perch), the same local model, the same questions, done twice:
+#   the screenshot bot: a full screenshot of the Windows screen after every action (QEMU's own screendump, as bots see screens)
+#   the Perch bot: the Perch lines that came after every action (Windows' own words through the guest helper, then only changes)
+# The same hands for both: Perch's keyboard and mouse on the VM, aimed at the words' boxes from the guest helper's lines.
+# Both wait the same way for the screen to settle before they look. Measured as in coop-perch-demo (tokens the model counted,
+# screenshots at Claude's w*h/750; time, energy and CPU of each bot's own steps). Result: tape/demo-win/result.json + run.json.
+# Needs: the Windows VM under Perch (PERCH_WIN_NET=off coop-perch-winvm perch), its helper in (coop-perch-winvm guest), the
+# inbox at C:\perch\inbox.html (copied by this script over the VM's SSH), the local model (as coop-perch-demo).
+import base64, io, json, os, re, socket, subprocess, sys, time
+from importlib.machinery import SourceFileLoader
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+P = os.path.dirname(HERE)
+demo = SourceFileLoader("coop_perch_demo", os.path.join(HERE, "coop-perch-demo")).load_module()
+
+NAME = "win"
+RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "coop-perch-vm-" + NAME)
+TAPE = os.path.join(P, "tape", "vm-" + NAME, "tape.txt")
+ACT, WAIT, WINVM = os.path.join(P, "coop-perch-act"), os.path.join(P, "coop-perch-wait"), os.path.join(P, "vm-win", "coop-perch-winvm")
+W, H = 1024, 768
+demo.OUT = os.path.join(P, "tape", "demo-win")
+demo.IMG_TOKENS = round(W * H / 750)            # Claude's rule for this screen: 1,049 tokens a screenshot
+INBOX = r"C:\perch\inbox.html"
+LINE = re.compile(r"^\S+ ([WFT]) (\S+) (?:(\S+) )?'?")
+TLINE = re.compile(r"^\S+ T \S+ (-?\d+),(-?\d+) (-?\d+)x(-?\d+) \+'((?:[^'\\]|\\.)*)'$")
+
+
+def unq(s):
+    return re.sub(r"\\(.)", lambda m: {"n": "\n", "t": "\t"}.get(m.group(1), m.group(1)), s)
+
+
+class Hands:
+    """Perch's keyboard and mouse on the VM, aimed at words: where each line of words is, from the guest helper's T lines"""
+    def __init__(self):
+        self.pos = 0
+        self.boxes = []                          # (text, x, y, w, h), newest last
+
+    def act(self, *actions):
+        subprocess.run([ACT, NAME, *actions], capture_output=True, text=True, timeout=60)
+
+    def mark(self):
+        self.pos = os.path.getsize(TAPE)
+
+    def new_lines(self):
+        """the guest helper's lines since the mark (W window, F focus, T words); the boxes are kept for aiming"""
+        with open(TAPE, encoding="utf-8", errors="replace") as f:
+            f.seek(self.pos)
+            out = [l.rstrip("\n") for l in f if re.match(r"^\S+ [WFT] ", l)]
+        for l in out:
+            m = TLINE.match(l)
+            if m and int(m.group(3)) > 0:
+                self.boxes.append((unq(m.group(5)), *map(int, m.group(1, 2, 3, 4))))
+        return out
+
+    def settle(self):
+        """the same wait for both bots: the screen still (Perch's own wait), then the helper's lines quiet for 0.8 s"""
+        subprocess.run([WAIT, "-t", "15", "-p", "vm-" + NAME], capture_output=True, timeout=30)
+        size, still = os.path.getsize(TAPE), time.time()
+        while time.time() - still < 0.8:
+            time.sleep(0.1)
+            if os.path.getsize(TAPE) != size:
+                size, still = os.path.getsize(TAPE), time.time()
+
+    def click_words(self, want):
+        for text, x, y, w, h in reversed(self.boxes):
+            if want(text):
+                self.act(f"click {x + w // 2} {y + h // 2}")
+                return True
+        return False
+
+    def go(self):
+        """a fresh Edge window on the inbox: any Edge closed (over the VM's SSH: a key could hit the wrong window), then
+        opened with Windows' own Run box by the hands"""
+        close_edge()
+        self.boxes.clear()
+        self.act("key super+r")
+        time.sleep(1.5)
+        self.act(f"type msedge --app=file:///{INBOX.replace(chr(92), '/')} --start-maximized --no-first-run", "key return")
+        for _ in range(60):
+            time.sleep(0.5)
+            if any(t.startswith("Primary ") for t, *_ in self.boxes[-60:]):
+                return True
+            self.new_lines()
+        return False
+
+    def open(self, what, who=None):
+        if what == "back":
+            return self.click_words(lambda t: t.startswith("← Back"))
+        return self.click_words(lambda t: t.startswith(who + " "))
+
+
+def close_edge():
+    subprocess.run([WINVM, "ssh", "Stop-Process -Name msedge -Force -ErrorAction SilentlyContinue"], capture_output=True, timeout=60)
+    time.sleep(1.5)
+
+
+def screendump():
+    c = socket.socket(socket.AF_UNIX)
+    c.connect(os.path.join(RUN, "qmp"))
+    f = c.makefile("rw")
+    f.readline()
+    ppm = os.path.join(demo.OUT, "screen.ppm")
+    for cmd in ({"execute": "qmp_capabilities"}, {"execute": "screendump", "arguments": {"filename": ppm}}):
+        f.write(json.dumps(cmd) + "\n"); f.flush(); f.readline()
+    c.close()
+    from PIL import Image
+    b = io.BytesIO()
+    Image.open(ppm).save(b, "PNG")
+    os.remove(ppm)
+    return b.getvalue()
+
+
+class WinBot:
+    """what both bots share: the hands, each step done and then the same wait"""
+    def act(self, what, who=None):
+        with self.meter:
+            self.hands.mark()
+            ok = self.hands.go() if what == "go" else self.hands.open(what, who)
+            if ok:
+                self.hands.settle()
+            self.seen = self.hands.new_lines()
+        return ok
+
+    def stop(self):
+        pass
+
+
+class ShotBot(WinBot, demo.Bot):
+    def __init__(self, hands):
+        demo.Bot.__init__(self, "shot")
+        self.hands = hands
+
+    def look(self, n):
+        with self.meter:
+            png = screendump()
+        name = f"shot-{n}.png"
+        open(os.path.join(demo.OUT, name), "wb").write(png)
+        self.looks += 1
+        demo.emit(lane="shot", kind="see", img=f"/tape/{name}", bytes=len(png), tokens=demo.IMG_TOKENS)
+        return base64.b64encode(png).decode()
+
+
+class PerchBot(WinBot, demo.Bot):
+    def __init__(self, hands):
+        demo.Bot.__init__(self, "perch")
+        self.hands = hands
+
+    def look(self, n):
+        with self.meter:
+            lines = "\n".join(self.seen)
+        self.looks += 1
+        demo.emit(lane="perch", kind="see", lines=lines, bytes=len(lines.encode()), tokens=demo.ctok(lines))
+        return lines
+
+
+def img_tokens():
+    """the local model's own tokens for one Windows screenshot: the same question with and without it"""
+    png = base64.b64encode(screendump()).decode()
+    def n(m):
+        b = json.dumps({"model": demo.MODEL, "messages": [m], "stream": False, "think": False, "keep_alive": "30m",
+                        "options": {"temperature": 0, "num_predict": 1, "num_ctx": 16384}}).encode()
+        import urllib.request
+        return int(json.load(urllib.request.urlopen(urllib.request.Request(demo.OLLAMA, b), timeout=600)).get("prompt_eval_count", 0))
+    return n({"role": "user", "content": "Look.", "images": [png]}) - n({"role": "user", "content": "Look."})
+
+
+def main():
+    if not os.path.exists(os.path.join(RUN, "qmp")):
+        sys.exit("coop-perch-demo-win: the Windows VM is not running under Perch (PERCH_WIN_NET=off coop-perch-winvm perch)")
+    os.makedirs(demo.OUT, exist_ok=True)
+    for f in os.listdir(demo.OUT):
+        if f.startswith("shot-"):
+            os.remove(os.path.join(demo.OUT, f))
+    key = os.path.join(P, "vm", "win", "key")
+    subprocess.run(["scp", "-q", "-i", key, "-P", "2293", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+                    "-o", "LogLevel=ERROR", os.path.join(HERE, "inbox.html"), "mike@127.0.0.1:C:/perch/inbox.html"], check=True, timeout=60)
+    import urllib.request
+    t_run = time.time()
+    demo.emit(kind="start", task=demo.TASK, img_tokens=demo.IMG_TOKENS, screen=f"Windows 11 in a VM, Edge, {W}x{H}")
+    urllib.request.urlopen(urllib.request.Request(demo.OLLAMA, json.dumps({"model": demo.MODEL, "messages": [], "keep_alive": "30m"}).encode()), timeout=300).read()
+    demo.G_IMG[0] = img_tokens()
+    print(f"one Windows screenshot: {demo.G_IMG[0]} tokens to the local model, {demo.IMG_TOKENS} to Claude", flush=True)
+    hands, bots = Hands(), []
+    for make in (PerchBot, ShotBot):
+        w0 = time.time()
+        b = make(hands); bots.append(b)
+        demo.job(b)
+        b.wall = time.time() - w0
+        print(f"{b.lane}: done in {b.wall:.0f} s, said yes to {b.names}", flush=True)
+    close_edge()
+    res = {}
+    for b in bots:
+        res[b.lane] = {"wall": round(b.wall, 1), "claude": b.claude, "local": b.local, "s": round(b.meter.s, 1),
+                       "j": round(b.meter.j, 1) if b.meter.jok else None, "cpu": round(b.meter.cpu, 1),
+                       "bytes": b.bytes, "calls": b.calls, "looks": b.looks, "names": b.names, "replies": b.replies}
+    res["truth"] = demo.TRUTH
+    res["g_img"] = demo.G_IMG[0]
+    res["img_tokens"] = demo.IMG_TOKENS
+    res["screen"] = f"Windows 11 VM, Edge, {W}x{H}"
+    res["total_wall"] = round(time.time() - t_run, 1)
+    json.dump(res, open(os.path.join(demo.OUT, "result.json"), "w"), indent=1)
+    json.dump(demo.history, open(os.path.join(demo.OUT, "run.json"), "w"))
+    print(json.dumps(res, indent=1, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

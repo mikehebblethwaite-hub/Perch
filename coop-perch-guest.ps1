@@ -28,6 +28,7 @@ public static class PerchGuest {
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
     [DllImport("kernel32.dll")] static extern IntPtr GetConsoleWindow();
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     static int myPid = Process.GetCurrentProcess().Id;
     static IntPtr myConsole = IntPtr.Zero;
     // the helper's own (hidden) console window is never what the screen shows: Windows may still give it focus at start
@@ -35,6 +36,8 @@ public static class PerchGuest {
         try {
             if (e.Current.ProcessId == myPid) return true;
             var top = TopWindow(e);
+            int hw = top.Current.NativeWindowHandle;
+            if (hw != 0 && !IsWindowVisible(new IntPtr(hw))) return true;     // hidden windows (consoles of hidden tasks) are not the screen
             return myConsole != IntPtr.Zero && top.Current.NativeWindowHandle == myConsole.ToInt32();
         } catch (Exception) { return false; }
     }
@@ -47,10 +50,13 @@ public static class PerchGuest {
     static readonly Dictionary<string, Pend> pending = new Dictionary<string, Pend>();
     static readonly Dictionary<string, string> sent = new Dictionary<string, string>();
     static AutomationElement window;
+    static string lastF = "";
     static string windowKey = "";
     static readonly Dictionary<int, string> procName = new Dictionary<int, string>();
 
+    static readonly bool Debug = Environment.GetEnvironmentVariable("PERCH_DEBUG") != null || File.Exists(@"C:\perch\debug");
     static void Emit(string line) {
+        if (line.Contains(" ? +") && Debug) Console.Error.WriteLine("? line from: " + Environment.StackTrace.Replace("\r\n", " | ").Substring(0, 400));
         lock (lk) { try { outw.Write(line + "\n"); outw.Flush(); } catch (Exception) { } }
     }
     static string Q(string t) {
@@ -87,6 +93,7 @@ public static class PerchGuest {
         try {
             var ct = e.Current.ControlType;
             if (ct == ControlType.Document || ct == ControlType.Window || ct == ControlType.Pane || ct == ControlType.Group) return "";
+            if (ct == ControlType.Hyperlink) return e.Current.Name ?? "";    // a link's value is its web address: its words are its name
             object p;
             if (e.TryGetCurrentPattern(ValuePattern.Pattern, out p)) { var v = ((ValuePattern)p).Current.Value; if (!string.IsNullOrEmpty(v)) return v.Length > 20000 ? v.Substring(0, 20000) : v; }
             if (ct == ControlType.Edit && e.TryGetCurrentPattern(TextPattern.Pattern, out p)) return ((TextPattern)p).DocumentRange.GetText(20000);
@@ -100,10 +107,11 @@ public static class PerchGuest {
             var ct = e.Current.ControlType;
             if (ct != ControlType.Document && ct != ControlType.Edit) return false;
             object p; if (!e.TryGetCurrentPattern(TextPattern.Pattern, out p)) return false;
-            var w = TreeWalker.ControlViewWalker; int n = 0;   // no child holds words of its own (scroll bars and the like are fine)
+            // no children but scroll bars and their parts (a console, a plain text area); a web page has a tree under it
+            var w = TreeWalker.ControlViewWalker; int n = 0;
             for (var c = w.GetFirstChild(e); c != null && n < 50; c = w.GetNextSibling(c), n++) {
                 var cct = c.Current.ControlType;
-                if (cct != ControlType.ScrollBar && cct != ControlType.Button && cct != ControlType.Thumb && !string.IsNullOrEmpty(Words(c))) return false;
+                if (cct != ControlType.ScrollBar && cct != ControlType.Button && cct != ControlType.Thumb) return false;
             }
             return true;
         } catch (Exception) { return false; }
@@ -139,17 +147,52 @@ public static class PerchGuest {
             }
         } catch (Exception x) { Console.Error.WriteLine("lines: " + x.GetType().Name + ": " + x.Message); }
     }
-    static void SendText(AutomationElement e, string k) {
-        if (Surface(e)) { SendLines(e, k); return; }
-        string text = Words(e);
-        if (string.IsNullOrEmpty(text)) return;
-        try { if (e.Current.IsOffscreen) return; } catch (Exception) { return; }
+    static readonly Dictionary<string, DateTime> placeSeen = new Dictionary<string, DateTime>();
+    static int PlaceY(AutomationElement e) {
+        try { var r = e.Current.BoundingRectangle; return r.IsEmpty ? -1 : (int)(r.Y + r.Height / 2) / 6; } catch (Exception) { return -1; }
+    }
+    static void SendOne(AutomationElement e, string k, string text, string box) {
         string old;
         if (k != null && sent.TryGetValue(k, out old) && old == text) return;
         if (k != null) { if (sent.Count > 4000) sent.Clear(); sent[k] = text; }
-        string app = App(e), box = Box(e);
+        // a link and the text inside it hold the same words in the same place: the first one told is enough
+        string place = text + "@" + box; DateTime when;
+        if (placeSeen.TryGetValue(place, out when) && DateTime.UtcNow - when < TimeSpan.FromSeconds(2)) return;
+        if (placeSeen.Count > 4000) placeSeen.Clear();
+        placeSeen[place] = DateTime.UtcNow;
+        string app = App(e);
         for (int i = 0; i < text.Length; i += CHUNK)
             Emit("T " + app + " " + box + " +" + Q(text.Substring(i, Math.Min(CHUNK, text.Length - i))));
+    }
+    class Cand { public AutomationElement e; public string k, t, box; public bool borrowed; }
+    // a batch of elements (a window's snapshot, or the ones that changed): their words, with two kinds of noise taken out.
+    // Edge reports some runs of text with no box: such a piece borrows the box of the nearest parent that has one, and is
+    // dropped when it is only part of a longer line in the batch, or repeats a line that has its own box.
+    static void SendBatch(List<AutomationElement> els) {
+        var cand = new List<Cand>(); var boxed = new HashSet<string>(); var w = TreeWalker.ControlViewWalker;
+        foreach (var e in els) {
+            if (cand.Count >= SNAP_MAX) break;
+            try { if (e.Current.IsOffscreen) continue; } catch (Exception) { continue; }
+            string k = Key(e);
+            if (Surface(e)) { SendLines(e, k); continue; }
+            string t = Words(e); if (string.IsNullOrEmpty(t)) continue;
+            string box = Box(e); bool borrowed = false;
+            if (box == "?") {
+                try { var p = w.GetParent(e); for (int i = 0; i < 4 && p != null && box == "?"; i++, p = w.GetParent(p)) box = Box(p); } catch (Exception) { }
+                if (box == "?") continue;          // nowhere on the screen
+                borrowed = true;
+            } else boxed.Add(t);
+            cand.Add(new Cand { e = e, k = k, t = t, box = box, borrowed = borrowed });
+        }
+        foreach (var c in cand) {
+            if (c.borrowed) {
+                if (boxed.Contains(c.t)) continue;
+                bool part = false;
+                foreach (var d in cand) if (d != c && d.t.Length > c.t.Length && d.t.Contains(c.t)) { part = true; break; }
+                if (part) continue;
+            }
+            SendOne(c.e, c.k, c.t, c.box);
+        }
     }
     // a window's words when it becomes active: every element on screen that holds words, in reading order of the tree
     static void Snapshot(AutomationElement root) {
@@ -165,8 +208,7 @@ public static class PerchGuest {
             try { for (var c = w.GetFirstChild(kv.Key); c != null; c = w.GetNextSibling(c)) kids.Add(c); } catch (Exception) { }
             for (int i = kids.Count - 1; i >= 0; i--) stack.Push(new KeyValuePair<AutomationElement, int>(kids[i], kv.Value + 1));
         }
-        int s = 0;
-        foreach (var e in order) { if (s >= SNAP_MAX) break; if (Surface(e) || !string.IsNullOrEmpty(Words(e))) { SendText(e, Key(e)); s++; } }
+        SendBatch(order);
     }
     static AutomationElement TopWindow(AutomationElement e) {
         var w = TreeWalker.ControlViewWalker; var root = AutomationElement.RootElement;
@@ -187,7 +229,8 @@ public static class PerchGuest {
             foreach (var kv in pending) if (all || now - kv.Value.last >= QUIET || now - kv.Value.first >= MAXWAIT) due.Add(kv);
             foreach (var kv in due) pending.Remove(kv.Key);
         }
-        foreach (var kv in due) SendText(kv.Value.el, kv.Key);
+        var els = new List<AutomationElement>(); foreach (var kv in due) els.Add(kv.Value.el);
+        if (els.Count > 0) SendBatch(els);
     }
     static void Watch(AutomationElement win) {
         Automation.AddAutomationPropertyChangedEventHandler(win, TreeScope.Subtree, (s, e) => Mark(s), AutomationElement.NameProperty, ValuePattern.ValueProperty);
@@ -203,6 +246,7 @@ public static class PerchGuest {
         try {
             Flush(true);
             var top = TopWindow(e); string tk = Key(top) ?? "";
+            if (Box(top) == "?") return;          // the window has already gone
             if (tk != windowKey) {
                 if (window != null) { try { Automation.RemoveAllEventHandlers(); } catch (Exception) { } Automation.AddAutomationFocusChangedEventHandler(OnFocus); }
                 window = top; windowKey = tk;
@@ -211,8 +255,10 @@ public static class PerchGuest {
                 Snapshot(top);
                 try { Watch(top); } catch (Exception) { }
             }
+            if (Box(e) == "?") return;            // focus on something that has already gone
             string name = ""; try { name = e.Current.Name ?? ""; } catch (Exception) { }
-            Emit("F " + App(e) + " " + Role(e) + " " + Q(name.Length > 120 ? name.Substring(0, 120) : name) + " " + Box(e));
+            string fl = "F " + App(e) + " " + Role(e) + " " + Q(name.Length > 120 ? name.Substring(0, 120) : name) + " " + Box(e);
+            if (fl != lastF) { lastF = fl; Emit(fl); }
         } catch (Exception) { }
     }
     public static void Run(string port) {
@@ -225,7 +271,7 @@ public static class PerchGuest {
             s = new FileStream(h, FileAccess.Write, 1);
         }
         outw = new StreamWriter(s, new UTF8Encoding(false));
-        Emit("O guest-helper-win 0.02");
+        Emit("O guest-helper-win 0.07");
         Automation.AddAutomationFocusChangedEventHandler(OnFocus);
         myConsole = GetConsoleWindow();
         try {   // start with what is in front now (the focus may be on our own hidden console)
@@ -233,7 +279,25 @@ public static class PerchGuest {
             if (f == null || Mine(f)) { var h = GetForegroundWindow(); f = h != IntPtr.Zero ? AutomationElement.FromHandle(h) : null; }
             if (f != null && !Mine(f)) OnFocus(f, null);
         } catch (Exception) { }
-        while (true) { Thread.Sleep(100); try { Flush(false); } catch (Exception) { } }
+        // focus events do not always come when a new window appears (Edge, for one): the window in front is checked as well
+        IntPtr front = GetForegroundWindow(); int tick = 0;
+        while (true) {
+            Thread.Sleep(100);
+            try { Flush(false); } catch (Exception) { }
+            if (++tick % 3 != 0) continue;
+            try {
+                var h = GetForegroundWindow();
+                if (h != front && h != IntPtr.Zero) {
+                    front = h;
+                    var w = AutomationElement.FromHandle(h);
+                    if (w != null && !Mine(w)) {
+                        AutomationElement f = null;
+                        try { f = AutomationElement.FocusedElement; } catch (Exception) { }
+                        OnFocus(f != null && !Mine(f) && Automation.Compare(TopWindow(f), w) ? f : w, null);
+                    }
+                }
+            } catch (Exception) { }
+        }
     }
 }
 '@
