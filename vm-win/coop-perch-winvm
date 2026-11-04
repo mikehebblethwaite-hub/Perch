@@ -1,20 +1,25 @@
 #!/bin/bash
 # Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. CONFIDENTIAL.
 # coop-perch-winvm: Perch's Windows test VM on the host (Mike, 1 Nov 2026: "install windows vm ... to build a windows bot skill and
-# exe install of perch"). Windows 11 Enterprise evaluation (90 days from install), BIOS, one virtio disk, so Perch's own runner
-# (coop-perch-vmrun) can be its monitor unchanged. Rebuildable: lives in ~/coop-perch/vm/win (not in git, not in backups).
-#   make     download-free hands-off install (ISOs from build-2's drive cache), waits until Windows is up with SSH
-#   start    run it with a screen on VNC 127.0.0.1:5991 (Mike: tigervnc-viewer 127.0.0.1:5991)    perch   run it under Perch's VM eye
+# exe install of perch"). Windows 11 with the host's embedded OEM product key, BIOS, one virtio disk, so Perch's own runner
+# (coop-perch-vmrun) can be its monitor unchanged. Rebuildable: lives in ~/coop-perch/vm/win; old disks are backed up to build-2.
+#   make     hands-off install using Microsoft's multi-edition ISO and the host's embedded OEM key
+#   start    run with VNC 127.0.0.1:5991 and SPICE 127.0.0.1:5992 (SPICE supports guest clipboard)
+#            Mike: remote-viewer spice://127.0.0.1:5992; TigerVNC: xtigervncviewer 127.0.0.1::5991
+#   perch    run it under Perch's VM eye
 #   stop | ssh [cmd] | status | gone (delete it all)
-# Ports, 127.0.0.1 only: SSH 2293 (user perch, key only). Sign-in password: vm/win/password (600).
+# Ports, 127.0.0.1 only: SSH 2293 (user mike, key only). Sign-in password: vm/win/password (600).
 set -uo pipefail
 T=~/coop-perch/vm/win; HERE=$(cd "$(dirname "$0")" && pwd); P=$(dirname "$HERE")
-CACHE=/path/to/iso; WINISO=Win11_Ent_Eval_26H2_en-GB_x64.iso; VIRTIO=virtio-win-stable.iso
+CACHE=/path/to/iso; WINISO=Windows11_26H2_MultiEdition_en-GB_x64.iso; VIRTIO=virtio-win-stable.iso
 MEM=6144; CPUS=4; DISK=80G; SSHP=2293
-V="ssh -i $T/key -p $SSHP -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 perch@127.0.0.1"
+V="ssh -i $T/key -p $SSHP -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 mike@127.0.0.1"
 up() { [ -f $T/vm.pid ] && kill -0 "$(cat $T/vm.pid)" 2>/dev/null; }
 qemu() {   # $@: extra args (install discs)
     qemu-system-x86_64 -enable-kvm -cpu host -m $MEM -smp $CPUS -name perch-win -vga std -display none -vnc 127.0.0.1:91 \
+        -spice addr=127.0.0.1,port=5992,disable-ticketing=on,disable-agent-file-xfer=on \
+        -device virtio-serial-pci -chardev spicevmc,id=vdagent,name=vdagent \
+        -device virtserialport,chardev=vdagent,name=com.redhat.spice.0 \
         -drive file=$T/disk.qcow2,if=virtio -device qemu-xhci -device usb-tablet -rtc base=localtime \
         -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$SSHP-:22 -qmp unix:$T/qmp,server=on,wait=off \
         -pidfile $T/vm.pid -daemonize "$@"
@@ -31,38 +36,71 @@ make)
     [ -e $T/disk.qcow2 ] && { echo "a VM is already there (coop-perch-winvm gone first)"; exit 1; }
     mkdir -p $T; chmod 700 $T; cd $T || exit 1
     for f in $WINISO $VIRTIO; do
-        [ -s $f ] && continue
-        if ssh build-2 "sudo cat $CACHE/$f" > $f.part && [ -s $f.part ]; then mv $f.part $f; else rm -f $f.part; echo "could not fetch $f from build-2's cache"; exit 1; fi
+        [ -s "$T/$f" ] && continue
+        source=$CACHE/$f
+        [ "$f" != "$WINISO" ] || source=/path/to/iso/$f
+        if ssh build-2 "sudo -n cat $source" > "$T/$f.part" && [ -s "$T/$f.part" ]; then
+            mv "$T/$f.part" "$T/$f"
+        else
+            rm -f "$T/$f.part"
+            echo "could not fetch $f from build-2"
+            exit 1
+        fi
     done
-    ssh-keygen -q -t ed25519 -N '' -f key -C perch-winvm <<<y >/dev/null
-    python3 -I -c "import secrets,string;a=string.ascii_letters+string.digits;print(''.join(secrets.choice(a) for _ in range(16)))" > password; chmod 600 password
-    rm -rf answer; mkdir -p answer/drivers
+    [ -s "$T/key" ] || ssh-keygen -q -t ed25519 -N '' -f "$T/key" -C perch-winvm
+    if [ ! -s "$T/password" ]; then
+        python3 -I -c "import secrets,string;a=string.ascii_letters+string.digits;print(''.join(secrets.choice(a) for _ in range(16)))" > "$T/password"
+        chmod 600 "$T/password"
+    fi
+    rm -rf answer; mkdir -p answer/drivers; chmod 700 answer
     for d in viostor NetKVM vioserial Balloon; do
         xorriso -osirrox on -indev $VIRTIO -extract /$d/w11/amd64 answer/drivers/$d >/dev/null 2>&1 || { echo "no $d driver on the virtio disc"; exit 1; }
     done
     chmod -R u+w answer
-    sed "s|@PASSWORD@|$(cat password)|g" "$HERE/autounattend.xml" > answer/autounattend.xml
+    sed "s|@PASSWORD@|$(cat "$T/password")|g" "$HERE/autounattend.xml" > "$T/answer/autounattend.base.xml"
+    umask 077
+    keyfile=$(mktemp "$T/oem-product-key.XXXXXX") || exit 1
+    trap 'rm -f -- "$keyfile" "$T/answer/autounattend.base.xml" "$T/answer.iso"; rm -rf -- "$T/answer"' EXIT
+    sudo -n python3 -c 'from pathlib import Path; import re,sys; b=Path("/sys/firmware/acpi/tables/MSDM").read_bytes(); k=b[56:85]; sys.exit("No valid embedded Windows OEM key is available") if b[:4] != b"MSDM" or not re.fullmatch(rb"[A-Z0-9]{5}(?:-[A-Z0-9]{5}){4}", k) else sys.stdout.buffer.write(k)' > "$keyfile" || exit 1
+    python3 - "$keyfile" "$T/answer/autounattend.base.xml" "$T/answer/autounattend.xml" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+key = Path(sys.argv[1]).read_text().strip()
+source = Path(sys.argv[2]).read_text()
+if len(key) != 29 or source.count("@PRODUCTKEY@") != 1:
+    raise SystemExit("The embedded OEM key or unattended setup template is invalid")
+output = source.replace("@PRODUCTKEY@", key)
+ET.fromstring(output)
+Path(sys.argv[3]).write_text(output)
+PY
+    rm -f -- "$keyfile" "$T/answer/autounattend.base.xml"
+    chmod 600 "$T/answer/autounattend.xml"
     sed "s|@SSHKEY@|$(cat key.pub)|" "$HERE/firstlogon.ps1" > answer/firstlogon.ps1
     xorriso -as mkisofs -quiet -o answer.iso -V PERCH_ANSWER -J -r answer 2>/dev/null || { echo "answer disc not made"; exit 1; }
+    chmod 600 "$T/answer.iso"
     qemu-img create -q -f qcow2 disk.qcow2 $DISK
     qemu -drive file=$T/$WINISO,media=cdrom,index=1 -drive file=$T/answer.iso,media=cdrom,index=2 -boot order=dc || exit 1
     echo "installing (hands-off; watch on VNC 127.0.0.1:5991 if you like)..."
     if wait_ready 900; then
         $V 'Stop-Computer -Force' >/dev/null 2>&1; for i in $(seq 60); do up || break; sleep 2; done
-        rm -f $T/$WINISO $T/$VIRTIO; echo "made: Windows is installed (install discs removed; they stay in build-2's cache)"
+        rm -f -- "$T/$VIRTIO" "$T/answer.iso"
+        rm -rf -- "$T/answer"
+        echo "made: Windows is installed; OEM key-bearing setup media removed"
     else
         echo "install did not finish: look on VNC 127.0.0.1:5991 (coop-perch-winvm start) and in C:\\perch-firstlogon.log"; exit 1
     fi ;;
 start)
     up && { echo "already running"; exit 0; }
-    qemu && wait_ready 120 && echo "running: VNC 127.0.0.1:5991, ssh: coop-perch-winvm ssh" ;;
+    qemu && wait_ready 120 && echo "running: VNC 127.0.0.1:5991; clipboard-enabled SPICE 127.0.0.1:5992; ssh: coop-perch-winvm ssh" ;;
 perch)
     up && { echo "it is running with VNC: coop-perch-winvm stop first"; exit 1; }
     PERCH_VM_MEM=$MEM PERCH_VM_CPUS=$CPUS PERCH_VM_NIC="user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$SSHP-:22" \
         PERCH_VM_ARGS="-rtc base=localtime" exec "$P/coop-perch-vmrun" $T/disk.qcow2 win ;;
 stop)  up && { $V 'Stop-Computer -Force' >/dev/null 2>&1; for i in $(seq 60); do up || break; sleep 2; done; up && kill "$(cat $T/vm.pid)"; }; echo stopped ;;
 ssh)   shift; exec $V "$@" ;;
-status) up && echo "running (VNC 127.0.0.1:5991; ssh: coop-perch-winvm ssh)" || echo "not running" ;;
+status) up && echo "running (VNC 127.0.0.1:5991; clipboard-enabled SPICE 127.0.0.1:5992; ssh: coop-perch-winvm ssh)" || echo "not running" ;;
 gone)  "$0" stop; rm -rf $T; echo removed ;;
 *) sed -n 2,10p "$0"; exit 1 ;;
 esac

@@ -37,9 +37,11 @@
       </DiskConfiguration>
       <ImageInstall><OSImage>
         <InstallTo><DiskID>0</DiskID><PartitionID>2</PartitionID></InstallTo>
-        <InstallFrom><MetaData wcm:action="add"><Key>/IMAGE/INDEX</Key><Value>1</Value></MetaData></InstallFrom>
       </OSImage></ImageInstall>
-      <UserData><AcceptEula>true</AcceptEula><FullName>Perch</FullName><Organization>Perch</Organization></UserData>
+      <UserData>
+        <ProductKey><Key>@PRODUCTKEY@</Key><WillShowUI>OnError</WillShowUI></ProductKey>
+        <AcceptEula>true</AcceptEula><FullName>Mike</FullName><Organization>Perch</Organization>
+      </UserData>
     </component>
   </settings>
   <settings pass="specialize">
@@ -62,10 +64,10 @@
         <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE><HideLocalAccountScreen>true</HideLocalAccountScreen><ProtectYourPC>3</ProtectYourPC>
       </OOBE>
       <UserAccounts><LocalAccounts><LocalAccount wcm:action="add">
-        <Name>perch</Name><DisplayName>Perch</DisplayName><Group>Administrators</Group>
+        <Name>mike</Name><DisplayName>Mike</DisplayName><Group>Administrators</Group>
         <Password><Value>@PASSWORD@</Value><PlainText>true</PlainText></Password>
       </LocalAccount></LocalAccounts></UserAccounts>
-      <AutoLogon><Enabled>true</Enabled><Username>perch</Username><LogonCount>9999999</LogonCount>
+      <AutoLogon><Enabled>true</Enabled><Username>mike</Username><LogonCount>9999999</LogonCount>
         <Password><Value>@PASSWORD@</Value><PlainText>true</PlainText></Password></AutoLogon>
       <FirstLogonCommands>
         <SynchronousCommand wcm:action="add"><Order>1</Order><CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -File D:\firstlogon.ps1</CommandLine></SynchronousCommand>
