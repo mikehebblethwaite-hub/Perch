@@ -80,6 +80,7 @@ or just ask it to look at a page or a screen: it reads Perch's lines instead of 
 - `coop_perch_read.py`: reading words from pixels where an app gives none
 - `demo/`: the demos; `coop-perch-report`: your result as a report
 - `vm-win/`: the Windows test VM
+- `site/`: the Perch website (`python3 site/build.py`), with the measured runs it shows in `site/data/`
 
 ## Help make it better
 

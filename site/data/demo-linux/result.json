@@ -1,0 +1,58 @@
+{
+ "perch": {
+  "wall": 417.7,
+  "claude": 10968,
+  "local": 10968,
+  "s": 417.5,
+  "j": 6163.8,
+  "cpu": 1615.8,
+  "bytes": 6224,
+  "calls": 5,
+  "looks": 10,
+  "names": [
+   "Priya Shah",
+   "Tom Wright",
+   "Mum",
+   "Bright Smile Dental",
+   "Oakfield Primary School"
+  ],
+  "replies": {
+   "Priya Shah": "Please send the final pricing slide before 12 noon today so I can sign off before the 1pm call.",
+   "Tom Wright": "Yes, someone will be in to let the engineer in tomorrow between 9 and 11 am.",
+   "Mum": "I will let you know by Saturday if I can make it for Sunday lunch.",
+   "Bright Smile Dental": "Yes, please confirm my appointment for Monday at 10:30.",
+   "Oakfield Primary School": "I consent to the Year 4 museum trip and will arrange the \u00a38 payment today."
+  }
+ },
+ "shot": {
+  "wall": 887.0,
+  "claude": 42477,
+  "local": 15357,
+  "s": 886.7,
+  "j": 13160.4,
+  "cpu": 3674.3,
+  "bytes": 1344072,
+  "calls": 5,
+  "looks": 10,
+  "names": [
+   "Priya Shah",
+   "Tom Wright",
+   "Mum",
+   "Bright Smile Dental",
+   "Oakfield Primary School"
+  ],
+  "replies": {
+   "Priya Shah": "Thanks for the reminder. I will review the slides and get back to you before noon.",
+   "Tom Wright": "I can confirm someone will be home to let the gas engineer in tomorrow between 9 and 11 am.",
+   "Mum": "Yes, I will be there for Sunday lunch. I look forward to it!",
+   "Bright Smile Dental": "Yes, I confirm my appointment for Monday, November 10th at 10:30 AM.",
+   "Oakfield Primary School": "I give my consent for the Year 4 museum trip and will make the \u00a38 payment today."
+  }
+ },
+ "truth": [
+  "Priya Shah",
+  "Tom Wright",
+  "Bright Smile Dental",
+  "Oakfield Primary School"
+ ]
+}

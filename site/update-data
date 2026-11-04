@@ -1,0 +1,8 @@
+#!/bin/sh
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
+# site/update-data: copies the latest measured demo runs from tape/ into site/data/, so the site shows them (then: python3 build.py)
+set -e
+cd "$(dirname "$0")"; T=../tape
+[ -f $T/demo/run.json ] && { rm -f data/demo-linux/shot-*.png; cp $T/demo/run.json $T/demo/result.json $T/demo/shot-*.png data/demo-linux/; echo "web demo: copied"; }
+[ -f $T/demo-win/run.json ] && { cp $T/demo-win/run.json $T/demo-win/result.json $T/demo-win/shot-1.png data/demo-win/; echo "Windows demo: copied"; }
+[ -f $T/read-test/result.json ] && echo "reading test: its result is in $T/read-test/result.json (the site's data/learn-test.json also holds the index timing)"

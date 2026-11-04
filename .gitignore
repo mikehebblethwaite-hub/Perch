@@ -21,6 +21,6 @@ __pycache__/
 /FAILS.md
 /COPYRIGHT
 /QUICKSTART.txt
-/site
+site/out/
 /skill
 /perch.local.env

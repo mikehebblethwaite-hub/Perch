@@ -1,0 +1,62 @@
+{
+ "perch": {
+  "wall": 561.7,
+  "claude": 15977,
+  "local": 15977,
+  "s": 561.5,
+  "j": 8309.0,
+  "cpu": 2329.3,
+  "bytes": 8013,
+  "calls": 5,
+  "looks": 10,
+  "names": [
+   "Priya Shah",
+   "Tom Wright",
+   "Mum",
+   "Bright Smile Dental",
+   "Oakfield Primary School"
+  ],
+  "replies": {
+   "Priya Shah": "Hi Priya, I will get the final pricing slide to you before 12 noon today.",
+   "Tom Wright": "Yes, someone will be in to let the engineer in tomorrow between 9 and 11 am.",
+   "Mum": "I will let you know by Saturday if I can make it for Sunday lunch.",
+   "Bright Smile Dental": "Yes, I would like to keep my appointment on Monday at 10:30.",
+   "Oakfield Primary School": "I consent to the museum trip for Year 4 and will make the \u00a38 payment today."
+  }
+ },
+ "shot": {
+  "wall": 661.3,
+  "claude": 33001,
+  "local": 11671,
+  "s": 661.1,
+  "j": 9769.0,
+  "cpu": 2730.9,
+  "bytes": 866284,
+  "calls": 5,
+  "looks": 10,
+  "names": [
+   "Priya Shah",
+   "Tom Wright",
+   "Mum",
+   "Bright Smile Dental",
+   "Oakfield Primary School"
+  ],
+  "replies": {
+   "Priya Shah": "Thanks for sending this over. I'll review the slides and get back to you before noon.",
+   "Tom Wright": "I can confirm that someone will be home tomorrow between 9 and 11 to let the gas engineer in.",
+   "Mum": "I'll let you know by Saturday if I can make it for Sunday lunch.",
+   "Bright Smile Dental": "Yes, I would like to keep my appointment on Monday at 10:30.",
+   "Oakfield Primary School": "I consent to the museum trip and will make the \u00a38 payment by the end of today."
+  }
+ },
+ "truth": [
+  "Priya Shah",
+  "Tom Wright",
+  "Bright Smile Dental",
+  "Oakfield Primary School"
+ ],
+ "g_img": 338,
+ "img_tokens": 1049,
+ "screen": "Windows 11 VM, Edge, 1024x768",
+ "total_wall": 1280.5
+}

@@ -1,0 +1,16 @@
+{
+ "lines": 11,
+ "rounds": 6,
+ "pictures": {
+  "learned": 3,
+  "scored": 3,
+  "right": 3
+ },
+ "words": 72,
+ "raw": 66,
+ "fixed": 66,
+ "index_pictures": 200001,
+ "index_ms": 0.052,
+ "index_found": "Close",
+ "when": "04 November 2026"
+}

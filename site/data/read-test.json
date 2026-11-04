@@ -1,0 +1,19 @@
+{
+ "lines": [
+  "R 40,70 164x23 +'Team board'",
+  "R 42,126 327x22 +'Meeting moved to 3pm in room 4'",
+  "R 42,166 279x22 +'Invoice 4471 is due on Friday'",
+  "R 40,206 288x17 +'Ask Sam about the boiler visit'",
+  "R 41,397 292x26 +'Score 180 Level 3'"
+ ],
+ "seconds": 0.34,
+ "w": 620,
+ "h": 440,
+ "screen_tokens": 1049,
+ "crop_tokens": 364,
+ "bytes": 214,
+ "when": "04 November 2026",
+ "change_line": "R 41,397 292x26 +'Score 190 Level 3'",
+ "change_seconds": 0.2,
+ "change_others": []
+}
