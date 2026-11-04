@@ -1,19 +1,22 @@
-# Perch License
+# Perch licence
 
-Perch (the bot's eye on the display) is open-source software by Mike J Hebblethwaite.
+Perch (the bot's eye on the display) is © 2026 Mike J Hebblethwaite. It is offered under two licences; choose one.
 
-**Contact:** mike.hebblethwaite@gmail.com
+## 1. GNU AGPL-3.0 (free)
 
-## License
+You may use, change and share Perch free of charge under the GNU Affero General Public License version 3
+(full text in the file `LICENSE`). If you share Perch, or a changed version of it, or let people use it over a
+network (for example inside a hosted bot or service), you must make your complete source code for it
+available to them under the same licence.
 
-MIT License
+## 2. Commercial licence (paid)
 
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+If you want to use Perch in a product or service without publishing your own source code, you need a commercial
+licence from Mike J Hebblethwaite. Contact: mike.hebblethwaite@gmail.com
 
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+## Contributions
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+Contributions are welcome, but because of the commercial licence, a change can only be accepted when its author
+agrees in writing that Mike J Hebblethwaite may offer it under both licences.
 
----
-
-© 2026 Mike J Hebblethwaite — mike.hebblethwaite@gmail.com
+Versions of Perch published before 4 November 2026 were offered under the MIT License; those copies keep it.

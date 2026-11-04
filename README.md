@@ -73,7 +73,7 @@ Every contribution helps keep Perch free and open for everyone.
 
 ## License
 
-MIT License — see LICENSE.md for details.
+Free under the GNU AGPL-3.0 (if you share it or run it as a service, your source must be open too), or under a paid commercial licence for closed products. See LICENSE.md; contact mike.hebblethwaite@gmail.com.
 
 ---
 
