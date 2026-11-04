@@ -12,7 +12,10 @@
 #                                                     voice?/music?/noise/bang, five bands 1-11 (low..high); --no-sound: none
 #   moves 0:04.2-0:07.9 bottom-left > bottom-right    something moved, from where to where (a 3x3 grid), in one line
 #   ! ...                                             what happened (no subtitles, cannot read the file ...)
-# Usage: perch-video [--fps N] [--live] [--describe] [--from T] [--to T] FILE|URL
+#   --scenes     the whole video at a glance: one line per scene with everything in it (words, subtitles, movement, sounds)
+#   --pack OUT   the lines zipped into OUT (to keep or send); perch-video --unpack OUT gives them back to read (a bot reads
+#                the lines, never the zipped bytes: encoded data costs a bot more, not less)
+# Usage: perch-video [--fps N] [--live] [--describe] [--scenes] [--pack OUT] [--from T] [--to T] FILE|URL
 #   --fps N      how often motion is checked (default 4 a second; the scene/motion pass sees a 64x36 grey copy only)
 #   --live       lines come out at the video's own pace (a bot watching along); default: as fast as the box can go
 #   --describe   a line from the local vision model (Ollama, PERCH_MODEL, default gemma-chuck) at each cut: local, no tokens
@@ -47,12 +50,18 @@ try:
         elif a == "--live": opt["live"] = True
         elif a == "--describe": opt["describe"] = True
         elif a == "--no-sound": opt["nosound"] = True
+        elif a == "--scenes": opt["scenes"] = True
+        elif a in ("--pack", "--unpack"): opt[a[2:]] = args.pop(0)
         elif a in ("--from", "--to", "--frame"): opt[a[2:]] = secs(args.pop(0))
         elif a.startswith("-"): raise ValueError
         elif src is None: src = a
         else: raise ValueError
 except (ValueError, IndexError, AssertionError):
     sys.exit(USAGE)
+if opt.get("unpack"):
+    import gzip
+    try: sys.stdout.write(gzip.open(opt["unpack"], "rt", encoding="utf-8").read()); sys.exit(0)
+    except (OSError, EOFError): sys.exit("err not a perch-video pack")
 if not src: sys.exit(USAGE)
 if not (re.match(r"^https?://\S+$", src) or os.path.isfile(src)): sys.exit(f"err no such file: {src}")
 FF = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]
@@ -183,6 +192,42 @@ for i, t in enumerate([opt["from"]] + cuts):
             lines.append((t, 5, f"! no description at {ts(t)}: {type(e).__name__}")); opt["describe"] = False
 
 # ---------- out: sorted by time; --live: at the video's own pace ----------
+lines = [e for e in lines if not (e[0] < opt["from"] - 0.01 or (opt["to"] is not None and e[0] > opt["to"]))]
+if opt.get("scenes"):                                   # one line per scene, everything that happens in it
+    edges = [opt["from"]] + cuts + [opt["to"] if opt["to"] is not None else dur]
+    out = [head]
+    for i, (a, b) in enumerate(zip(edges, edges[1:]), 1):
+        inside = sorted((e for e in lines if a - 0.01 <= e[0] < b - 0.01 or (i == len(edges) - 1 and e[0] >= a - 0.01)), key=lambda e: (e[0], e[1]))
+        parts, sounds = [], []
+        for t, kind, l in inside:
+            w = l.split(" ", 2)
+            if w[0] in ("text", "see"): parts.append(f"{w[0]} {w[2]}")
+            elif w[0] == "sub": parts.append(f"sub {w[1]} {w[2]}")
+            elif w[0] == "ch": parts.append(f"chapter {w[2]}")
+            elif w[0] == "moves": parts.append(f"moves {w[2]} ({w[1]})")
+            elif w[0] == "s":
+                m = re.match(r"s (\S+) L(\d+) (tone \d+Hz|\S+)", l)
+                if m and m.group(3) != "quiet": sounds.append((m.group(1), m.group(3), m.group(2)))
+        if sounds:                                       # a run of tones becomes one: tones 520/660/780Hz from 0:09.2
+            sd, k = [], 0
+            while k < len(sounds):
+                j = k
+                while j + 1 < len(sounds) and sounds[j + 1][1].startswith("tone") and sounds[k][1].startswith("tone"): j += 1
+                if j > k: sd.append(f"tones {'/'.join(x[1].split()[1][:-2] for x in sounds[k:j + 1])}Hz {sounds[k][0]}")
+                else: sd.append(f"{sounds[k][1]} {sounds[k][0]} L{sounds[k][2]}")
+                k = j + 1
+            parts.append("sound " + ", ".join(sd))
+        out.append(f"{i} {ts(a)}-{ts(b)} " + " · ".join(parts) if parts else f"{i} {ts(a)}-{ts(b)} (nothing read)")
+    text_out = "\n".join(out) + "\n"
+else:
+    text_out = None
+if opt.get("pack"):
+    import gzip
+    body = text_out or (head + "\n" + "\n".join(l for _, _, l in sorted(lines, key=lambda e: (e[0], e[1]))) + "\n")
+    with gzip.open(opt["pack"], "wt", encoding="utf-8") as f: f.write(body)
+    print(f"packed {opt['pack']} {os.path.getsize(opt['pack'])} bytes ({len(body)} characters unpacked: perch-video --unpack {opt['pack']})"); sys.exit(0)
+if text_out:
+    sys.stdout.write(text_out); sys.exit(0)
 print(head, flush=True)
 t0 = time.time()
 for t, _, l in sorted(lines, key=lambda e: (e[0], e[1])):

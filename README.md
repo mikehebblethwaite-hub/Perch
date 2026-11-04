@@ -34,7 +34,7 @@ Perch is an open-source tool that lets bots and automated systems see your scree
 `./perch-video FILE|URL` plays a video as what it carries, not as pictures at x frames a second: its chapters, its subtitle
 words, scene cuts, the words on screen at each scene (read here), what moved from where to where, and with `--describe` one
 line per scene from your local vision model (Ollama). A 12-second course video: 410 characters for the bot, where one
-screenshot a second would be about 16,000 tokens. `--live` paces the lines at the video's own speed; `--frame T` gives one
+screenshot a second would be about 16,000 tokens. `--scenes` gives the whole video at a glance, one line per scene with everything in it (a 10-second test video: 453 characters); `--pack OUT` zips the lines for keeping or sending (that video: 298 bytes from 85,570) and `--unpack OUT` gives them back to read. `--live` paces the lines at the video's own speed; `--frame T` gives one
 small picture when the answer really is in the picture.
 
 Its sound comes as a few numbers when it changes (`s` lines; `./perch-sound FILE` for any sound file), the way a ZX81 tape
