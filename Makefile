@@ -30,10 +30,11 @@ coop-perch-vm: coop-perch-vm.c coop-perch-core.h coop-perch-box.h
 # ---- the product: install, and a .deb of the VM eye (binaries only, stripped; no source goes out) ----
 VERSION ?= $(shell cat VERSION)
 PREFIX ?= /usr/local
-PRODUCT_BIN = coop-perch-vm coop-perch-box coop-perch-wait
-PRODUCT_SCRIPTS = coop-perch-vmrun coop-perch-act coop-perch-web coop-perch-vmlook coop-perch-report
+PRODUCT_BIN = coop-perch-vm coop-perch-box coop-perch-wait coop-perch-crop
+PRODUCT_SCRIPTS = coop-perch-vmrun coop-perch-act coop-perch-web coop-perch-vmlook coop-perch-report coop-perch-look
 install: $(PRODUCT_BIN)
-	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/share/coop-perch/guest
+	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/share/coop-perch/guest $(DESTDIR)$(PREFIX)/lib/coop-perch
+	install -m 644 coop_perch_read.py $(DESTDIR)$(PREFIX)/lib/coop-perch/
 	install -s -m 755 $(PRODUCT_BIN) $(DESTDIR)$(PREFIX)/bin/
 	install -m 755 $(PRODUCT_SCRIPTS) $(DESTDIR)$(PREFIX)/bin/
 	install -m 755 coop-perch-guest $(DESTDIR)$(PREFIX)/share/coop-perch/guest/

@@ -19,9 +19,10 @@ Perch is an open-source tool that lets bots and automated systems see your scree
   nothing is captured. A small helper inside the guest sends the apps' own words: AT-SPI on Linux, UI Automation on Windows.
   Perch's hands type and click through QEMU's own keyboard and mouse.
 - **Web pages:** `coop-perch-web` gives a page as words and numbered actions (`click 15`), then only what changed.
-- **Apps that give no words** (games, canvas drawing, remote desktops, custom-drawn programs): in a VM, the parts that changed
-  without words are read from their pixels on the host (`coop-perch-vmlook`, with Tesseract: `sudo apt install tesseract-ocr`)
-  and sent as `R` lines: no tokens, and only what changed.
+- **Apps that give no words** (games, canvas drawing, remote desktops, old or custom-drawn programs) are read from their
+  pixels on the machine itself (Tesseract: `sudo apt install tesseract-ocr`) and sent as `R` lines: no tokens, and only what
+  changed. In a VM (`coop-perch-vmlook`): the parts that changed without words. On a Linux display (`coop-perch-look`): the
+  windows that give no words, read again only when their pixels change.
 - Not yet: macOS; Windows or Linux desktops without a VM.
 
 ## Try it (Ubuntu 24.04 or similar)
@@ -70,7 +71,8 @@ Microsoft's ISO), then `coop-perch-winvm guest` to put the helper in, and `demo/
 - `coop-perch-display`, `coop-perch-tap.c`, `coop-perch-eye.c`: the display, the tap on its data line, the eye
 - `coop-perch-vm.c`, `coop-perch-vmrun`: a VM whose only screen is Perch; `coop-perch-act` (hands), `coop-perch-vmlook` (a bot's look)
 - `coop-perch-guest` (Linux) and `coop-perch-guest.ps1` (Windows): the helper inside a guest
-- `coop-perch-web`: the web for bots
+- `coop-perch-web`: the web for bots; `coop-perch-look`: a bot's look at a Linux display
+- `coop_perch_read.py`: reading words from pixels where an app gives none
 - `demo/`: the demos; `coop-perch-report`: your result as a report
 - `vm-win/`: the Windows test VM
 
