@@ -332,6 +332,9 @@ def build_demo():
     src = re.sub(r'\$\("go"\)\.textContent = `Run it live[^;]*;', '', src)
     src = re.sub(r'\$\("go"\)\.onclick = async \(\) => \{.*?\};\n', '', src, flags=re.S)
     src = re.sub(r'const es = new EventSource\("/events"\);.*?lastRun\(\);', 'lastRun();', src, flags=re.S)
+    # the site opens on the finished run (every number and look in place); the button still replays it at its real pace
+    i_ = src.rindex("lastRun();"); src = src[:i_] + src[i_:].replace("lastRun();", 'lastRun().then(ev => { if (!ev) return; const sv = Element.prototype.scrollIntoView; Element.prototype.scrollIntoView = () => {}; reset(); show({ kind: "start", img_tokens: (ev.find(e => e.kind === "start") || {}).img_tokens || 1365 }); '
+                      'for (const e of ev) if (e.lane) show(e); const d = ev.find(e => e.kind === "done"); if (d) show(d); Element.prototype.scrollIntoView = sv; $("status").textContent = "The finished run is shown below. Press the button to watch it again side by side, at 10× speed."; });', 1)
     src = re.sub(r'es\.onerror = .*?\n', '', src)
     src = src.replace('$("go").disabled = false; ', '').replace('$("go").disabled = true; ', '').replace(' $("go").disabled = true;', '')
     src = src.replace('if (!replaying && $("go").disabled === false) ', 'if (!replaying) ')
