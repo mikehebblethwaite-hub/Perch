@@ -184,3 +184,45 @@ def match(wav, segs, model):
         m = (d[o[1]] - d[o[0]]) / (d[o[1]] + 1e-9) if len(d) > 1 else 1.0
         out.append((int(o[0]) + 1, int(1 + round(10 * min(1.0, m * 2.5)))))
     return out
+
+
+def voices_learned(E, max_voices=6, seed=7):
+    """the same, from learned voice prints (perch_speaker.py: one unit row per stretch, zeros where none) -> (out, k, model)"""
+    rng = np.random.default_rng(seed)
+    ok = [i for i in range(len(E)) if np.linalg.norm(E[i]) > 0.5]
+    if len(ok) < 6: return [(0, 1)] * len(E), 0, None
+    mu = E[ok].mean(0); Z = E[ok] - mu
+    best = (1, None, None, -1.0)
+    for k in range(2, max_voices + 1):
+        lab, c = _kmeans(Z, k, rng)
+        if min(np.bincount(lab, minlength=k)) < max(3, len(Z) * 0.01): continue
+        s = _silhouette(Z, lab, rng)
+        within = np.mean([np.sqrt(((Z[lab == j] - c[j]) ** 2).sum(1)).mean() for j in range(k)])
+        apart = min(np.sqrt(((c[i] - c[j]) ** 2).sum()) for i in range(k) for j in range(i + 1, k)) / within
+        if s > best[3] and apart >= 0.8: best = (k, lab, c, s)
+    # the same careful count as our own prints (tested 5 Nov 2026 with TitaNet: lecture 0.10 apart, gap 0.53 -> one voice;
+    # interview 0.19, 0.91 -> two): one voice unless clearly apart
+    if best[1] is None or best[3] < 0.15:
+        c1 = Z.mean(0, keepdims=True)
+        out = [(0, 1)] * len(E)
+        for i in ok: out[i] = (1, 6)
+        return out, 1, {"kind": "learned", "mu": mu.tolist(), "centres": c1.tolist()}
+    k, lab, c, _ = best
+    d = np.sqrt(((Z[:, None, :] - c[None]) ** 2).sum(2)); srt = np.sort(d, 1)
+    margin = (srt[:, 1] - srt[:, 0]) / (srt[:, 1] + 1e-9)
+    order = {}
+    for j in lab: order.setdefault(int(j), len(order) + 1)
+    out = [(0, 1)] * len(E)
+    for n, i in enumerate(ok): out[i] = (order[int(lab[n])], int(1 + round(10 * min(1.0, margin[n] * 2.5))))
+    return out, k, {"kind": "learned", "mu": mu.tolist(), "centres": [c[j].tolist() for j in sorted(order, key=order.get)]}
+
+
+def match_learned(E, model):
+    """voice numbers for new learned prints from a kept model (the zoom in keeps the first run's numbers)"""
+    mu, C = np.array(model["mu"]), np.array(model["centres"]); out = []
+    for e in E:
+        if np.linalg.norm(e) < 0.5: out.append((0, 1)); continue
+        d = np.sqrt((((e - mu)[None] - C) ** 2).sum(1)); o = np.argsort(d)
+        m = (d[o[1]] - d[o[0]]) / (d[o[1]] + 1e-9) if len(d) > 1 else 1.0
+        out.append((int(o[0]) + 1, int(1 + round(10 * min(1.0, m * 2.5)))))
+    return out

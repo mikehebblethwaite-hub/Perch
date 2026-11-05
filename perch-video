@@ -603,9 +603,20 @@ if len(says) >= 6 and not opt.get("novoices"):
             while x + W_ <= s1 + 0.01: wins.append((x, x + W_)); x += W_ / 2
             if s1 - s0 < W_: wins.append((s0, s1))
         known = (kept_load(VKEY)[0].get("voices") if opt.get("focus") else None)
-        if known:
+        SPK = os.environ.get("PERCH_SPEAKER_MODEL", os.path.join(MODELS, "speaker", "nemo_en_titanet_small.onnx"))
+        helper = os.path.join(HERE, "perch_speaker.py") if os.path.isfile(os.path.join(HERE, "perch_speaker.py")) else "/usr/lib/perch/perch_speaker.py"
+        E_ = None
+        if os.access(TAGPY, os.X_OK) and os.path.isfile(SPK) and (not known or known.get("kind") == "learned"):
+            out_ = pcm + ".npy"                                 # learned voice prints (an open speaker model, run here)
+            r_ = subprocess.run([TAGPY, helper, SPK, pcm, out_], input="".join(f"{a:.2f} {b:.2f}\n" for a, b in wins),
+                                capture_output=True, text=True, timeout=7200)
+            if r_.returncode == 0 and os.path.isfile(out_): E_ = np_.load(out_); os.remove(out_)
+        if E_ is not None:
+            if known: got = perch_voices.match_learned(E_, known); k_ = len(known["centres"]); voice_model = known
+            else: got, k_, voice_model = perch_voices.voices_learned(E_)
+        elif known and known.get("kind") != "learned":
             got = perch_voices.match(wav, wins, known); k_ = len(known["centres"]); voice_model = known
-        else:
+        else:                                                   # no speaker model here: our own voice prints
             got, k_, voice_model = perch_voices.voices(wav, wins, smooth=0.0)
         wi = 0; last = None
         for (s0, s1), (a, l) in zip(segs, says):               # each line: the voice holding most of it
