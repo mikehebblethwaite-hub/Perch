@@ -16,6 +16,10 @@ MARK = ('<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M3 25h26" stroke="
 NAV = [("home", "", "Home"), ("demo", "demo/", "Demo"), ("help", "help/", "Help"), ("download", "download/", "Download")]
 
 
+import hashlib
+CSS_V = hashlib.sha256(open(os.path.join(HERE, "assets", "site.css"), "rb").read()).hexdigest()[:8]   # a new tag when the CSS changes
+
+
 def shell(title, nav, body, depth, extra_head=""):
     up = "../" * depth
     def item(key, href, text):
@@ -23,7 +27,7 @@ def shell(title, nav, body, depth, extra_head=""):
         if key != "demo":
             return f'<a href="{up}{href}"{cur}>{text}</a>'
         subs = "".join(f'<a href="{up}demo/{k}/">{html.escape(t)}</a>' for k, t, *_ in DEMOS())
-        return (f'<details class="drop"><summary{" class=cur" if cur else ""}>{text}<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" '
+        return (f'<details class="drop"><summary{" class=cur" if cur else ""}>{text}<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" '
                 f'fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></summary>'
                 f'<div class="drop-menu"><a href="{up}demo/">All demos</a>{subs}</div></details>')
     links = "".join(item(*n) for n in NAV)
@@ -31,7 +35,7 @@ def shell(title, nav, body, depth, extra_head=""):
 <!-- Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. Perch is open-source: https://github.com/mikehebblethwaite-hub/Perch -->
 <html lang="en-GB"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(title)}</title>
-<link rel="stylesheet" href="{up}assets/site.css">{extra_head}</head><body>
+<link rel="stylesheet" href="{up}assets/site.css?v={CSS_V}">{extra_head}</head><body>
 <header class="top"><div class="wrap"><a class="mark" href="{up}">{MARK}Perch</a><nav aria-label="Site">{links}</nav></div></header>
 <main><div class="wrap">{body}</div></main>
 <script>document.addEventListener("click",e=>{{document.querySelectorAll("details.drop[open]").forEach(d=>{{if(!d.contains(e.target))d.open=false}})}});
