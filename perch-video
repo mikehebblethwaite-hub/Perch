@@ -284,23 +284,119 @@ elif subs:
     lines.append((0, 1, "! subtitles are pictures (not text) in this file: not read"))
 
 stage("start, subtitles, speech")
-# ---------- scenes and movement: a 64x36 grey copy, as numbers ----------
+# ---------- frames for reading words and describing: read 6 at a time, described one at a time, as soon as each is chosen ----------
+def frame_at(t):                                                # one frame by seeking (a stream, or no single pass)
+    out = os.path.join(RUN, f"scene-{t:.2f}.png")
+    r = subprocess.run(FF + ["-ss", f"{t + 0.15:.3f}", "-i", src, "-frames:v", "1", "-y", out], capture_output=True)
+    if r.returncode or not os.path.exists(out): return None
+    from PIL import Image
+    im = Image.open(out); im.load(); os.remove(out)
+    return im.convert("RGB")
+
+
+def see_line(t, im):                                            # one line from the local vision model about one frame
+    import base64, io, urllib.request
+    im = im.copy(); im.thumbnail((448, 448) if opt.get("detail") == "quick" else (896, 896))   # full: the model's own input size
+    buf = io.BytesIO(); im.save(buf, "PNG")
+    body = json.dumps({"model": os.environ.get("PERCH_MODEL", "gemma-chuck"), "stream": False, "keep_alive": "10m", "think": False,
+                       "messages": [{"role": "user", "content": "Say in one short line what this video frame shows. No preamble.",
+                                     "images": [base64.b64encode(buf.getvalue()).decode()]}]}).encode()
+    a = json.load(urllib.request.urlopen(urllib.request.Request(os.environ.get("PERCH_OLLAMA", "http://127.0.0.1:11434") + "/api/chat", body), timeout=300))
+    return (t, 5, f"see {ts(t)} {q(a.get('message', {}).get('content', ''))}")
+
+
+try:
+    import perch_read as reader
+except ImportError:
+    reader = None
+try:
+    import numpy as np, perch_cuts
+except ImportError:
+    np = perch_cuts = None                                      # no numpy here: the simple cut rule, frames fetched after
+from concurrent.futures import ThreadPoolExecutor
+import threading, queue
+os.environ.setdefault("OMP_THREAD_LIMIT", "1")                 # tesseract one core each: several frames are read side by side
+ocr_pool = ThreadPoolExecutor(max_workers=max(1, min(6, (os.cpu_count() or 2) // 2)))
+see_pool = ThreadPoolExecutor(max_workers=1)                    # one vision model: one frame at a time, while the rest goes on
+room = threading.Semaphore(24)                                  # frames waiting at most (memory)
+ocr_jobs, see_jobs, described = [], [], []
+n_frames = n_seen = 0
+def ocr(t, im):
+    try:
+        if not (reader and reader.available()): return t, []
+        return t, [w_ for *_, w_ in reader.read(im, [(0, 0, im.width, im.height)], page=True)]
+    finally:
+        room.release()
+def take(t, im, is_cut, grey):                                  # a chosen frame: its words read, and described if it is a new scene
+    global n_frames, n_seen
+    if im is None: return
+    n_frames += 1
+    room.acquire(); ocr_jobs.append(ocr_pool.submit(ocr, t, im))
+    if opt["describe"] and is_cut:
+        if opt.get("detail") == "quick" and grey is not None and perch_cuts:   # quick: like a scene already described: not again
+            near = min(((perch_cuts.shifted(grey, g0), t0) for g0, t0 in described), default=(999, None))
+            if near[0] < 20:
+                lines.append((t, 5, f"see {ts(t)} like {ts(near[1])}")); return
+            described.append((grey, t))
+        n_seen += 1; see_jobs.append(see_pool.submit(see_line, t, im))
+
+# ---------- scenes and movement: a 64x36 grey copy, as numbers; one decode gives it and the full frames together ----------
 cuts = []
 def grid_name(i):
     return ("top", "middle", "bottom")[i // 3] + "-" + ("left", "centre", "right")[i % 3] if i != 4 else "centre"
-cmd = FF + (["-ss", str(opt["from"])] if opt["from"] else []) + ["-i", src] + (["-t", str(opt["to"] - opt["from"])] if opt["to"] else []) + \
-      ["-an", "-sn", "-vf", f"fps={opt['fps']},scale={GW}:{GH},format=gray", "-f", "rawvideo", "-"]
-p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-raw_ = p.stdout.read(); p.wait()
 size = GW * GH
-FR = [raw_[i:i + size] for i in range(0, len(raw_) - size + 1, size)]
-try:                                                            # cuts against the video's own normal change (perch_cuts)
-    import numpy as np, perch_cuts
-    CUTS = set(perch_cuts.find(np.frombuffer(b"".join(FR), np.uint8).reshape(-1, GH, GW).astype(np.int16), opt["fps"]))
-except ImportError:
-    CUTS = None                                                 # no numpy here: the simple rule below
-prev, k, seg = None, 0, None
-reads, last_read = [], None                         # when to read the words on screen: cuts, and every 2 s if the picture changed                       # seg: a run of movement [start, first cells' centre, last centre, end]
+W_, H_ = int(v.get("width") or 0), int(v.get("height") or 0)
+rot = 0
+for sd in v.get("side_data_list") or []:
+    if "rotation" in sd: rot = abs(int(float(sd["rotation"])))
+if abs(int(float((v.get("tags") or {}).get("rotate", rot) or 0))) % 180 == 90 or rot % 180 == 90: W_, H_ = H_, W_   # turned phone video
+merged = bool(np and os.path.isfile(src) and W_ and H_)        # one decode for both, or the grey pass now and frames fetched after
+span = (["-ss", str(opt["from"])] if opt["from"] else []) + (["-t", str(opt["to"] - opt["from"])] if opt["to"] else []) + ["-i", src]   # -t before -i: both outputs stop
+if merged:
+    rg, wg = os.pipe(); rf, wf = os.pipe()
+    cmd = FF + span + ["-an", "-sn", "-filter_complex",
+                       f"[0:v]fps={opt['fps']},format={v.get('pix_fmt') or 'yuv420p'},split=2[a][b];[a]scale={GW}:{GH},format=gray[g];[b]format=rgb24[f]",   # split in the video's own format: the grey copy as before
+                       "-map", "[g]", "-f", "rawvideo", f"pipe:{wg}", "-map", "[f]", "-f", "rawvideo", f"pipe:{wf}"]
+    p = subprocess.Popen(cmd, pass_fds=(wg, wf), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    os.close(wg); os.close(wf)
+    gq = queue.Queue()
+    def grey_reader():                                          # the small stream on its own thread, so neither pipe can stall the other
+        with os.fdopen(rg, "rb") as f:
+            while True:
+                b = f.read(size)
+                gq.put(b if len(b) == size else None)
+                if len(b) < size: return
+    threading.Thread(target=grey_reader, daemon=True).start()
+    fq = queue.Queue(maxsize=32)                                # full frames: their own thread too (ffmpeg writes the two
+    def full_reader():                                          # streams in its own order: one reader waiting on the other locks up)
+        n = W_ * H_ * 3
+        with os.fdopen(rf, "rb", buffering=0) as f:
+            while True:
+                b = bytearray(n); mv = memoryview(b); got = 0
+                while got < n:
+                    r_ = f.readinto(mv[got:])
+                    if not r_: break
+                    got += r_
+                fq.put(bytes(b) if got == n else None)
+                if got < n: return
+    threading.Thread(target=full_reader, daemon=True).start()
+    def frames():                                               # (grey bytes, full frame bytes) in step
+        while True:
+            g = gq.get()
+            if g is None: return
+            yield g, fq.get()
+else:
+    cmd = FF + span + ["-an", "-sn", "-vf", f"fps={opt['fps']},scale={GW}:{GH},format=gray", "-f", "rawvideo", "-"]
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    def frames():
+        while True:
+            g = p.stdout.read(size)
+            if len(g) < size: return
+            yield g, None
+FR, RING = [], {}                                               # every grey frame; the full frames still to be chosen from
+stream = perch_cuts.Stream(opt["fps"]) if perch_cuts else None
+seg = None
+reads, last_read = [], None                                    # words on screen are read at cuts, and every 2 s if the picture changed
 def centre(cells):
     return (sum(i % 3 for i in cells) / len(cells), sum(i // 3 for i in cells) / len(cells))
 def place(c):
@@ -311,33 +407,53 @@ def end_seg(t):
         a, b = place(seg[1]), place(seg[2])
         lines.append((seg[0], 3, f"moves {ts(seg[0])}-{ts(t)} {a}" + (f" > {b}" if b != a else "")))
     seg = None
-for fr in FR:
-    t = opt["from"] + k / opt["fps"]; k += 1
-    if prev is not None:
-        d = [abs(a - b) for a, b in zip(fr, prev)]
-        whole = sum(d) / size
-        ha = [0] * 16; hb = [0] * 16
-        for a_, b_ in zip(fr, prev): ha[a_ >> 4] += 1; hb[b_ >> 4] += 1
-        mix = sum(abs(a_ - b_) for a_, b_ in zip(ha, hb)) / (2 * size)         # 0 = the same light and dark, 1 = all different
-        if (k - 1 in CUTS) if CUTS is not None else (whole > 28 and mix > 0.35):    # a new scene
-            end_seg(t); cuts.append(t); lines.append((t, 2, f"cut {ts(t)} {len(cuts) + 1}"))
+CELLS = [(slice(cy * GH // 3, (cy + 1) * GH // 3), slice(cx * GW // 3, (cx + 1) * GW // 3)) for cy in range(3) for cx in range(3)]
+def g16(i):
+    return np.frombuffer(FR[i], np.uint8).reshape(GH, GW).astype(np.int16)
+def decided(j, is_cut):                                         # frame j, now that it is known whether a new scene starts there
+    global seg, last_read
+    t = opt["from"] + j / opt["fps"]
+    fr = g16(j) if np else FR[j]
+    if j:
+        pv = g16(j - 1) if np else FR[j - 1]
+        if is_cut is None:                                      # no numpy: the simple rule
+            d_ = [abs(a - b) for a, b in zip(fr, pv)]; whole = sum(d_) / size
+            ha = [0] * 16; hb = [0] * 16
+            for a_, b_ in zip(fr, pv): ha[a_ >> 4] += 1; hb[b_ >> 4] += 1
+            is_cut = whole > 28 and sum(abs(a_ - b_) for a_, b_ in zip(ha, hb)) / (2 * size) > 0.35
+            cells = [i for i in range(9) if sum(1 for y in range(GH)[CELLS[i][0]] for x in range(GW)[CELLS[i][1]] if d_[y * GW + x] > 18) >
+                     (CELLS[i][0].stop - CELLS[i][0].start) * (CELLS[i][1].stop - CELLS[i][1].start) * 0.04]
         else:
-            cells = []
-            for i in range(9):
-                cx, cy = i % 3, i // 3
-                cd = [d[y * GW + x] for y in range(cy * GH // 3, (cy + 1) * GH // 3) for x in range(cx * GW // 3, (cx + 1) * GW // 3)]
-                if sum(1 for x in cd if x > 18) > len(cd) * 0.04: cells.append(i)
-            if cells:
-                c = centre(cells)
-                if seg is None: seg = [t, c, c, t]
-                else: seg[2] = c; seg[3] = t
-            elif seg and t - seg[3] > 0.6: end_seg(seg[3] + 1 / opt["fps"])    # still for a moment: that movement is over
-    if t >= (reads[-1] if reads else -9) + 2.0 and (last_read is None or sum(abs(a_ - b_) for a_, b_ in zip(fr, last_read)) / size > 6):
+            d_ = np.abs(fr - pv)
+            cells = [i for i, (ys, xs) in enumerate(CELLS) if (d_[ys, xs] > 18).mean() > 0.04]
+        if is_cut:
+            end_seg(t); cuts.append(t); lines.append((t, 2, f"cut {ts(t)} {len(cuts) + 1}"))
+        elif cells:
+            c = centre(cells)
+            if seg is None: seg = [t, c, c, t]
+            else: seg[2] = c; seg[3] = t
+        elif seg and t - seg[3] > 0.6: end_seg(seg[3] + 1 / opt["fps"])    # still for a moment: that movement is over
+    changed = last_read is None or (float(np.abs(fr - last_read).mean()) if np else sum(abs(a_ - b_) for a_, b_ in zip(fr, last_read)) / size) > 6
+    read = (t >= (reads[-1] if reads else -9) + 2.0 and changed) or j == 0 or bool(is_cut)
+    if read:
         reads.append(t); last_read = fr
-    if cuts and abs(cuts[-1] - t) < 1e-6 and (not reads or reads[-1] != t):
-        reads.append(t); last_read = fr
-    prev = fr
-end_seg(opt["from"] + k / opt["fps"])
+        if merged:                                              # the frame a quarter-second on: settled, not mid-change
+            b = RING.get(j + 1) or RING.get(j)
+            if b:
+                from PIL import Image
+                take(t, Image.frombytes("RGB", (W_, H_), b), bool(is_cut) or j == 0, fr if np else None)
+    for old in [k_ for k_ in RING if k_ < j]: del RING[old]
+for g, b in frames():
+    FR.append(g)
+    if b is not None: RING[len(FR) - 1] = b
+    if stream and len(FR) == 2: decided(0, False)              # the first frame (the cut rule starts at the second)
+    for j, is_cut in (stream.push(np.frombuffer(g, np.uint8).reshape(GH, GW).astype(np.int16)) if stream else [(len(FR) - 1, None)]):
+        decided(j, is_cut)
+for j, is_cut in (stream.flush() if stream else []):
+    decided(j, is_cut)
+try: p.wait(timeout=10)
+except subprocess.TimeoutExpired: p.kill(); p.wait()           # all frames are in: never wait on the decoder
+end_seg(opt["from"] + len(FR) / opt["fps"])
 
 stage("scenes and movement (decode)")
 # ---------- its sound, as a few numbers when it changes (perch_sound.py) ----------
@@ -450,82 +566,10 @@ if sound and not opt.get("nosound"):
 
 stage("sound numbers and names")
 # ---------- at each scene: the words on the screen (read here) and, if asked, one line from the local model ----------
-def frame_at(t):                                                # one frame by seeking (a few frames, or a stream)
-    out = os.path.join(RUN, f"scene-{t:.2f}.png")
-    r = subprocess.run(FF + ["-ss", f"{t + 0.15:.3f}", "-i", src, "-frames:v", "1", "-y", out], capture_output=True)
-    if r.returncode or not os.path.exists(out): return None
-    from PIL import Image
-    im = Image.open(out); im.load(); os.remove(out)
-    return im.convert("RGB")
-
-
-def frames_one_pass(times):
-    """every frame wanted, in one decode of the video (not a seek each): the grid frame just after each time -> yields (t, image)"""
-    from PIL import Image
-    W_, H_ = int(v.get("width") or 0), int(v.get("height") or 0)
-    want = {}
-    for t in times: want.setdefault(round((t - opt["from"]) * opt["fps"]) + 1, t)
-    c = FF + (["-ss", str(opt["from"])] if opt["from"] else []) + ["-i", src] + (["-t", str(opt["to"] - opt["from"])] if opt["to"] else []) + \
-        ["-an", "-sn", "-vf", f"fps={opt['fps']}", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
-    pr = subprocess.Popen(c, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    n, got, last = W_ * H_ * 3, 0, max(want)
-    try:
-        for idx in range(last + 1):
-            b = pr.stdout.read(n)
-            if len(b) < n: break
-            if idx in want:
-                got += 1; yield want[idx], Image.frombytes("RGB", (W_, H_), b)
-    finally:
-        pr.kill(); pr.wait()
-
-
-def see_line(t, im):                                            # one line from the local vision model about one frame
-    import base64, io, urllib.request
-    im = im.copy(); im.thumbnail((448, 448) if opt.get("detail") == "quick" else (896, 896))   # full: the model's own input size
-    buf = io.BytesIO(); im.save(buf, "PNG")
-    body = json.dumps({"model": os.environ.get("PERCH_MODEL", "gemma-chuck"), "stream": False, "keep_alive": "10m", "think": False,
-                       "messages": [{"role": "user", "content": "Say in one short line what this video frame shows. No preamble.",
-                                     "images": [base64.b64encode(buf.getvalue()).decode()]}]}).encode()
-    a = json.load(urllib.request.urlopen(urllib.request.Request(os.environ.get("PERCH_OLLAMA", "http://127.0.0.1:11434") + "/api/chat", body), timeout=300))
-    return (t, 5, f"see {ts(t)} {q(a.get('message', {}).get('content', ''))}")
-
-
-try:
-    import perch_read as reader
-except ImportError:
-    reader = None
-from concurrent.futures import ThreadPoolExecutor
-import threading
-os.environ.setdefault("OMP_THREAD_LIMIT", "1")                 # tesseract one core each: several frames are read side by side
-times = sorted(set([opt["from"]] + cuts + reads))
-cutset = set(cuts) | {opt["from"]}
-ocr_pool = ThreadPoolExecutor(max_workers=max(1, min(6, (os.cpu_count() or 2) // 2)))
-see_pool = ThreadPoolExecutor(max_workers=1)                    # one vision model: one frame at a time, while the reading goes on
-room = threading.Semaphore(24)                                  # frames waiting at most (memory)
-def ocr(t, im):
-    try:
-        if not (reader and reader.available()): return t, []
-        return t, [w_ for *_, w_ in reader.read(im, [(0, 0, im.width, im.height)], page=True)]
-    finally:
-        room.release()
-ocr_jobs, see_jobs, described = [], [], []
-def grey_at(t):                                                 # the 64x36 grey copy just after time t (from the scenes pass)
-    i = min(len(FR) - 1, round((t - opt["from"]) * opt["fps"]) + 1)
-    return np.frombuffer(FR[i], np.uint8).reshape(GH, GW).astype(np.int16)
-if CUTS is None: grey_at = None
-n_frames = n_seen = 0
-source = frames_one_pass(times) if len(times) > 8 and os.path.isfile(src) and v.get("width") else ((t, frame_at(t)) for t in times)
-for t, im in source:
-    if im is None: continue
-    n_frames += 1
-    room.acquire(); ocr_jobs.append(ocr_pool.submit(ocr, t, im))
-    if opt["describe"] and t in cutset:
-        if opt.get("detail") == "quick" and grey_at:          # quick: a scene like one already described is not described again
-            g = grey_at(t); near = min(((perch_cuts.shifted(g, g0), t0) for g0, t0 in described), default=(999, None))
-            if near[0] < 20:
-                lines.append((t, 5, f"see {ts(t)} like {ts(near[1])}")); continue
-            described.append((g, t))
-        n_seen += 1; see_jobs.append(see_pool.submit(see_line, t, im))
+if not merged:                                                  # a stream, or no numpy: the chosen frames fetched one by one now
+    cutset = set(cuts) | {opt["from"]}
+    for t in sorted(set([opt["from"]] + cuts + reads)):
+        take(t, frame_at(t), t in cutset, None)
 stage("frames for reading and describing")
 seen_text = set()
 for j in ocr_jobs:                                              # in time order, so the first sighting of words is the one kept
