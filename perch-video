@@ -35,6 +35,8 @@
 # Usage: perch-video [--fps N] [--live] [--describe] [--scenes] [--pack OUT] [--lang L] [--quality Q] [--from T] [--to T] FILE|URL
 #   --fps N      how often motion is checked (default 4 a second; the scene/motion pass sees a 64x36 grey copy only)
 #   --live       lines come out at the video's own pace (a bot watching along); default: as fast as the box can go
+#   --focus T    the zoom in, after the zoomed-out first run: 15 s either side of T with the better speech model, voices
+#                matched to the first run's (same numbers), and a look every second at the part of the picture that moves
 #   --detail quick|full  how much the bot wants: quick = a first idea fast (only new-looking scenes described, a smaller picture
 #                for the vision model); full (default) = every scene at the model's full size, a long run
 #   --describe   a line from the local vision model (Ollama, PERCH_MODEL, default gemma-chuck) at each cut: local, no tokens
@@ -119,6 +121,8 @@ try:
         if a == "--fps": opt["fps"] = float(args.pop(0)); assert 0.2 <= opt["fps"] <= 30
         elif a == "--live": opt["live"] = True
         elif a == "--describe": opt["describe"] = True
+        elif a == "--no-voices": opt["novoices"] = True
+        elif a == "--focus": opt["focus"] = secs(args.pop(0))
         elif a == "--detail": opt["detail"] = args.pop(0); assert opt["detail"] in ("quick", "full")
         elif a == "--no-sound": opt["nosound"] = True
         elif a == "--speech": opt["speech"] = True
@@ -135,6 +139,11 @@ try:
         else: raise ValueError
 except (ValueError, IndexError, AssertionError):
     sys.exit(USAGE)
+if opt.get("focus") is not None:                                # the zoom in: the first run is the zoomed-out view of the whole video
+    f_ = opt["focus"]
+    opt["from"] = max(0.0, f_ - 15) if opt["from"] == 0.0 else opt["from"]
+    opt["to"] = (f_ + 15) if opt["to"] is None else opt["to"]
+    opt.setdefault("quality", "small"); opt["describe"] = True; opt["detail"] = "full"
 if opt.get("unpack"):
     import gzip
     try: sys.stdout.write(gzip.open(opt["unpack"], "rt", encoding="utf-8").read()); sys.exit(0)
@@ -283,7 +292,7 @@ if textsubs:
 elif subs:
     lines.append((0, 1, "! subtitles are pictures (not text) in this file: not read"))
 
-stage("start, subtitles, speech")
+stage("start, subtitles")
 # ---------- frames for reading words and describing: read 6 at a time, described one at a time, as soon as each is chosen ----------
 def frame_at(t):                                                # one frame by seeking (a stream, or no single pass)
     out = os.path.join(RUN, f"scene-{t:.2f}.png")
@@ -294,15 +303,21 @@ def frame_at(t):                                                # one frame by s
     return im.convert("RGB")
 
 
-def see_line(t, im):                                            # one line from the local vision model about one frame
+def see_line(t, im, box=None):                                  # one line from the local vision model about one frame (or a zoomed part)
     import base64, io, urllib.request
+    ask = "Say in one short line what this video frame shows. No preamble."
+    if box:                                                     # zoomed: the part of the picture where something moves, at full detail
+        im = im.crop(box)
+        ask = ("This is a zoomed-in part of a video frame. In one short line say who or what is there, and whether anyone in it "
+               "seems to be speaking (mouth open, mid-word). No preamble. Do not guess anyone's sex.")
     im = im.copy(); im.thumbnail((448, 448) if opt.get("detail") == "quick" else (896, 896))   # full: the model's own input size
     buf = io.BytesIO(); im.save(buf, "PNG")
     body = json.dumps({"model": os.environ.get("PERCH_MODEL", "gemma-chuck"), "stream": False, "keep_alive": "10m", "think": False,
-                       "messages": [{"role": "user", "content": "Say in one short line what this video frame shows. No preamble.",
+                       "messages": [{"role": "user", "content": ask,
                                      "images": [base64.b64encode(buf.getvalue()).decode()]}]}).encode()
     a = json.load(urllib.request.urlopen(urllib.request.Request(os.environ.get("PERCH_OLLAMA", "http://127.0.0.1:11434") + "/api/chat", body), timeout=300))
-    return (t, 5, f"see {ts(t)} {q(a.get('message', {}).get('content', ''))}")
+    where = f" zoom {box[0]},{box[1]},{box[2] - box[0]}x{box[3] - box[1]}" if box else ""
+    return (t, 5, f"see {ts(t)}{where} {q(a.get('message', {}).get('content', ''))}")
 
 
 try:
@@ -327,7 +342,7 @@ def ocr(t, im):
         return t, [w_ for *_, w_ in reader.read(im, [(0, 0, im.width, im.height)], page=True)]
     finally:
         room.release()
-def take(t, im, is_cut, grey):                                  # a chosen frame: its words read, and described if it is a new scene
+def take(t, im, is_cut, grey, box=None):                        # a chosen frame: its words read, and described if it is a new scene
     global n_frames, n_seen
     if im is None: return
     n_frames += 1
@@ -338,7 +353,7 @@ def take(t, im, is_cut, grey):                                  # a chosen frame
             if near[0] < 20:
                 lines.append((t, 5, f"see {ts(t)} like {ts(near[1])}")); return
             described.append((grey, t))
-        n_seen += 1; see_jobs.append(see_pool.submit(see_line, t, im))
+        n_seen += 1; see_jobs.append(see_pool.submit(see_line, t, im, box))
 
 # ---------- scenes and movement: a 64x36 grey copy, as numbers; one decode gives it and the full frames together ----------
 cuts = []
@@ -434,14 +449,20 @@ def decided(j, is_cut):                                         # frame j, now t
             else: seg[2] = c; seg[3] = t
         elif seg and t - seg[3] > 0.6: end_seg(seg[3] + 1 / opt["fps"])    # still for a moment: that movement is over
     changed = last_read is None or (float(np.abs(fr - last_read).mean()) if np else sum(abs(a_ - b_) for a_, b_ in zip(fr, last_read)) / size) > 6
-    read = (t >= (reads[-1] if reads else -9) + 2.0 and changed) or j == 0 or bool(is_cut)
+    zooming = opt.get("focus") is not None and abs(t - opt["focus"]) <= 5.01
+    read = (t >= (reads[-1] if reads else -9) + (1.0 if zooming else 2.0) and (changed or zooming)) or j == 0 or bool(is_cut)
     if read:
         reads.append(t); last_read = fr
         if merged:                                              # the frame a quarter-second on: settled, not mid-change
             b = RING.get(j + 1) or RING.get(j)
             if b:
                 from PIL import Image
-                take(t, Image.frombytes("RGB", (W_, H_), b), bool(is_cut) or j == 0, fr if np else None)
+                box = None
+                if zooming and j and np and cells and len(cells) < 9:   # the cells where something moved, as a box on the full frame
+                    cx = [i % 3 for i in cells]; cy = [i // 3 for i in cells]
+                    box = (max(0, (min(cx) * W_) // 3 - W_ // 12), max(0, (min(cy) * H_) // 3 - H_ // 12),
+                           min(W_, ((max(cx) + 1) * W_) // 3 + W_ // 12), min(H_, ((max(cy) + 1) * H_) // 3 + H_ // 12))
+                take(t, Image.frombytes("RGB", (W_, H_), b), bool(is_cut) or j == 0 or zooming, fr if np else None, box)
     for old in [k_ for k_ in RING if k_ < j]: del RING[old]
 for g, b in frames():
     FR.append(g)
@@ -564,7 +585,46 @@ if sound and not opt.get("nosound"):
     if runs is None: lines.append((opt["from"], 6, "! sounds not named: no sound tagger here (see the README)"))
     for t0, t1, n, sc in runs or []: lines.append((t0, 6, f"sound {ts(t0)}-{ts(t1)} sure {1 + round(10 * min(1.0, max(0.0, sc)))} {q(n)}"))
 
-stage("sound numbers and names")
+stage("speech and sound names")
+# ---------- who is speaking: voice 1, voice 2 ... within this video only (perch_voices: our own voice prints) ----------
+voice_model = None
+says = sorted((secs(re.match(r"say (\S+)", l).group(1)), l) for t_, _, l in lines if l.startswith("say "))
+if len(says) >= 6 and not opt.get("novoices"):
+    try:
+        import numpy as np_, perch_voices
+        pcm = os.path.join(RUN, f"voice-{os.getpid()}.pcm")
+        subprocess.run(FF + (["-ss", str(opt["from"])] if opt["from"] else []) + (["-t", str(opt["to"] - opt["from"])] if opt["to"] else []) +
+                       ["-i", src, "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "-y", pcm], capture_output=True, timeout=3600)
+        wav = np_.memmap(pcm, dtype=np_.int16, mode="r")
+        segs = [(a - opt["from"], min(says[i + 1][0] if i + 1 < len(says) else a + 8, a + 15) - opt["from"]) for i, (a, _) in enumerate(says)]
+        W_ = 1.5 if opt.get("focus") is not None else 3.0; wins = []
+        for s0, s1 in segs:                                     # 3 s windows inside the speech, half overlapping: a line can hold two voices
+            x = s0
+            while x + W_ <= s1 + 0.01: wins.append((x, x + W_)); x += W_ / 2
+            if s1 - s0 < W_: wins.append((s0, s1))
+        known = (kept_load(VKEY)[0].get("voices") if opt.get("focus") else None)
+        if known:
+            got = perch_voices.match(wav, wins, known); k_ = len(known["centres"]); voice_model = known
+        else:
+            got, k_, voice_model = perch_voices.voices(wav, wins, smooth=0.0)
+        wi = 0; last = None
+        for (s0, s1), (a, l) in zip(segs, says):               # each line: the voice holding most of it
+            vs = []
+            while wi < len(wins) and wins[wi][0] < s0 - 0.01: wi += 1
+            j = wi
+            while j < len(wins) and wins[j][0] < s1 - 0.01:
+                if got[j][0]: vs.append(got[j])
+                j += 1
+            if not vs: continue
+            v = max(set(x[0] for x in vs), key=[x[0] for x in vs].count)
+            sure = round(sum(x[1] for x in vs if x[0] == v) / sum(1 for x in vs if x[0] == v))
+            if v != last:
+                lines.append((a, 0, f"voice {ts(a)} {v} sure {sure}")); last = v
+        if k_: lines.append((opt["from"], 0, f"! voices: {k_} heard (voice 1, 2 ... in the order they first speak; within this video only)"))
+        os.remove(pcm)
+    except ImportError:
+        pass
+stage("who is speaking (voices)")
 # ---------- at each scene: the words on the screen (read here) and, if asked, one line from the local model ----------
 if not merged:                                                  # a stream, or no numpy: the chosen frames fetched one by one now
     cutset = set(cuts) | {opt["from"]}
@@ -586,6 +646,20 @@ for j in see_jobs:
     except Exception as e:
         lines.append((opt["from"], 5, f"! no description: {type(e).__name__}")); break
 see_pool.shutdown(cancel_futures=True)
+if opt.get("focus") is not None:                                # zoomed in: who each voice looked like, where ears and eyes agree
+    vline = sorted((e[0], int(re.match(r"voice \S+ (\d+)", e[2]).group(1))) for e in lines if e[2].startswith("voice "))
+    seen_v = {}
+    for t_, _, l_ in lines:
+        m_ = re.match(r"see \S+ zoom \S+ '(.*)'$", l_)
+        if not m_ or not vline: continue
+        said = m_.group(1)
+        if re.search(r"\b(not|neither|no one|nobody)\b[^.]*speak", said, re.I) or not re.search(r"speak|mouth open|mid-word|talking", said, re.I): continue
+        now = [v_ for a_, v_ in vline if a_ <= t_ + 0.01]
+        if now: seen_v.setdefault(now[-1], []).append(re.split(r"[,;]| and (?:he|she|they|appears)| is (?:visible|present)| appears", said)[0].strip())
+    for v_, looks in sorted(seen_v.items()):
+        best_ = max(set(looks), key=looks.count)
+        lines.append((opt["from"], 0, f"who voice {v_} looked like {q(best_)} sure {min(11, 2 + 3 * looks.count(best_))} "
+                                       f"(zoomed frames where someone spoke while voice {v_} was heard: {len(looks)})"))
 stage("scene descriptions (vision model)")
 
 # ---------- out: sorted by time; --live: at the video's own pace ----------
@@ -693,6 +767,7 @@ try:                                                            # kept for next 
     rows = [e for e in rows if not (opt["from"] - 0.01 <= e[0] < end_ - 0.01 or (whole and e[0] <= end_))] + new_
     got = sorted({e[0] for e in rows})
     mine["span"] = "the whole video" if whole or (mine.get("span") == "the whole video") else (f"{ts(got[0])}-{ts(got[-1])} (parts)" if got else "")
+    if voice_model and whole: mine["voices"] = voice_model     # kept: a focused listen later numbers voices the same way
     mine["seen"] = time.strftime("%Y-%m-%d")
     kept_save(VKEY, mine, rows)
 except OSError:
