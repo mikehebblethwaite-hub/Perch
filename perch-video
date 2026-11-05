@@ -23,6 +23,7 @@
 #   --scenes     the whole video at a glance: one line per scene with everything in it (words, subtitles, movement, sounds)
 #   --pack OUT   the lines zipped into OUT (to keep or send); perch-video --unpack OUT gives them back to read (a bot reads
 #                the lines, never the zipped bytes: encoded data costs a bot more, not less)
+#   --summary    a lesson line from the local model (Ollama, PERCH_MODEL) saying what the video seems to be about, as a best guess
 #   --hint L     try this language first when guessing (it is still checked; the session passes on what a piece needed)
 #   --lang L     the speech's language (en, cy, fr ...; default auto)   --quality Q  base (default) | small (better, slower) | ...
 # A session a bot drives as it plays (adjust, replay, go on): perch-video NAME play FILE, then read / back N / set lang|quality|speech V /
@@ -69,6 +70,7 @@ try:
         elif a == "--describe": opt["describe"] = True
         elif a == "--no-sound": opt["nosound"] = True
         elif a == "--speech": opt["speech"] = True
+        elif a == "--summary": opt["summary"] = True
         elif a == "--hint": opt["hint"] = args.pop(0); assert re.fullmatch(r"[a-z]{2,3}", opt["hint"])
         elif a == "--lang": opt["lang"] = args.pop(0); assert re.fullmatch(r"auto|[a-z]{2,3}", opt["lang"])
         elif a == "--quality": opt["quality"] = args.pop(0); assert opt["quality"] in ("tiny", "base", "small", "medium", "large-v3")
@@ -258,6 +260,9 @@ def lessons_load():
     except (OSError, ValueError): return {}
 VKEY = video_key()
 known = lessons_load().get(VKEY, {})
+if known.get("about"):
+    lines.append((opt["from"], 0, f"! from lessons: seen before ({known.get('seen', '?')}), about: {known['about']}" +
+                  (f"; summary then: {known['summary']}" if known.get("summary") else "")))
 if known.get("lang") and opt.get("lang", "auto") == "auto" and not opt.get("hint"):
     opt["hint"] = known["lang"]; lines.append((opt["from"], 0, f"! from lessons: lang {known['lang']} (this video taught it before; still checked)"))
 adjusted_to = []                                                 # languages the player had to switch to here
@@ -409,11 +414,49 @@ if runs:
     for t0_, t1_, n_, sc_ in runs: top[n_] = top.get(n_, 0) + (t1_ - t0_)
     lessons.append("lesson sounds mostly " + ", ".join(f"{n_} {ts(v_)}" for n_, v_ in sorted(top.items(), key=lambda e: -e[1])[:3]))
 lessons.append(f"lesson {len(cuts)} scene cuts in {ts((opt['to'] or dur) - opt['from'])}")
+# what it is about: worked out here from its own words (speech, subtitles, screen), no model
+words_said = " ".join(re.sub(r"^\S+ \S+ (?:sure \d+ )?", "", l).strip("'") for _, _, l in lines if l.startswith(("say ", "sub ", "text ")))
+STOP = set("""the a an and or but if then so of to in on at by for with from as is are was were be been being it its this that these those
+there here i you he she we they me him her us them my your his our their what which who whom whose when where why how not no yes do does did
+done have has had will would can could should may might must shall just very also too more most much many some any all each every such than
+into about over under again once only own same both few other off out up down now well get got go going gone say said says let one two
+like know think going want see make made thing things really right okay oh yeah mr mrs ms hon""".split())
+tok = re.findall(r"[A-Za-z\u00c0-\u024f][A-Za-z\u00c0-\u024f'-]+", words_said)
+freq = {}
+for w_ in tok:
+    k_ = w_.lower().strip("'")
+    if k_ not in STOP and len(k_) > 3: freq[k_] = freq.get(k_, 0) + 1
+names = {}
+for m_ in re.finditer(r"(?<![.!?]\s)\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)", words_said):            # runs of capitalised words: names
+    names[m_.group(1)] = names.get(m_.group(1), 0) + 1
+nums = sorted(set(re.findall(r"\b(?:\d[\d,.]*\s*(?:%|per cent|pounds|million|billion|thousand)?|£\d[\d,.]*)", words_said)), key=len, reverse=True)[:5]
+about = [w_ for w_, c_ in sorted(freq.items(), key=lambda e: -e[1]) if c_ >= 2][:8]
+top_names = [n_ for n_, c_ in sorted(names.items(), key=lambda e: -e[1])][:5]
+about_txt = ", ".join(about) if about else ""
+if about_txt or top_names:
+    lessons.append("lesson about: " + (about_txt or "(no word comes back)") + (f" · names: {', '.join(top_names)}" if top_names else "") +
+                   (f" · numbers: {', '.join(n_.strip() for n_ in nums)}" if nums else "") + " (from its own words; the words are best guesses)")
+summary = None
+if opt.get("summary") and words_said.strip():
+    import urllib.request
+    ask = ("Below is what a speech-to-text tool and a screen reader made of a video: best guesses, maybe wrong in places. In 2 or 3 short "
+           "sentences say what the video seems to be about. Start with 'I think' and say plainly where you are unsure. Do not guess "
+           "anyone's sex: say they or the speaker unless a name is given.\n\n" + words_said[:12000])
+    try:
+        body = json.dumps({"model": os.environ.get("PERCH_MODEL", "gemma-chuck"), "stream": False, "keep_alive": "10m",
+                           "messages": [{"role": "user", "content": ask}]}).encode()
+        r_ = json.load(urllib.request.urlopen(urllib.request.Request(os.environ.get("PERCH_OLLAMA", "http://127.0.0.1:11434") + "/api/chat", body), timeout=900))
+        summary = re.sub(r"\s+", " ", r_.get("message", {}).get("content", "")).strip()[:600] or None
+    except Exception as e:
+        lessons.append(f"lesson summary not made: {type(e).__name__} (the local model)")
+    if summary: lessons.append(f"lesson summary (the local model, a best guess): {q(summary)}")
 for l in lessons: lines.append(((opt["to"] if opt["to"] is not None else dur), 9, l))
 try:
     allv = lessons_load(); mine = allv.get(VKEY, {})
     if adjusted_to: mine["lang"] = adjusted_to[-1][0]
     elif heard and "," not in heard.group(1): mine.setdefault("lang", heard.group(1))
+    if about_txt or top_names: mine["about"] = (about_txt + (f" · names: {', '.join(top_names)}" if top_names else ""))[:400]
+    if summary: mine["summary"] = summary
     mine["seen"] = time.strftime("%Y-%m-%d"); allv[VKEY] = mine
     os.makedirs(os.path.dirname(LESSONS), mode=0o700, exist_ok=True)
     old = os.umask(0o077); json.dump(allv, open(LESSONS + ".new", "w")); os.umask(old); os.replace(LESSONS + ".new", LESSONS)
