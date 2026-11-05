@@ -7,6 +7,7 @@
 #   perch-video NAME set lang en|auto        the speech's language from here on (and for back)
 #   perch-video NAME set quality base|small  the speech model (small: better on poor sound, slower)
 #   perch-video NAME set speech on|off|auto  words from speech always / never / when there are no subtitles (default)
+#   perch-video NAME lessons                 what this video taught the player so far (also kept for the next time it plays)
 #   perch-video NAME seek T | pause | go | status | stop
 # The player works ahead in 30-second pieces with perch-video itself (so its own adjusting, "! adjusted ...", applies in each);
 # a change of settings drops the pieces it made ahead and makes them again. Nothing is kept on disk but the pieces in memory.
@@ -20,7 +21,7 @@ def secs(v):
 
 
 def ts(t):
-    m, s = divmod(max(0.0, t), 60)
+    m, s = divmod(round(max(0.0, t), 1), 60)
     return f"{int(m)}:{s:04.1f}"
 
 
@@ -120,6 +121,9 @@ class Player:
             if c == "status":
                 return (f"{self.head or 'V (being read)'}\n@ {ts(self.pos())}/{ts(self.dur)} " + ("playing" if self.playing else "paused") +
                         f" · lang {self.set['lang']} · quality {self.set['quality']} · speech {self.set['speech']} · made to {ts(self.made_to)}\n")
+            if c == "lessons":
+                got = [l for _, l in self.lines if l.startswith(("lesson", "! adjusted", "! from lessons"))]
+                return "\n".join(got or ["! no lessons yet (they come as the pieces are made)"]) + "\n"
             if c == "read":
                 now = self.pos()
                 new = [l for t, l in self.lines if self.told - 1e-6 <= t <= now and not (t < self.told)]
@@ -151,7 +155,7 @@ class Player:
             elif c == "stop":
                 threading.Timer(0.2, lambda: os._exit(0)).start(); return "ok stopped\n"
             else:
-                return "err say: read · back [N] · set lang|quality|speech V · seek T · pause · go · status · stop\n"
+                return "err say: read · back [N] · set lang|quality|speech V · seek T · pause · go · status · lessons · stop\n"
         # back: made again now, outside the lock (it takes a while); its lines replace the old ones for that stretch
         head, got = self.piece(a, b)
         with self.lock:

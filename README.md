@@ -64,7 +64,7 @@ Every video is different and its sound varies a lot, so a bot can drive a video 
 ./perch-video myvid seek 1:30      # also: pause · go · status · stop
 ```
 The player adjusts itself too: when a piece of speech comes back as a made-up loop it tries the language the clear parts were
-in, then the better model, keeps the clearest, and says so (`! adjusted 0:30.0 lang en`). Tried on three real videos: a
+in, then the better model, keeps the clearest, and says so (`! adjusted 0:30.0 lang en`). What a video teaches the player goes to the bot as `lesson` lines at the end (and `perch-video NAME lessons` in a session), and is kept per video on this machine (`~/.local/share/perch/video-lessons.json`), so the next time it plays it starts with what worked (`! from lessons: lang en`, still checked). Tried on three real videos: a
 Commons speech (the base model took it for Welsh until the player switched to English), a bamboo band (Music, no words, no
 false cuts) and a film's song (the lyrics line by line, every credit off the screen).
 

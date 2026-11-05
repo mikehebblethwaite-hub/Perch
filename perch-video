@@ -34,7 +34,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path[:0] = [HERE, "/usr/lib/perch"]
 # a session a bot drives while the video plays (perch_play.py): perch-video NAME play FILE | read | back N | set ... | seek | ...
 if len(sys.argv) >= 3 and re.fullmatch(r"[a-z0-9-]{1,40}", sys.argv[1]) and sys.argv[2] in (
-        "--serve", "play", "read", "back", "set", "seek", "pause", "go", "status", "stop"):
+        "--serve", "play", "read", "back", "set", "seek", "pause", "go", "status", "lessons", "stop"):
     import perch_play
     if sys.argv[2] == "--serve": perch_play.serve(HERE, sys.argv[1], sys.argv[3:]); sys.exit(0)
     perch_play.client(HERE, sys.argv[1], sys.argv[2:])
@@ -43,7 +43,7 @@ GW, GH = 64, 36                                   # the grey copy the scene/moti
 RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "perch-video"); os.makedirs(RUN, mode=0o700, exist_ok=True)
 
 def ts(t):
-    m, s = divmod(max(0.0, t), 60); h, m = divmod(int(m), 60)
+    m, s = divmod(round(max(0.0, t), 1), 60); h, m = divmod(int(m), 60)          # rounded first: never "0:60.0"
     return (f"{h}:{m:02d}:{s:04.1f}" if h else f"{m}:{s:04.1f}")
 
 def secs(v):
@@ -217,6 +217,25 @@ def loop(words):
         for i in range(0, max(0, len(w) - n * 5) + 1):
             if all(w[i + j * n: i + (j + 1) * n] == w[i: i + n] for j in range(5)): return True
     return False
+# ---------- lessons: what this video taught the player, kept per video on this machine, used next time, told to the bot ----------
+LESSONS = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "perch", "video-lessons.json")
+def video_key():
+    import hashlib
+    h = hashlib.sha256()
+    try:
+        with open(src, "rb") as f: h.update(f.read(1 << 20))
+        h.update(str(os.path.getsize(src)).encode())
+    except OSError:
+        h.update(src.encode())                                  # an address: the address itself
+    return h.hexdigest()[:24]
+def lessons_load():
+    try: return json.load(open(LESSONS))
+    except (OSError, ValueError): return {}
+VKEY = video_key()
+known = lessons_load().get(VKEY, {})
+if known.get("lang") and opt.get("lang", "auto") == "auto" and not opt.get("hint"):
+    opt["hint"] = known["lang"]; lines.append((opt["from"], 0, f"! from lessons: lang {known['lang']} (this video taught it before; still checked)"))
+adjusted_to = []                                                 # languages the player had to switch to here
 runs = tag_runs() if sound and not opt.get("nosound") else None
 if sound and not opt.get("nosound") and (opt.get("speech") or not textsubs):
     if os.access(WHISPER, os.X_OK) and os.path.isfile(WMODEL):
@@ -258,7 +277,7 @@ if sound and not opt.get("nosound") and (opt.get("speech") or not textsubs):
                     if score > best[0]: best = (score, s2, lang2, loops2, (l, m))
                     if loops2 == 0 and s2: break
                 _, segs, lang, loops, how = best
-                if how and how[0] != "auto": opt["hint"] = how[0]                  # the next pieces try this language first
+                if how and how[0] != "auto": opt["hint"] = how[0]; adjusted_to.append((how[0], lang))   # the next pieces try this language first
                 if how: lines.append((a, 1, f"! adjusted {ts(a)} lang {how[0]}" + (f" quality {os.path.basename(how[1])[5:-4]}" if how[1] != WMODEL else "") + " (the first try made loops)"))
             for t, words in segs: lines.append((t, 1, f"say {ts(t)} {q(words)}"))
             if loops: lines.append((a, 1, f"! speech unclear {ts(a)}-{ts(b)} (try: back, set lang, set quality)"))
@@ -347,6 +366,32 @@ if opt.get("pack"):
     print(f"packed {opt['pack']} {os.path.getsize(opt['pack'])} bytes ({len(body)} characters unpacked: perch-video --unpack {opt['pack']})"); sys.exit(0)
 if text_out:
     sys.stdout.write(text_out); sys.exit(0)
+# the lessons of this run: told to the bot (lesson lines, at the end) and kept for next time
+heard = re.search(r"speech:(\S+)", head)
+said_n = sum(1 for _, _, l in lines if l.startswith("say "))
+unclear_n = sum(1 for _, _, l in lines if "speech unclear" in l)
+lessons = []
+if adjusted_to:
+    lang_now = adjusted_to[-1][0]
+    lessons.append(f"lesson lang {lang_now} (guessing the language went wrong here; {lang_now} was right: start with set lang {lang_now})")
+elif heard: lessons.append(f"lesson lang {heard.group(1)} (heard; no adjusting needed)")
+if sound and not textsubs: lessons.append("lesson no subtitles: the words came from the speech" if said_n else "lesson no subtitles and no speech heard")
+if unclear_n: lessons.append(f"lesson {unclear_n} piece(s) stayed unclear: try set quality small, then back over them")
+if runs:
+    top = {}
+    for t0_, t1_, n_, sc_ in runs: top[n_] = top.get(n_, 0) + (t1_ - t0_)
+    lessons.append("lesson sounds mostly " + ", ".join(f"{n_} {ts(v_)}" for n_, v_ in sorted(top.items(), key=lambda e: -e[1])[:3]))
+lessons.append(f"lesson {len(cuts)} scene cuts in {ts((opt['to'] or dur) - opt['from'])}")
+for l in lessons: lines.append(((opt["to"] if opt["to"] is not None else dur), 9, l))
+try:
+    allv = lessons_load(); mine = allv.get(VKEY, {})
+    if adjusted_to: mine["lang"] = adjusted_to[-1][0]
+    elif heard and "," not in heard.group(1): mine.setdefault("lang", heard.group(1))
+    mine["seen"] = time.strftime("%Y-%m-%d"); allv[VKEY] = mine
+    os.makedirs(os.path.dirname(LESSONS), mode=0o700, exist_ok=True)
+    old = os.umask(0o077); json.dump(allv, open(LESSONS + ".new", "w")); os.umask(old); os.replace(LESSONS + ".new", LESSONS)
+except OSError:
+    pass
 print(head, flush=True)
 t0 = time.time()
 for t, _, l in sorted(lines, key=lambda e: (e[0], e[1])):
