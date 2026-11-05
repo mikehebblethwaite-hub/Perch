@@ -183,6 +183,10 @@ After that it sends only what changed. The bot reads exact text instead of guess
 {win_section()}
 {read_section()}
 {learn_section()}
+<h2>Video, the bot's way</h2>
+<p style="max-width:68ch">Perch also plays videos for bots: no frames, just timed lines of what was said, shown and heard. Claude watched a
+whole 89-minute Stanford lecture this way and wrote a summary of it from those lines alone.</p>
+<div class="cta"><a class="btn" href="video/">Read the lecture summary</a></div>
 <h2>What it does</h2>
 <div class="cols">
   <div><h3>Reads the screen as data</h3><p>Pictures are made from words and boxes that already exist. Perch catches them before they become pixels, so nothing has to be turned back into text.</p></div>
@@ -354,6 +358,224 @@ def build_demo():
     return page
 
 
+
+# ---------------- the bot video player: a lecture summary Claude made from Perch's lines (data/video-demo.json) ----------------
+WATCH = "Stanford CS336 Language Modeling from Scratch | Spring 2026 | Lecture 3: Architectures"
+# the lecture's own parts, as Claude read them from the lines (slide words + speech); times are where each part starts
+CHAPTERS = [
+    (0, "What this lecture is for",
+     "<p>A quick recap of the transformer the class builds, then two questions: what do almost all big language models have in common, "
+     "and where do they differ? The slide gives the theme: the best way to learn is hands-on experience; the second best is to learn "
+     "from other people's.</p>"),
+    (100, "The original transformer against a modern one",
+     "<p>The 2017 design used post-norm LayerNorm, sine and cosine position embeddings and ReLU. A modern model puts the norm in front "
+     "of each block, uses rotary position embeddings (RoPE) and SwiGLU, and drops the bias terms. The rest of the lecture asks why.</p>"),
+    (173, "Too many models to keep up with",
+     "<p>The slides list more than 19 new dense model releases in 2024 and 2025 alone: Gemma 3, Llama 3, Qwen2, Nemotron-4, Granite 4.0, "
+     "MiniMax, Kimi K2, ERNIE 4.5, Step-3 and more. I think the lecturer also gave “a shout out to Percy's own 8B model, trained with "
+     "Marin”. With so many papers, the lecture learns from what they agree on.</p>"),
+    (444, "Pre-norm won",
+     "<p>“The one thing everyone agrees on”: put the norm where it doesn't touch the main residual path. Almost every modern model is "
+     "pre-norm (BERT was post-norm; OPT-350M is the odd one out). Once the reason was skipping learning-rate warm-up; now it's stability "
+     "and larger learning rates. Newer still is a second norm outside the residual stream (Grok, Gemma 2; OLMo 2 uses only that one).</p>"),
+    (828, "RMSNorm, and FLOPs are not runtime",
+     "<p>Most models swapped LayerNorm for RMSNorm: no mean, no bias, fewer numbers to move. A table makes the point of the day: "
+     "normalisation is 0.17% of the FLOPs but 25.5% of the runtime, because moving data costs more than arithmetic. Bias terms went "
+     "for the same reasons, memory and stable training.</p>"),
+    (1203, "A zoo of activations, and the GLUs won",
+     "<p>ReLU, GeLU, Swish and the gated kind. A GLU multiplies the first part of the feed-forward layer by a second linear term. "
+     "SwiGLU is in LLaMA, PaLM, Mistral, OLMo and most models since 2023; GeGLU is in T5 v1.1 and Gemma 2, 3 and 4. Gated models shrink "
+     "the hidden size by 2/3 to keep the parameter count. The gains are fairly consistent, though GPT-3 shows you don't need one.</p>"),
+    (1621, "Serial or parallel blocks",
+     "<p>Attention and the MLP can run side by side in one block: about 15% faster training at large scale (PaLM; also Cohere Command "
+     "and Falcon 2 11B). Most models still run them one after the other.</p>"),
+    (1858, "Position embeddings: RoPE",
+     "<p>Sine, absolute and relative embeddings all fall short of one goal: attention should depend only on how far apart two words "
+     "are. Inner products don't change when both vectors turn by the same angle, so RoPE rotates pairs of coordinates in two "
+     "dimensions by an amount set by the position. It is applied inside every attention layer, not once at the bottom.</p>"),
+    (2327, "Hyperparameters most models agree on",
+     "<p>The feed-forward layer is about 4 times the model width (8/3 for GLUs). T5 11B went 64 times and its follow-up came back "
+     "to 2.5. Heads × head size usually equals the model width. Width against depth: a ratio of roughly 100 to 200, since very deep "
+     "models are harder to spread across machines and slower to answer. Vocabularies: 30–50k entries for one language, 100–250k "
+     "for many.</p>"),
+    (3390, "Regularisation that isn't about overfitting",
+     "<p>With trillions of tokens and one pass over them, models hardly overfit, and newer ones drop dropout. Yet weight decay "
+     "stays. The lecture's explanation: it doesn't control overfitting at all; it works with the learning-rate schedule, so runs "
+     "with stronger decay start slower and end better.</p>"),
+    (3836, "Keeping training stable: watch the softmaxes",
+     "<p>Exponentials and division make softmaxes the usual cause of loss spikes. Three fixes: the output “z-loss” (PaLM, Baichuan 2, "
+     "OLMo 2 and 3), QK-norm on queries and keys before attention (from vision models; now Gemma 2, Qwen3, OLMo 3, Gemma 4), and "
+     "soft-capping the logits (Gemma 2: 50 in attention, 30 at the output).</p>"),
+    (4424, "Cheaper attention: MQA, GQA and sliding windows",
+     "<p>Generating text one token at a time is limited by memory traffic for the KV cache, not arithmetic. Multi-query attention "
+     "shares one key and value head; grouped-query attention shares a few, with little or no loss. Sliding-window attention looks only "
+     "nearby; the current trick is to interleave full and windowed layers (Cohere Command A; Gemma 4, OLMo 3, Qwen 3.5).</p>"),
+    (5310, "What to take away",
+     "<p>Many parts of the big models are now the same. The real differences are position embeddings, activations and tokenisation. "
+     "The lecture ends by sending students off to try these ideas on their assignments.</p>"),
+]
+
+VIDEO_STYLE = """<style>
+:root{--teal:#0f8a7e} @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--teal:#3cc2b2}} :root[data-theme="dark"]{--teal:#3cc2b2}
+.made{display:inline-flex;gap:10px;align-items:center;background:var(--panel);border:1px solid var(--rule);border-radius:30px;padding:6px 16px 6px 8px;font-size:15px;color:var(--ink2);margin:0 0 22px}
+.made svg{width:26px;height:26px;color:var(--ink);flex:none}
+.v-h1{max-width:22ch}
+.tape{position:relative;margin:34px 0 8px;padding:28px 0 22px}
+.tape svg{display:block;width:100%;height:clamp(76px,11vw,112px);overflow:visible}
+.tape .pins{position:absolute;inset:0 0 auto 0;height:24px}
+.pin{position:absolute;top:0;transform:translateX(-50%);width:24px;height:24px;border-radius:50%;background:var(--ink);color:var(--bg);
+  font:700 12px/24px var(--sans);text-align:center;text-decoration:none}
+.pin::after{content:"";position:absolute;left:50%;top:22px;width:2px;height:10px;margin-left:-1px;background:var(--ink)}
+.pin.first{transform:none} .pin.first::after{left:1px}
+.pin:hover,.pin:focus-visible{background:var(--perch)} .pin:hover::after,.pin:focus-visible::after{background:var(--perch)}
+.tape .ticks{position:absolute;left:0;right:0;bottom:0;height:18px;font:12px var(--mono);color:var(--muted)}
+.tape .ticks span{position:absolute;transform:translateX(-50%)} .tape .ticks span:first-child{transform:none}
+.tape .now{position:absolute;top:24px;bottom:20px;width:3px;margin-left:-1px;background:var(--perch);display:none;pointer-events:none}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:14px;color:var(--ink2)}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.chapters{list-style:none;padding:0;margin:8px 0 0;max-width:820px}
+.chapters li{display:grid;grid-template-columns:82px 1fr;gap:18px;padding:18px 0;border-top:1px solid var(--rule)}
+.chapters li.on{background:linear-gradient(90deg,color-mix(in srgb,var(--perch) 12%,transparent),transparent 70%)}
+.chapters .at{font:15px var(--mono);color:var(--perch);text-decoration:none;padding-top:3px;font-variant-numeric:tabular-nums}
+.chapters h3{margin:0 0 4px;font-size:20px} .chapters p{margin:0;max-width:68ch}
+.small-bot{margin:28px 0 0;max-width:820px;border-left:4px solid var(--rule);padding:4px 0 4px 18px;color:var(--ink2)}
+.small-bot p{margin:0;font-size:16px} .small-bot footer{font-size:14px;color:var(--muted);margin-top:8px}
+.moments details{border-top:1px solid var(--rule);max-width:900px}
+.moments summary{cursor:pointer;padding:14px 0;display:flex;gap:12px;align-items:baseline;list-style:none}
+.moments summary::-webkit-details-marker{display:none}
+.moments .n{flex:none;width:24px;height:24px;border-radius:50%;background:var(--ink);color:var(--bg);font-size:13px;font-weight:700;display:grid;place-items:center}
+.moments .at{font:14px var(--mono);color:var(--muted)}
+.moments details[open] .n{background:var(--perch)}
+.moments p{margin:0 0 10px 36px;max-width:68ch;color:var(--ink2)}
+.moments pre{margin:0 0 18px 36px;background:var(--screen);border:1px solid var(--rule);border-radius:8px;padding:10px 12px;font:12.5px/1.55 var(--mono);white-space:pre-wrap;word-break:break-word}
+.watch{display:grid;grid-template-columns:1fr 1fr;gap:28px;max-width:1000px}
+.watch .card p{margin:6px 0}
+@media (max-width:600px){.tape .ticks span:nth-child(even){display:none}}
+@media (max-width:820px){.watch{grid-template-columns:1fr}.chapters li{grid-template-columns:64px 1fr;gap:12px}.facts{grid-template-columns:repeat(2,1fr)}
+  .moments p,.moments pre{margin-left:0}}
+@media (prefers-reduced-motion:no-preference){.chapters li{transition:background .3s}}
+</style>"""
+
+VIDEO_SCRIPT = """<script>
+const tape = document.querySelector('.tape'), now = tape.querySelector('.now'), DUR = %s;
+function mark(t){ now.style.left = (t / DUR * 100) + '%%'; now.style.display = 'block'; }
+document.querySelectorAll('.chapters .at').forEach(a => a.addEventListener('click', () => {
+  document.querySelectorAll('.chapters li.on').forEach(l => l.classList.remove('on'));
+  a.closest('li').classList.add('on'); mark(+a.dataset.t); }));
+function openPin(){ const d = location.hash && document.getElementById(location.hash.slice(1)); if (d && d.tagName === 'DETAILS') d.open = true; }
+window.addEventListener('hashchange', openPin); openPin();
+</script>"""
+
+
+def vts(t):
+    m, s = divmod(int(t), 60); h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def video_page():
+    try:
+        d = json.load(open(os.path.join(HERE, "data", "video-demo.json")))
+    except (OSError, ValueError):
+        return None
+    dur, nb = d["dur"], len(d["lanes"]["say"])
+    W, LH, GAP = 1000.0, 22, 6
+    lanes = [("say", "Speech heard", "var(--perch)"), ("text", "Words on screen", "var(--teal)"),
+             ("sound", "Other sounds", "var(--shot)"), ("cut", "Scene changes", "var(--ink)")]
+    svg = []
+    for i, (k, name, col) in enumerate(lanes):
+        y = i * (LH + GAP); top = max(1, max(d["lanes"][k]))
+        svg.append(f'<rect x="0" y="{y}" width="{W:.0f}" height="{LH}" fill="var(--screen)"/>')
+        for j, c in enumerate(d["lanes"][k]):
+            if c:
+                svg.append(f'<rect x="{j * W / nb:.1f}" y="{y}" width="{W / nb + .4:.1f}" height="{LH}" fill="{col}" opacity="{.3 + .7 * c / top:.2f}"/>')
+    hgt = len(lanes) * (LH + GAP) - GAP
+    for t, _, _ in CHAPTERS[1:]:
+        svg.append(f'<line x1="{t / dur * W:.1f}" x2="{t / dur * W:.1f}" y1="0" y2="{hgt}" stroke="var(--bg)" stroke-width="2"/>')
+    pins = "".join(f'<a class="pin{" first" if m["t"] / dur < .02 else ""}" href="#m{i}" style="left:{m["t"] / dur * 100:.2f}%" aria-label="{html.escape(m["title"])}, at {vts(m["t"])}">{i + 1}</a>'
+                   for i, m in enumerate(d["moments"]))
+    legend = "".join(f'<span><i style="background:{c}"></i>{n}</span>' for _, n, c in lanes)
+    ticks = "".join(f'<span style="left:{t / dur * 100:.2f}%">{vts(t)}</span>' for t in range(0, int(dur) - 300, 900))
+    chapters = "".join(f'<li><a class="at" href="#tape" data-t="{t}">{vts(t)}</a><div><h3>{html.escape(title)}</h3>{body}</div></li>'
+                       for t, title, body in CHAPTERS)
+    moments = "".join(f'<details id="m{i}"><summary><span class="n">{i + 1}</span><b>{html.escape(m["title"])}</b> <span class="at">{m["at"]}</span></summary>'
+                      f'<p>{html.escape(m["note"])}</p><pre aria-label="The exact lines the bot was given here">{html.escape(chr(10).join(m["lines"]))}</pre></details>'
+                      for i, m in enumerate(d["moments"]))
+    c = d["count"]; kb = d["chars"] / 1000; tok = d["chars"] // 4
+    sure = d.get("sure") or []
+    took = (f'<div><b>{d["took"] / 60:.0f} minutes</b>to turn the whole lecture into lines, on one home machine with no cloud</div>'
+            if d.get("took") else "")
+    o = d["odd"]
+    odd_txt = "now and then " + ((f"a pig ({o['Pig']} times)" + (" and a frog" if o.get("Frog") else "")) if o.get("Pig") else "an animal")
+    summ = (f'<blockquote class="small-bot"><p>{html.escape(d["summary"])}</p><footer>Perch\'s own short summary, made on the same machine by a '
+            f'small local model from the same lines with no help. It is a best guess and says so.</footer></blockquote>') if d.get("summary") else ""
+    sure_note = (f" Every line of speech says how sure the speech reader was, from 1 to 11; the middle one here was {sorted(sure)[len(sure) // 2]}."
+                 if sure else "")
+    q_watch = WATCH.replace(" ", "+").replace("|", "%7C").replace(":", "%3A")
+    body = f"""
+<p class="made">{MARK}This video summary page was made using the Perch video player for bots by Claude.</p>
+<h1 class="v-h1">A bot watched an 89-minute lecture. Here is what it took away.</h1>
+<p class="lede">The lecture is Stanford CS336, Lecture 3: Architectures. Claude didn't look at a single frame. Perch played the video
+and gave it timed lines instead: what was said, what was on the slides, what else could be heard and where the scenes changed.
+Everything below was written from those lines.</p>
+
+<div class="tape" id="tape" aria-label="The whole lecture as the bot got it, in 30-second slices">
+  <div class="pins">{pins}</div>
+  <svg viewBox="0 0 {W:.0f} {hgt}" preserveAspectRatio="none" role="img" aria-label="Four rows across {d["dur_ts"]}: speech, words on screen, other sounds and scene changes. Darker means more lines in that half minute.">{"".join(svg)}</svg>
+  <div class="now"></div>
+  <div class="ticks">{ticks}</div>
+</div>
+<div class="legend">{legend}<span>Gaps mark the lecture's parts. The numbered pins open the exact lines.</span></div>
+
+<h2>The lecture, part by part</h2>
+<ol class="chapters">{chapters}</ol>
+{summ}
+
+<h2>What the bot was given</h2>
+<div class="facts">
+  <div><b>{d["lines"]:,} lines</b>{c["say"]:,} of speech, {c["text"]:,} of slide words, {c["cut"]} scene changes</div>
+  <div><b>{kb:.0f} KB of text</b>about {tok:,} tokens for the whole lecture; the video file is {(d.get("video_bytes") or 0) / 1e6:.0f} MB</div>
+  {took}
+  <div><b>No frames</b>not one picture was sent to Claude</div>
+</div>
+<p class="note">Speech is read by a local speech model in 30-second pieces, slide words by reading the pixels, other sounds by a sound
+namer. All of them are best guesses, and the lines say so.{sure_note}</p>
+
+<h2>What it heard, and what it misread</h2>
+<p style="max-width:68ch">Besides the speech, the sound namer named the room's other sounds: footsteps, chewing, stomach rumbles, and
+{odd_txt}. Those are normal in a lecture hall, and each comes as “it sounded like”, with how sure it was. The real misreadings are in
+the words: small table text on a 640 × 360 video came out garbled, and the speech reader wrote SwiGLU as “Swigloo”. Each is a line
+the bot can weigh, not a fact it has to believe. Open a moment to see the exact lines.</p>
+<div class="moments">{moments}</div>
+
+<h2>Watch it, then try it yourself</h2>
+<div class="watch">
+  <section class="card"><h3>Watch the lecture</h3>
+    <p>We don't host the video. It's Stanford's, posted by Stanford Online on YouTube and shared on X. Look for its title:</p>
+    <p><b>{html.escape(WATCH)}</b></p>
+    <p><a href="https://www.youtube.com/results?search_query={q_watch}">Find it on YouTube</a> · <a href="https://cs336.stanford.edu/">The course's own site</a></p></section>
+  <section class="card"><h3>Run Perch on it</h3>
+    <p>Save the video, then:</p>
+    <pre class="code">perch-video --summary lecture.mp4 &gt; lecture.lines</pre>
+    <p>Or let a bot drive it as it plays, and go back over any part where the sound is poor:</p>
+    <pre class="code">perch-video cs336 play lecture.mp4
+perch-video cs336 read
+perch-video cs336 set quality small
+perch-video cs336 back 30</pre>
+    <p class="note">Perch keeps what it learned on your machine, never the video. <a href="../help/">How Perch works</a></p></section>
+</div>
+"""
+    return body, VIDEO_STYLE + (VIDEO_SCRIPT % dur)
+
+
+def build_video():
+    got = video_page()
+    if not got: return
+    body, extra = got
+    page = shell("A bot watched a lecture: Perch's video player", "demo", body, 1, extra)
+    os.makedirs(os.path.join(OUT, "video"), exist_ok=True)
+    open(os.path.join(OUT, "video", "index.html"), "w").write(page)
+
+
 def main():
     shutil.rmtree(OUT, ignore_errors=True)
     shutil.copytree(os.path.join(HERE, "assets"), os.path.join(OUT, "assets"))
@@ -372,6 +594,7 @@ def main():
         os.makedirs(os.path.join(OUT, "demo", "win"), exist_ok=True)
         shutil.copy(os.path.join(WRUN, "shot-1.png"), os.path.join(OUT, "demo", "win", "shot-1.png"))
     open(os.path.join(OUT, "demo", "index.html"), "w").write(build_demo())
+    build_video()
     open(os.path.join(OUT, "robots.txt"), "w").write("User-agent: *\nDisallow: /\n")
     print("built", sum(len(fs) for _, _, fs in os.walk(OUT)), "files in", OUT)
 

@@ -1,0 +1,68 @@
+#!/usr/bin/python3 -I
+# Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
+# site/update-video-data LINES [SECONDS]: the video demo's data (data/video-demo.json) from one perch-video run's lines.
+# Only counts for the tape and a few short moments go on the site, never the whole transcript (the lecture is Stanford's;
+# people watch it there and run Perch on it themselves). SECONDS: how long the run took, for the facts.
+import json, os, re, sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+src = sys.argv[1]
+took = float(sys.argv[2]) if len(sys.argv) > 2 else None
+L = open(src, encoding="utf-8").read().splitlines()
+BIN = 30.0
+# the moments shown on the page: (from, to, what the page says about it)
+MOMENTS = [
+    (0.0, 52.0, "The start", "The first words and the first slide. Speech and screen words arrive as separate lines on the same clock."),
+    (873.0, 880.0, "A slide, read cleanly", "Words on screen come out as text lines on the same clock as the speech, so a bot can tell what the slide said from what the lecturer said."),
+    (1966.0, 1980.0, "It sounded like a pig", "A room full of people makes small sounds, and the sound namer names each one it hears. Here it was a pig, said with how sure it was. The bot passes it on as “it sounded like a pig”, never as “there was a pig”."),
+    (3066.0, 3082.0, "A table, read badly", "Small text in a table on a 640 × 360 video. Some of it comes out as nonsense, and the bot can see that it does."),
+    (5310.0, 5343.0, "The last minute", "The closing words, then the end of the sound."),
+]
+
+
+def ts(t):
+    m, s = divmod(round(max(0.0, t), 1), 60); h, m = divmod(int(m), 60)
+    return f"{h}:{m:02d}:{s:04.1f}" if h else f"{m}:{s:04.1f}"
+
+
+def secs(v):
+    return sum(float(x) * 60 ** i for i, x in enumerate(reversed(v.split(":"))))
+
+
+head = L[0]
+m = re.match(r"V '.*?' (\S+) (\d+x\d+) (\S+)fps", head)
+dur = secs(m.group(1))
+rows = []
+for l in L[1:]:
+    k = l.split(" ", 1)[0]
+    mt = re.match(r"\S+ (\d+(?::\d+)+\.\d)", l)
+    if not mt: continue
+    rows.append((secs(mt.group(1)), k, l))
+nb = int(dur // BIN) + 1
+lanes = {k: [0] * nb for k in ("say", "sound", "text", "cut")}
+for t, k, l in rows:
+    if k in lanes:
+        if k == "sound" and "'Speech'" in l: continue        # speech is the say lane; the sound lane shows the other sounds
+        lanes[k][min(nb - 1, int(t // BIN))] += 1
+count = {k: sum(1 for _, k_, _ in rows if k_ == k) for k in ("say", "sound", "text", "cut", "moves", "s")}
+sure = [int(x) for x in re.findall(r"^say \S+ sure (\d+)", "\n".join(L), re.M)]
+lessons = [l for l in L if l.startswith("lesson ")]
+summ = next((l for l in lessons if l.startswith("lesson summary (")), None)
+summary = re.sub(r"\\'", "'", re.search(r"'(.*)'$", summ).group(1)) if summ else None
+about = next((l[len("lesson about: "):] for l in lessons if l.startswith("lesson about: ")), None)
+odd = []
+for t, k, l in rows:
+    mm = re.match(r"sound (\S+)-\S+ (?:sure (\d+) )?'([^']+)'", l)
+    if k == "sound" and mm and mm.group(3) in ("Pig", "Stomach rumble", "Frog", "Animal", "Wild animals", "Chewing, mastication"):
+        odd.append(mm.group(3))
+moments = []
+for a, b, title, note in MOMENTS:
+    got = [l for t, k, l in rows if a <= t <= b and k in ("say", "sound", "text", "cut")][:14]
+    moments.append({"t": a, "at": ts(a), "title": title, "note": note, "lines": got})
+odd_n = {n: odd.count(n) for n in sorted(set(odd), key=lambda n: -odd.count(n))}
+out = {"dur": dur, "dur_ts": ts(dur), "size": m.group(2), "fps": m.group(3), "bin": BIN, "lanes": lanes, "count": count,
+       "lines": len(L), "chars": sum(len(l) + 1 for l in L), "sure": sure, "summary": summary, "about": about,
+       "odd": odd_n, "took": took, "moments": moments, "video_bytes": os.path.getsize(re.sub(r"\.[^.]*lines$", ".mp4", src)) if os.path.exists(re.sub(r"\.[^.]*lines$", ".mp4", src)) else None}
+os.makedirs(os.path.join(HERE, "data"), exist_ok=True)
+json.dump(out, open(os.path.join(HERE, "data", "video-demo.json"), "w"), ensure_ascii=False, indent=0)
+print(f"data/video-demo.json: {len(L)} lines, {len(moments)} moments, summary {'yes' if summary else 'no'}, {os.path.getsize(os.path.join(HERE, 'data', 'video-demo.json'))} bytes")
