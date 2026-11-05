@@ -141,6 +141,21 @@ TOOLS = [
          "describe": {"type": "boolean", "description": "a line from the local vision model at each scene (slower, no tokens)"},
          "frame": {"type": "string", "description": "instead: one picture at this time, like 0:04"}},
          "required": ["src"]}},
+    {"name": "perch_video_session",
+     "description": "Drive a video while it plays, the bot's way, and adjust until it is clear: play (src), read (the lines up to "
+                    "where it is, only new ones), set (key lang|quality|speech, value e.g. en, small, on), back (seconds: that stretch "
+                    "again with the settings now), seek (t), pause, go, status, stop. The player also adjusts itself and says so "
+                    "('! adjusted'). Every video is different: when lines say '! speech unclear' or the words are in the wrong "
+                    "language, set lang or quality and go back.",
+     "inputSchema": {"type": "object", "properties": {
+         "session": {"type": "string", "description": "one short name for this video (a-z, 0-9, -)"},
+         "action": {"type": "string", "enum": ["play", "read", "set", "back", "seek", "pause", "go", "status", "stop"]},
+         "src": {"type": "string", "description": "for play: a video file's full path or an http(s) address"},
+         "fast": {"type": "boolean", "description": "for play: as fast as the box can go instead of the video's own pace"},
+         "key": {"type": "string", "enum": ["lang", "quality", "speech"]}, "value": {"type": "string"},
+         "seconds": {"type": "number", "description": "for back (default 30)"},
+         "t": {"type": "string", "description": "for seek, like 1:30"}},
+         "required": ["session", "action"]}},
     {"name": "perch_status",
      "description": "What Perch can see on this machine now: the VMs running under Perch, and whether display :2 is up.",
      "inputSchema": {"type": "object", "properties": {}}},
@@ -216,6 +231,28 @@ def call(name, a):
             args += ["--fps", str(f)]
         if a.get("describe"): args.append("--describe")
         return text(*run(args + [src], timeout=1800))
+    if name == "perch_video_session":
+        s_ = need(a, "session", NAME); act = need(a, "action")
+        args = [tool("perch-video"), s_]
+        if act == "play":
+            src = need(a, "src")
+            if not (re.match(r"^https?://[^\s]+$", src) or (src.startswith("/") and os.path.isfile(src))):
+                raise Bad("src: an http(s) address or a video file's full path")
+            args += ["play", src] + (["--fast"] if a.get("fast") else [])
+        elif act == "set":
+            k = need(a, "key", re.compile(r"^(lang|quality|speech)$")); v = need(a, "value", re.compile(r"^[a-z0-9-]{1,10}$"))
+            args += ["set", k, v]
+        elif act == "back":
+            n = a.get("seconds", 30)
+            if isinstance(n, bool) or not isinstance(n, (int, float)) or not 1 <= n <= 600: raise Bad("seconds: 1 to 600")
+            args += ["back", str(n)]
+        elif act == "seek":
+            args += ["seek", need(a, "t", re.compile(r"^\d{1,2}(:\d{1,2}){0,2}(\.\d+)?$"))]
+        elif act in ("read", "pause", "go", "status", "stop"):
+            args += [act]
+        else:
+            raise Bad("unknown action")
+        return text(*run(args, timeout=1800))
     if name == "perch_pixels":
         return pixels(a)
     if name == "perch_status":

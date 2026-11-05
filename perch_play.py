@@ -61,6 +61,7 @@ class Player:
     def __init__(self, here, src, fast):
         self.here, self.src, self.fast = here, src, fast
         self.set = {"lang": "auto", "quality": "base", "speech": "auto"}
+        self.hint = None                      # a language the player itself switched to: the next pieces try it first
         p = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", src], capture_output=True, text=True)
         self.dur = float(p.stdout.strip() or 0)
         self.head = None
@@ -79,6 +80,7 @@ class Player:
 
     def piece(self, a, b, extra=()):
         cmd = [os.path.join(self.here, "perch-video"), "--from", str(a), "--to", str(b), "--lang", self.set["lang"], "--quality", self.set["quality"]]
+        if self.set["lang"] == "auto" and self.hint: cmd += ["--hint", self.hint]   # what an earlier piece needed (the player in charge)
         if self.set["speech"] == "on": cmd.append("--speech")
         if self.set["speech"] == "off": cmd.append("--no-sound")
         r = subprocess.run(cmd + list(extra) + [self.src], capture_output=True, text=True, timeout=3600)
@@ -105,6 +107,9 @@ class Player:
                 if head and not self.head: self.head = re.sub(r" speech:\S+", "", head)
                 langs = re.search(r"speech:(\S+)", head or "")
                 if langs: got.append((a, f"lang {ts(a)} {langs.group(1)}"))
+                for _, l in got:
+                    m = re.match(r"! adjusted \S+ lang ([a-z]{2,3})", l)
+                    if m: self.hint = m.group(1)
                 self.lines = [e for e in self.lines if e[0] < a] + sorted(got, key=lambda e: e[0])
                 self.made_to = b
 
@@ -134,6 +139,7 @@ class Player:
                 n = float(args[1]) if len(args) > 1 and re.fullmatch(r"\d+(\.\d+)?", args[1]) else PIECE
                 b = min(self.pos(), self.made_to) if not self.fast else self.made_to
                 a = max(0.0, b - n)
+                if b - a < 0.5: return f"! nothing to go back over yet (made to {ts(self.made_to)}): read first\n"
             elif c == "seek" and len(args) == 2 and re.fullmatch(r"\d+(:\d+){0,2}(\.\d+)?", args[1]):
                 t = min(self.dur, secs(args[1])); self.gen += 1
                 self.pos0, self.t0 = t, time.time(); self.made_to = self.told = t; self.lines = [e for e in self.lines if e[0] < t]

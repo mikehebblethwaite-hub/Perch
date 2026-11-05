@@ -18,6 +18,7 @@
 #   --scenes     the whole video at a glance: one line per scene with everything in it (words, subtitles, movement, sounds)
 #   --pack OUT   the lines zipped into OUT (to keep or send); perch-video --unpack OUT gives them back to read (a bot reads
 #                the lines, never the zipped bytes: encoded data costs a bot more, not less)
+#   --hint L     try this language first when guessing (it is still checked; the session passes on what a piece needed)
 #   --lang L     the speech's language (en, cy, fr ...; default auto)   --quality Q  base (default) | small (better, slower) | ...
 # A session a bot drives as it plays (adjust, replay, go on): perch-video NAME play FILE, then read / back N / set lang|quality|speech V /
 #   seek T / pause / go / status / stop (perch_play.py)
@@ -63,6 +64,7 @@ try:
         elif a == "--describe": opt["describe"] = True
         elif a == "--no-sound": opt["nosound"] = True
         elif a == "--speech": opt["speech"] = True
+        elif a == "--hint": opt["hint"] = args.pop(0); assert re.fullmatch(r"[a-z]{2,3}", opt["hint"])
         elif a == "--lang": opt["lang"] = args.pop(0); assert re.fullmatch(r"auto|[a-z]{2,3}", opt["lang"])
         elif a == "--quality": opt["quality"] = args.pop(0); assert opt["quality"] in ("tiny", "base", "small", "medium", "large-v3")
         elif a == "--scenes": opt["scenes"] = True
@@ -205,7 +207,11 @@ def tag_runs():
     return out
 VOICE = re.compile(r"speech|singing|sing|choir|vocal|rapping|narration|conversation|chant|yodel|whisper|shout|babbl|monolog", re.I)
 def loop(words):
-    """a made-up loop: the same few words over and over (Whisper does this on noise)"""
+    """a made-up loop: the same few words over and over (Whisper does this on noise, or in a wrong language); also any text that
+    zips down far more than speech does (Whisper's own test: a compression ratio over 2.4)"""
+    import zlib
+    b = words.encode()
+    if len(b) > 60 and len(b) / len(zlib.compress(b)) > 2.4: return True
     w = words.lower().split()
     for n in (1, 2, 3, 4):
         for i in range(0, max(0, len(w) - n * 5) + 1):
@@ -237,7 +243,10 @@ if sound and not opt.get("nosound") and (opt.get("speech") or not textsubs):
                     segs.append((a + seg.get("offsets", {}).get("from", 0) / 1000, words))
                 return segs, (j.get("result") or {}).get("language") or (None if lang == "auto" else lang), loops
             want = opt.get("lang", "auto")
-            segs, lang, loops = hear(want, WMODEL)
+            prefer = opt.get("hint") if want == "auto" else None        # a language a piece before needed: tried first, still checked
+            segs, lang, loops = hear(prefer or want, WMODEL)
+            if prefer and (loops or not segs):
+                segs, lang, loops = hear("auto", WMODEL)
             if loops and want == "auto":
                 # the player adjusts itself: the language the clear pieces were in, else English; then the better model; the clearest wins
                 tries = [(l, WMODEL) for l in dict.fromkeys(langs + ["en"]) if l != lang]
@@ -249,6 +258,7 @@ if sound and not opt.get("nosound") and (opt.get("speech") or not textsubs):
                     if score > best[0]: best = (score, s2, lang2, loops2, (l, m))
                     if loops2 == 0 and s2: break
                 _, segs, lang, loops, how = best
+                if how and how[0] != "auto": opt["hint"] = how[0]                  # the next pieces try this language first
                 if how: lines.append((a, 1, f"! adjusted {ts(a)} lang {how[0]}" + (f" quality {os.path.basename(how[1])[5:-4]}" if how[1] != WMODEL else "") + " (the first try made loops)"))
             for t, words in segs: lines.append((t, 1, f"say {ts(t)} {q(words)}"))
             if loops: lines.append((a, 1, f"! speech unclear {ts(a)}-{ts(b)} (try: back, set lang, set quality)"))
