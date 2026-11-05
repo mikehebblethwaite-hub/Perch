@@ -35,6 +35,8 @@
 # Usage: perch-video [--fps N] [--live] [--describe] [--scenes] [--pack OUT] [--lang L] [--quality Q] [--from T] [--to T] FILE|URL
 #   --fps N      how often motion is checked (default 4 a second; the scene/motion pass sees a 64x36 grey copy only)
 #   --live       lines come out at the video's own pace (a bot watching along); default: as fast as the box can go
+#   --detail quick|full  how much the bot wants: quick = a first idea fast (only new-looking scenes described, a smaller picture
+#                for the vision model); full (default) = every scene at the model's full size, a long run
 #   --describe   a line from the local vision model (Ollama, PERCH_MODEL, default gemma-chuck) at each cut: local, no tokens
 # Pictures for the bot only on request: perch-video --frame T FILE -> "pixels FILE wxh ~T tokens" (one frame, small).
 # Not yet: speech (a local Whisper), motion vectors from the codec itself.
@@ -80,7 +82,7 @@ def ask_summary(words, room=12000):
            "Start with 'I think' and say plainly where you are unsure. Do not guess anyone's sex: say they or the speaker unless a "
            "name is given.\n\n" + words)
     try:
-        body = json.dumps({"model": os.environ.get("PERCH_MODEL", "gemma-chuck"), "stream": False, "keep_alive": "10m",
+        body = json.dumps({"model": os.environ.get("PERCH_MODEL", "gemma-chuck"), "stream": False, "keep_alive": "10m", "think": False,
                            "messages": [{"role": "user", "content": ask}]}).encode()
         r_ = json.load(urllib.request.urlopen(urllib.request.Request(os.environ.get("PERCH_OLLAMA", "http://127.0.0.1:11434") + "/api/chat", body), timeout=900))
         out = re.sub(r"\s+", " ", r_.get("message", {}).get("content", "")).strip() or None
@@ -106,6 +108,9 @@ def summary_words(rows):
                 out.append(f"[sound {m_.group(1).split('.')[0]}: {m_.group(3)}]"); last = m_.group(3)
     return " ".join(out)
 
+STAGES, _clock = {}, [time.time()]
+def stage(name):                                                # the time since the last mark goes to this part of the work
+    now = time.time(); STAGES[name] = STAGES.get(name, 0) + now - _clock[0]; _clock[0] = now
 args, opt = sys.argv[1:], {"fps": 4.0, "live": False, "describe": False, "from": 0.0, "to": None, "frame": None}
 src = None
 try:
@@ -114,6 +119,7 @@ try:
         if a == "--fps": opt["fps"] = float(args.pop(0)); assert 0.2 <= opt["fps"] <= 30
         elif a == "--live": opt["live"] = True
         elif a == "--describe": opt["describe"] = True
+        elif a == "--detail": opt["detail"] = args.pop(0); assert opt["detail"] in ("quick", "full")
         elif a == "--no-sound": opt["nosound"] = True
         elif a == "--speech": opt["speech"] = True
         elif a == "--summary": opt["summary"] = True
@@ -277,6 +283,7 @@ if textsubs:
 elif subs:
     lines.append((0, 1, "! subtitles are pictures (not text) in this file: not read"))
 
+stage("start, subtitles, speech")
 # ---------- scenes and movement: a 64x36 grey copy, as numbers ----------
 cuts = []
 def grid_name(i):
@@ -284,6 +291,14 @@ def grid_name(i):
 cmd = FF + (["-ss", str(opt["from"])] if opt["from"] else []) + ["-i", src] + (["-t", str(opt["to"] - opt["from"])] if opt["to"] else []) + \
       ["-an", "-sn", "-vf", f"fps={opt['fps']},scale={GW}:{GH},format=gray", "-f", "rawvideo", "-"]
 p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+raw_ = p.stdout.read(); p.wait()
+size = GW * GH
+FR = [raw_[i:i + size] for i in range(0, len(raw_) - size + 1, size)]
+try:                                                            # cuts against the video's own normal change (perch_cuts)
+    import numpy as np, perch_cuts
+    CUTS = set(perch_cuts.find(np.frombuffer(b"".join(FR), np.uint8).reshape(-1, GH, GW).astype(np.int16), opt["fps"]))
+except ImportError:
+    CUTS = None                                                 # no numpy here: the simple rule below
 prev, k, seg = None, 0, None
 reads, last_read = [], None                         # when to read the words on screen: cuts, and every 2 s if the picture changed                       # seg: a run of movement [start, first cells' centre, last centre, end]
 def centre(cells):
@@ -296,10 +311,7 @@ def end_seg(t):
         a, b = place(seg[1]), place(seg[2])
         lines.append((seg[0], 3, f"moves {ts(seg[0])}-{ts(t)} {a}" + (f" > {b}" if b != a else "")))
     seg = None
-size = GW * GH
-while True:
-    fr = p.stdout.read(size)
-    if len(fr) < size: break
+for fr in FR:
     t = opt["from"] + k / opt["fps"]; k += 1
     if prev is not None:
         d = [abs(a - b) for a, b in zip(fr, prev)]
@@ -307,7 +319,7 @@ while True:
         ha = [0] * 16; hb = [0] * 16
         for a_, b_ in zip(fr, prev): ha[a_ >> 4] += 1; hb[b_ >> 4] += 1
         mix = sum(abs(a_ - b_) for a_, b_ in zip(ha, hb)) / (2 * size)         # 0 = the same light and dark, 1 = all different
-        if whole > 28 and mix > 0.35:                   # the picture changed at once, and what is in it: a new scene (a pan keeps the mix)
+        if (k - 1 in CUTS) if CUTS is not None else (whole > 28 and mix > 0.35):    # a new scene
             end_seg(t); cuts.append(t); lines.append((t, 2, f"cut {ts(t)} {len(cuts) + 1}"))
         else:
             cells = []
@@ -325,9 +337,9 @@ while True:
     if cuts and abs(cuts[-1] - t) < 1e-6 and (not reads or reads[-1] != t):
         reads.append(t); last_read = fr
     prev = fr
-p.wait()
 end_seg(opt["from"] + k / opt["fps"])
 
+stage("scenes and movement (decode)")
 # ---------- its sound, as a few numbers when it changes (perch_sound.py) ----------
 if sound and not opt.get("nosound"):
     try:
@@ -436,36 +448,101 @@ if sound and not opt.get("nosound"):
     if runs is None: lines.append((opt["from"], 6, "! sounds not named: no sound tagger here (see the README)"))
     for t0, t1, n, sc in runs or []: lines.append((t0, 6, f"sound {ts(t0)}-{ts(t1)} sure {1 + round(10 * min(1.0, max(0.0, sc)))} {q(n)}"))
 
+stage("sound numbers and names")
 # ---------- at each scene: the words on the screen (read here) and, if asked, one line from the local model ----------
-def frame_at(t):
-    out = os.path.join(RUN, "scene.png")
+def frame_at(t):                                                # one frame by seeking (a few frames, or a stream)
+    out = os.path.join(RUN, f"scene-{t:.2f}.png")
     r = subprocess.run(FF + ["-ss", f"{t + 0.15:.3f}", "-i", src, "-frames:v", "1", "-y", out], capture_output=True)
-    return out if not r.returncode and os.path.exists(out) else None
+    if r.returncode or not os.path.exists(out): return None
+    from PIL import Image
+    im = Image.open(out); im.load(); os.remove(out)
+    return im.convert("RGB")
+
+
+def frames_one_pass(times):
+    """every frame wanted, in one decode of the video (not a seek each): the grid frame just after each time -> yields (t, image)"""
+    from PIL import Image
+    W_, H_ = int(v.get("width") or 0), int(v.get("height") or 0)
+    want = {}
+    for t in times: want.setdefault(round((t - opt["from"]) * opt["fps"]) + 1, t)
+    c = FF + (["-ss", str(opt["from"])] if opt["from"] else []) + ["-i", src] + (["-t", str(opt["to"] - opt["from"])] if opt["to"] else []) + \
+        ["-an", "-sn", "-vf", f"fps={opt['fps']}", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
+    pr = subprocess.Popen(c, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    n, got, last = W_ * H_ * 3, 0, max(want)
+    try:
+        for idx in range(last + 1):
+            b = pr.stdout.read(n)
+            if len(b) < n: break
+            if idx in want:
+                got += 1; yield want[idx], Image.frombytes("RGB", (W_, H_), b)
+    finally:
+        pr.kill(); pr.wait()
+
+
+def see_line(t, im):                                            # one line from the local vision model about one frame
+    import base64, io, urllib.request
+    im = im.copy(); im.thumbnail((448, 448) if opt.get("detail") == "quick" else (896, 896))   # full: the model's own input size
+    buf = io.BytesIO(); im.save(buf, "PNG")
+    body = json.dumps({"model": os.environ.get("PERCH_MODEL", "gemma-chuck"), "stream": False, "keep_alive": "10m", "think": False,
+                       "messages": [{"role": "user", "content": "Say in one short line what this video frame shows. No preamble.",
+                                     "images": [base64.b64encode(buf.getvalue()).decode()]}]}).encode()
+    a = json.load(urllib.request.urlopen(urllib.request.Request(os.environ.get("PERCH_OLLAMA", "http://127.0.0.1:11434") + "/api/chat", body), timeout=300))
+    return (t, 5, f"see {ts(t)} {q(a.get('message', {}).get('content', ''))}")
+
+
 try:
     import perch_read as reader
 except ImportError:
     reader = None
+from concurrent.futures import ThreadPoolExecutor
+import threading
+os.environ.setdefault("OMP_THREAD_LIMIT", "1")                 # tesseract one core each: several frames are read side by side
+times = sorted(set([opt["from"]] + cuts + reads))
+cutset = set(cuts) | {opt["from"]}
+ocr_pool = ThreadPoolExecutor(max_workers=max(1, min(6, (os.cpu_count() or 2) // 2)))
+see_pool = ThreadPoolExecutor(max_workers=1)                    # one vision model: one frame at a time, while the reading goes on
+room = threading.Semaphore(24)                                  # frames waiting at most (memory)
+def ocr(t, im):
+    try:
+        if not (reader and reader.available()): return t, []
+        return t, [w_ for *_, w_ in reader.read(im, [(0, 0, im.width, im.height)], page=True)]
+    finally:
+        room.release()
+ocr_jobs, see_jobs, described = [], [], []
+def grey_at(t):                                                 # the 64x36 grey copy just after time t (from the scenes pass)
+    i = min(len(FR) - 1, round((t - opt["from"]) * opt["fps"]) + 1)
+    return np.frombuffer(FR[i], np.uint8).reshape(GH, GW).astype(np.int16)
+if CUTS is None: grey_at = None
+n_frames = n_seen = 0
+source = frames_one_pass(times) if len(times) > 8 and os.path.isfile(src) and v.get("width") else ((t, frame_at(t)) for t in times)
+for t, im in source:
+    if im is None: continue
+    n_frames += 1
+    room.acquire(); ocr_jobs.append(ocr_pool.submit(ocr, t, im))
+    if opt["describe"] and t in cutset:
+        if opt.get("detail") == "quick" and grey_at:          # quick: a scene like one already described is not described again
+            g = grey_at(t); near = min(((perch_cuts.shifted(g, g0), t0) for g0, t0 in described), default=(999, None))
+            if near[0] < 20:
+                lines.append((t, 5, f"see {ts(t)} like {ts(near[1])}")); continue
+            described.append((g, t))
+        n_seen += 1; see_jobs.append(see_pool.submit(see_line, t, im))
+stage("frames for reading and describing")
 seen_text = set()
-for i, t in enumerate(sorted(set([opt["from"]] + cuts + reads))):
-    f = frame_at(t)
-    if not f: continue
-    if reader and reader.available():
-        from PIL import Image
-        im = Image.open(f); im.load()
-        for x, y, w, h, words in reader.read(im, [(0, 0, im.width, im.height)], page=True):
-            real = [w_ for w_ in re.findall(r"[A-Za-z\u00c0-\u024f]{3,}", words) if re.search(r"[aeiouyAEIOUY]", w_)]
-            if (any(len(w_) >= 4 for w_ in real) or len(real) >= 2) and words not in seen_text:   # junk like 'Bf', '= ul' left out
-                lines.append((t, 4, f"text {ts(t)} {q(words)}")); seen_text.add(words)
-    if opt["describe"] and (t in cuts or t == opt["from"]):
-        import base64, urllib.request
-        body = json.dumps({"model": os.environ.get("PERCH_MODEL", "gemma-chuck"), "stream": False, "keep_alive": "10m",
-                           "messages": [{"role": "user", "content": "Say in one short line what this video frame shows. No preamble.",
-                                         "images": [base64.b64encode(open(f, "rb").read()).decode()]}]}).encode()
-        try:
-            a = json.load(urllib.request.urlopen(urllib.request.Request(os.environ.get("PERCH_OLLAMA", "http://127.0.0.1:11434") + "/api/chat", body), timeout=300))
-            lines.append((t, 5, f"see {ts(t)} {q(a.get('message', {}).get('content', ''))}"))
-        except Exception as e:
-            lines.append((t, 5, f"! no description at {ts(t)}: {type(e).__name__}")); opt["describe"] = False
+for j in ocr_jobs:                                              # in time order, so the first sighting of words is the one kept
+    t, found = j.result()
+    for words in found:
+        real = [w_ for w_ in re.findall(r"[A-Za-zÀ-ɏ]{3,}", words) if re.search(r"[aeiouyAEIOUY]", w_)]
+        if (any(len(w_) >= 4 for w_ in real) or len(real) >= 2) and words not in seen_text:   # junk like 'Bf', '= ul' left out
+            lines.append((t, 4, f"text {ts(t)} {q(words)}")); seen_text.add(words)
+ocr_pool.shutdown()
+stage("words on screen (reading)")
+for j in see_jobs:
+    try:
+        lines.append(j.result())
+    except Exception as e:
+        lines.append((opt["from"], 5, f"! no description: {type(e).__name__}")); break
+see_pool.shutdown(cancel_futures=True)
+stage("scene descriptions (vision model)")
 
 # ---------- out: sorted by time; --live: at the video's own pace ----------
 lines = [e for e in lines if not (e[0] < opt["from"] - 0.01 or (opt["to"] is not None and e[0] > opt["to"]))]
@@ -576,6 +653,12 @@ try:                                                            # kept for next 
     kept_save(VKEY, mine, rows)
 except OSError:
     pass
+stage("summary and keeping")
+if os.environ.get("PERCH_TIMES"):                               # where the time went, for tuning (stderr, not for the bot)
+    tot = sum(STAGES.values())
+    for k_, v_ in sorted(STAGES.items(), key=lambda e: -e[1]):
+        print(f"time {v_:7.1f} s {100 * v_ / max(tot, 1e-9):3.0f}%  {k_}", file=sys.stderr)
+    print(f"time {tot:7.1f} s total; frames fetched {n_frames}, described {n_seen}", file=sys.stderr)
 print(head, flush=True)
 t0 = time.time()
 for t, _, l in sorted(lines, key=lambda e: (e[0], e[1])):

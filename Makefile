@@ -37,7 +37,7 @@ PRODUCT_SCRIPTS = perch-vmrun perch-act perch-web perch-vmlook perch-report perc
 install: $(PRODUCT_BIN)
 	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/share/perch/guest $(DESTDIR)$(PREFIX)/lib/perch
 	install -m 644 perch_read.py perch_read_seed.json $(DESTDIR)$(PREFIX)/lib/perch/
-	install -m 644 perch_settings.py perch_sound.py perch_tag.py perch_play.py $(DESTDIR)$(PREFIX)/lib/perch/
+	install -m 644 perch_settings.py perch_sound.py perch_tag.py perch_play.py perch_cuts.py $(DESTDIR)$(PREFIX)/lib/perch/
 	install -m 644 libperch-text.so $(DESTDIR)$(PREFIX)/lib/perch/
 	install -d $(DESTDIR)$(PREFIX)/share/perch/fonts
 	install -m 644 demo/inbox.html $(DESTDIR)$(PREFIX)/share/perch/
