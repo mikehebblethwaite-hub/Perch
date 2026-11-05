@@ -334,11 +334,14 @@ def build_demo():
     src = re.sub(r'const es = new EventSource\("/events"\);.*?lastRun\(\);', 'lastRun();', src, flags=re.S)
     # the site opens on the finished run (every number and look in place); the button still replays it at its real pace
     i_ = src.rindex("lastRun();"); src = src[:i_] + src[i_:].replace("lastRun();", 'lastRun().then(ev => { if (!ev) return; const sv = Element.prototype.scrollIntoView; Element.prototype.scrollIntoView = () => {}; reset(); show({ kind: "start", img_tokens: (ev.find(e => e.kind === "start") || {}).img_tokens || 1365 }); '
-                      'for (const e of ev) if (e.lane) show(e); const d = ev.find(e => e.kind === "done"); if (d) show(d); Element.prototype.scrollIntoView = sv; $("status").textContent = "The finished run is shown below. Press the button to watch it again side by side, at 10× speed."; });', 1)
+                      'for (const e of ev) if (e.lane) show(e); const d = ev.find(e => e.kind === "done"); if (d) show(d); Element.prototype.scrollIntoView = sv; $("status").textContent = "Below is how the run ended. Press play to watch both bots do it from the start: the real measured run, sped up 10×."; });', 1)
     src = re.sub(r'es\.onerror = .*?\n', '', src)
     src = src.replace('$("go").disabled = false; ', '').replace('$("go").disabled = true; ', '').replace(' $("go").disabled = true;', '')
     src = src.replace('if (!replaying && $("go").disabled === false) ', 'if (!replaying) ')
     src = src.replace('$("go").disabled = true;', '')
+    src = src.replace("`Watch the last run side by side (${SPEED}× speed, ", "`▶ Play it from the start (${SPEED}× speed, ")
+    src = src.replace("`Last run ${when}. A replay shows that run's real measured timings, both bots started together, sped up ${SPEED}×.`",
+                      "`Below is how the run ended. Press play to watch both bots do it from the start: the real measured run, sped up ${SPEED}×.`")
     src = src.replace('<p id="status" role="status">Ready.</p>', '<p id="status" role="status">Loading the measured run…</p>')
     src = src.replace('<h1>Perch</h1>', '<h1>The first demo <span class="beta" style="font-size:16px">Pre-launch beta</span></h1>\n  <p class="lede" style="font-weight:700">Already uses half the energy and ' + f"{X_TOK:.1f}" + '× fewer tokens.</p>')
     src = src.replace("Last look: a ${bytes(ev.bytes)} picture, ${fmt(ev.tokens)} tokens.", "Last look: a ${bytes(ev.bytes)} picture, ${fmt(ev.tokens)} tokens to Claude.")
@@ -350,13 +353,44 @@ def build_demo():
     src = src.replace("both bots ran on this box,", "both bots ran on one machine,")
     assert "gemma" not in src and "this box" not in src.split("-->", 1)[1], "demo build: an internal name was left in"
     body = re.search(r"<body>(.*)</body>", src, re.S).group(1)
+    ask = re.search(r'<div class="bubble">.*?</div>', body, re.S).group(0)
+    top = f"""<div class="dtop">
+  <h1>The first demo <span class="beta" style="font-size:16px">Pre-launch beta</span></h1>
+  <p class="lede">One everyday job, done twice by the same local model with the same hands. One bot sees the screen as screenshots,
+  the other through Perch: the words and buttons, then only what changed.</p>
+  <h2 class="dres">Perch used {X_TOK:.1f}× fewer tokens for the same job</h2>
+  <div class="dsum">
+    <div><b>{P["claude"]:,}</b>tokens with Perch, against {S["claude"]:,} with screenshots</div>
+    <div><b>{S["j"] / P["j"]:.1f}× less energy</b>{P["j"] / 1000:.1f} kJ against {S["j"] / 1000:.1f} kJ</div>
+    <div><b>{X_TIME:.1f}× quicker</b>{P["wall"] / 60:.0f} minutes against {S["wall"] / 60:.0f}</div>
+    <div><b>4 of 4 found</b>both bots found the emails that need a reply</div>
+  </div>
+  <h2 class="dwatch">Watch it happen</h2>
+  {ask}
+  <div class="dplay"><button id="replay" hidden>▶ Play it from the start</button><p id="status" role="status">Loading the measured run…</p></div>
+</div>"""
+    body = re.sub(r'<header>.*?</header>\s*<p id="status" role="status">.*?</p>', lambda m_: top, body, count=1, flags=re.S)
+    assert body.count('id="replay"') == 1 and body.count('id="status"') == 1, "demo build: the top was not replaced"
+    dstyle = """
+.dtop .lede{max-width:62ch;font-size:19px}
+.dres{font-size:30px;margin:30px 0 10px}
+.dsum{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;margin:0 0 8px}
+.dsum div{border-top:3px solid var(--rule);padding-top:8px;color:var(--ink2);font-size:15px}
+.dsum b{display:block;font-size:24px;color:var(--ink)}
+.dwatch{font-size:30px;margin:44px 0 12px}
+.dq{margin:0 0 8px;color:var(--ink2)}
+.dtop .bubble{max-width:760px}
+.dplay{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin:16px 0 26px}
+.dplay button{font-size:19px;padding:14px 26px;background:var(--perch);color:#fff}
+.dplay #status{margin:0;flex:1;min-width:240px;font-size:15px;color:var(--ink2)}
+@media (max-width:700px){.dsum{grid-template-columns:repeat(2,1fr)}.dplay button{width:100%}.dres,.dwatch{font-size:25px}}"""
     style = re.search(r"<style>(.*?)</style>", src, re.S).group(1)
     style = style.replace("body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 var(--sans)}", "")
     style = style.replace("\nheader{", "\n.page>header{").replace("@media (max-width:900px){.lanes,.graphs,.answers{grid-template-columns:1fr}.race{grid-template-columns:90px 1fr 110px}.facts{grid-template-columns:repeat(2,1fr)}h1{font-size:34px}header{grid-template-columns:1fr}}",
         "@media (max-width:900px){.lanes,.graphs,.answers{grid-template-columns:1fr}.race{grid-template-columns:90px 1fr 110px}.facts{grid-template-columns:repeat(2,1fr)}h1{font-size:34px}.page>header{grid-template-columns:1fr}}")
     assert "\nheader{" not in style and "}header{" not in style, "demo build: the demo's header rule would style the site's header"
     src = src.replace("Watch the last run side by side", "Watch the run side by side")
-    page = shell("Demo: Perch", "demo", body, 1, f"<style>{style}\n.page{{padding:0}}</style>")
+    page = shell("Demo: Perch", "demo", body, 1, f"<style>{style}\n.page{{padding:0}}{dstyle}</style>")
     page = page.replace('<main><div class="wrap">', '<main><div class="wrap" style="max-width:1500px">')
     return page
 
