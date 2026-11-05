@@ -1,0 +1,32 @@
+[
+ [
+  0.0,
+  52.0,
+  "The start",
+  "The first words and the first slide. Speech and screen words arrive as separate lines on the same clock."
+ ],
+ [
+  873.0,
+  880.0,
+  "A slide, read cleanly",
+  "Words on screen come out as text lines on the same clock as the speech, so a bot can tell what the slide said from what the lecturer said."
+ ],
+ [
+  1966.0,
+  1980.0,
+  "It sounded like a pig",
+  "A room full of people makes small sounds, and the sound namer names each one it hears. Here it was a pig, said with how sure it was. The bot passes it on as “it sounded like a pig”, never as “there was a pig”."
+ ],
+ [
+  3066.0,
+  3082.0,
+  "A table, read badly",
+  "Small text in a table on a 640 × 360 video. Some of it comes out as nonsense, and the bot can see that it does."
+ ],
+ [
+  5310.0,
+  5343.0,
+  "The last minute",
+  "The closing words, then the end of the sound."
+ ]
+]

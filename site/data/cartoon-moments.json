@@ -1,0 +1,7 @@
+[
+ [0.0, 10.0, "The title cards", "Words on screen are read from the pixels: the studio, the title, the names. This is how the bot knew what it was watching."],
+ [14.0, 40.0, "The whistling", "No words at all, but the sound namer hears whistling soon after the boat appears. It is the film's famous opening."],
+ [119.0, 135.0, "The animals come aboard", "Bursts of “livestock”, “sheep” and “animal” inside the music, at the point where the boat takes on its cargo."],
+ [371.0, 380.0, "The laughing bird", "One frame, one line from the local vision model: a large bird laughing on a post. It is the parrot."],
+ [453.0, 460.5, "The circle closes", "The last scene: Mickey in a circle that closes in, then the title card again."]
+]

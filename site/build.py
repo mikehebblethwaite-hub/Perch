@@ -351,6 +351,9 @@ def DEMOS():
         ("video", "Video, the bot's way",
          "Claude watched an 89-minute Stanford lecture as timed lines of speech, slide words and sounds, with no frames, and wrote a summary from them.",
          f"{v.get('lines', 0):,} lines", f"for an {round(v.get('dur', 5343) / 60)}-minute lecture, about {v.get('chars', 0) // 4:,} tokens"),
+        ("cartoon", "A cartoon with no words",
+         "Steamboat Willie (1928): music, whistling and animal noises, barely a word. What Claude made of it from the lines alone, side by side with the film.",
+         f"{sum(1 for *_, v_ in CARTOON_ROWS if v_ == 'right')} of {len(CARTOON_ROWS)} right", "from sounds, title cards and eleven described frames"),
     ]
 
 
@@ -519,6 +522,7 @@ VIDEO_STYLE = """<style>
   font:700 12px/24px var(--sans);text-align:center;text-decoration:none}
 .pin::after{content:"";position:absolute;left:50%;top:22px;width:2px;height:10px;margin-left:-1px;background:var(--ink)}
 .pin.first{transform:none} .pin.first::after{left:1px}
+.tape.raised{padding-top:56px} .tape.raised .pins{top:28px} .pin{z-index:2} .pin.up{top:-28px;z-index:1} .pin.up::after{height:38px}
 .pin:hover,.pin:focus-visible{background:var(--perch)} .pin:hover::after,.pin:focus-visible::after{background:var(--perch)}
 .tape .ticks{position:absolute;left:0;right:0;bottom:0;height:18px;font:12px var(--mono);color:var(--muted)}
 .tape .ticks span{position:absolute;transform:translateX(-50%)} .tape .ticks span:first-child{transform:none}
@@ -564,29 +568,50 @@ def vts(t):
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
+def tape_html(d, parts, lanes=None):
+    """the whole video as the bot got it: one row per kind of line, darker = more lines in that slice; gaps at each part; pins for
+    the moments. -> (tape html, legend html)"""
+    dur = d["dur"]; nb = len(d["lanes"]["say"])
+    W, LH, GAP = 1000.0, 22, 6
+    lanes = lanes or [("say", "Speech heard", "var(--perch)"), ("text", "Words on screen", "var(--teal)"),
+                      ("sound", "Other sounds", "var(--shot)"), ("cut", "Scene changes", "var(--ink2)")]
+    svg = []
+    for i, (k, name, col) in enumerate(lanes):
+        y = i * (LH + GAP); top = max(1, max(d["lanes"].get(k) or [0]))
+        svg.append(f'<rect x="0" y="{y}" width="{W:.0f}" height="{LH}" fill="var(--screen)"/>')
+        for j, c in enumerate(d["lanes"].get(k) or []):
+            if c:
+                svg.append(f'<rect x="{j * W / nb:.1f}" y="{y}" width="{W / nb + .4:.1f}" height="{LH}" fill="{col}" opacity="{.3 + .7 * c / top:.2f}"/>')
+    hgt = len(lanes) * (LH + GAP) - GAP
+    for t in parts[1:]:
+        svg.append(f'<line x1="{t / dur * W:.1f}" x2="{t / dur * W:.1f}" y1="0" y2="{hgt}" stroke="var(--bg)" stroke-width="2"/>')
+    pins, last, raised = [], -1.0, False
+    for i, m in enumerate(d["moments"]):
+        x = m["t"] / dur
+        up = x - last < .09 and not (pins and ' up"' in pins[-1])        # too close to the one before: one row up, so both can be tapped
+        raised |= up; last = x
+        pins.append(f'<a class="pin{" first" if x < .02 else ""}{" up" if up else ""}" href="#m{i}" style="left:{x * 100:.2f}%" '
+                    f'aria-label="{html.escape(m["title"])}, at {vts(m["t"])}">{i + 1}</a>')
+    pins = "".join(pins)
+    step = next(s_ for s_ in (30, 60, 120, 300, 600, 900, 1800) if dur / s_ <= 7)
+    ticks = "".join(f'<span style="left:{t / dur * 100:.2f}%">{vts(t)}</span>' for t in range(0, int(dur - step / 3), step))
+    legend = "".join(f'<span><i style="background:{c}"></i>{n}</span>' for _, n, c in lanes)
+    tape = f"""<div class="tape{' raised' if raised else ''}" id="tape" aria-label="The whole video as the bot got it, in {d.get('bin', 30):g}-second slices">
+  <div class="pins">{pins}</div>
+  <svg viewBox="0 0 {W:.0f} {hgt}" preserveAspectRatio="none" role="img" aria-label="{len(lanes)} rows across {d["dur_ts"]}: {", ".join(n.lower() for _, n, _ in lanes)}. Darker means more lines in that slice.">{"".join(svg)}</svg>
+  <div class="now"></div>
+  <div class="ticks">{ticks}</div>
+</div>"""
+    return tape, legend
+
+
 def video_page():
     try:
         d = json.load(open(os.path.join(HERE, "data", "video-demo.json")))
     except (OSError, ValueError):
         return None
-    dur, nb = d["dur"], len(d["lanes"]["say"])
-    W, LH, GAP = 1000.0, 22, 6
-    lanes = [("say", "Speech heard", "var(--perch)"), ("text", "Words on screen", "var(--teal)"),
-             ("sound", "Other sounds", "var(--shot)"), ("cut", "Scene changes", "var(--ink)")]
-    svg = []
-    for i, (k, name, col) in enumerate(lanes):
-        y = i * (LH + GAP); top = max(1, max(d["lanes"][k]))
-        svg.append(f'<rect x="0" y="{y}" width="{W:.0f}" height="{LH}" fill="var(--screen)"/>')
-        for j, c in enumerate(d["lanes"][k]):
-            if c:
-                svg.append(f'<rect x="{j * W / nb:.1f}" y="{y}" width="{W / nb + .4:.1f}" height="{LH}" fill="{col}" opacity="{.3 + .7 * c / top:.2f}"/>')
-    hgt = len(lanes) * (LH + GAP) - GAP
-    for t, _, _ in CHAPTERS[1:]:
-        svg.append(f'<line x1="{t / dur * W:.1f}" x2="{t / dur * W:.1f}" y1="0" y2="{hgt}" stroke="var(--bg)" stroke-width="2"/>')
-    pins = "".join(f'<a class="pin{" first" if m["t"] / dur < .02 else ""}" href="#m{i}" style="left:{m["t"] / dur * 100:.2f}%" aria-label="{html.escape(m["title"])}, at {vts(m["t"])}">{i + 1}</a>'
-                   for i, m in enumerate(d["moments"]))
-    legend = "".join(f'<span><i style="background:{c}"></i>{n}</span>' for _, n, c in lanes)
-    ticks = "".join(f'<span style="left:{t / dur * 100:.2f}%">{vts(t)}</span>' for t in range(0, int(dur) - 300, 900))
+    dur = d["dur"]
+    tape, legend = tape_html(d, [t for t, _, _ in CHAPTERS])
     chapters = "".join(f'<li><a class="at" href="#tape" data-t="{t}">{vts(t)}</a><div><h3>{html.escape(title)}</h3>{body}</div></li>'
                        for t, title, body in CHAPTERS)
     moments = "".join(f'<details id="m{i}"><summary><span class="n">{i + 1}</span><b>{html.escape(m["title"])}</b> <span class="at">{m["at"]}</span></summary>'
@@ -610,12 +635,7 @@ def video_page():
 and gave it timed lines instead: what was said, what was on the slides, what else could be heard and where the scenes changed.
 Everything below was written from those lines.</p>
 
-<div class="tape" id="tape" aria-label="The whole lecture as the bot got it, in 30-second slices">
-  <div class="pins">{pins}</div>
-  <svg viewBox="0 0 {W:.0f} {hgt}" preserveAspectRatio="none" role="img" aria-label="Four rows across {d["dur_ts"]}: speech, words on screen, other sounds and scene changes. Darker means more lines in that half minute.">{"".join(svg)}</svg>
-  <div class="now"></div>
-  <div class="ticks">{ticks}</div>
-</div>
+{tape}
 <div class="legend">{legend}<span>Gaps mark the lecture's parts. The numbered pins open the exact lines.</span></div>
 
 <h2>The lecture, part by part</h2>
@@ -672,6 +692,146 @@ def build_video():
         '<p>This page moved to <a href="../demo/video/">the video demo</a>.</p>')
 
 
+
+# ---------------- a cartoon with no words: Steamboat Willie (1928), two readings side by side (data/cartoon-demo.json) ----------------
+CARTOON_PARTS = [0, 14.5, 71.0, 88.2, 92.8, 136.8, 340.2, 371.2, 375.2, 453.0]   # the scene changes Perch found
+# (what the lines said, what happens in the film, verdict: right | half | missed | wrong)
+CARTOON_ROWS = [
+    ("A Disney sound cartoon, “Steamboat Willie”, by Walt Disney and Ub Iwerks, with a mouse. All of it from the title cards.",
+     "One of the first cartoons with sound made in step with the picture, released in 1928, and Mickey Mouse's first public showing.", "right"),
+    ("Whistling, soon after a tugboat steams into view.",
+     "The famous opening: Mickey at the wheel, whistling “Steamboat Bill”.", "right"),
+    ("A grinning cat. Also a duck in a captain's hat on the deck.",
+     "The captain is Pete, a big cat, who throws Mickey off the bridge. There is no duck captain: one frame, misread.", "half"),
+    ("Farm animals come aboard: livestock, sheep and ducks heard in bursts.",
+     "The boat stops to load livestock, a cow lifted on board by a crane.", "right"),
+    ("“Printer” and “rail transport” noises.",
+     "Machine noises: the crane and the boat at work.", "half"),
+    ("The animal noises land inside the music, as if the animals are part of the tune.",
+     "The heart of the film: Mickey plays “Turkey in the Straw” on a goat, a cat's tail, a duck, a sow's piglets and a cow's teeth.", "right"),
+    ("A fat character with rounded things stacked on its back.",
+     "The sow and her piglets, played like an instrument.", "half"),
+    ("A large bird laughing on a wooden post.",
+     "The parrot that mocks Mickey while he peels potatoes.", "right"),
+    ("“KITCH…” on screen.",
+     "Most likely the galley, where Pete puts Mickey to work on the potatoes.", "half"),
+    ("Mickey facing a howling, devil-like figure among music notes.",
+     "Most likely Pete catching Mickey in the act. One frame, read as something it isn't.", "wrong"),
+    ("No speech.",
+     "Almost none. The parrot does shout “Help! Man overboard!”, heard only as speech too unsure to write out.", "missed"),
+    ("Ten scene changes.",
+     "The film cuts much more often. One stretch the lines call a single scene runs for three minutes.", "missed"),
+    ("Nothing.",
+     "Minnie Mouse running for the boat and being hooked aboard by the crane.", "missed"),
+]
+VERDICT = {"right": "Right", "half": "Half right", "missed": "Missed", "wrong": "Wrong"}
+CARTOON_STYLE = """<style>
+.pair2{max-width:1080px;margin:10px 0 0}
+.pair2 .row{display:grid;grid-template-columns:1fr 1fr 104px;gap:0 28px;padding:16px 0;border-top:1px solid var(--rule);align-items:start}
+.pair2 .head{border-top:0;padding:0 0 8px;font-weight:700;color:var(--ink)}
+.pair2 .head span{display:flex;gap:8px;align-items:center}
+.pair2 .head i{width:12px;height:12px;border-radius:3px;display:inline-block}
+.pair2 .row>p{margin:0;max-width:52ch}
+.pair2 .lines-side{color:var(--ink)} .pair2 .film-side{color:var(--ink2)}
+.vd{justify-self:end;font-size:13px;font-weight:700;padding:3px 10px;border-radius:20px;white-space:nowrap}
+.vd.right{background:color-mix(in srgb,var(--teal) 16%,transparent);color:var(--teal)}
+.vd.half{background:var(--beta-bg);color:var(--beta)}
+.vd.missed,.vd.wrong{background:color-mix(in srgb,var(--shot) 15%,transparent);color:var(--shot)}
+.tally{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 0}
+@media (max-width:760px){.pair2 .row{grid-template-columns:1fr;gap:6px}.pair2 .head{display:none}
+  .pair2 .row>p::before{display:block;font-size:13px;font-weight:700;color:var(--muted);margin-bottom:2px}
+  .pair2 .lines-side::before{content:"From the lines only"} .pair2 .film-side::before{content:"What happens in the film"}
+  .vd{justify-self:start}}
+</style>"""
+
+
+def cartoon_page():
+    try:
+        d = json.load(open(os.path.join(HERE, "data", "cartoon-demo.json")))
+    except (OSError, ValueError):
+        return None
+    dur = d["dur"]
+    lanes = [("music", "Music", "var(--perch)"), ("sound", "Other sounds", "var(--shot)"),
+             ("see", "Scenes described", "var(--teal)"), ("text", "Words on screen", "var(--ink2)")]
+    tape, legend = tape_html(d, CARTOON_PARTS, lanes)
+    rows = "".join(f'<div class="row"><p class="lines-side">{html.escape(a)}</p><p class="film-side">{html.escape(b)}</p>'
+                   f'<span class="vd {v}">{VERDICT[v]}</span></div>' for a, b, v in CARTOON_ROWS)
+    n = {k: sum(1 for *_, v in CARTOON_ROWS if v == k) for k in VERDICT}
+    tally = "".join(f'<span class="vd {k}">{n[k]} {VERDICT[k].lower()}</span>' for k in VERDICT if n[k])
+    moments = "".join(f'<details id="m{i}"><summary><span class="n">{i + 1}</span><b>{html.escape(m["title"])}</b> <span class="at">{m["at"]}</span></summary>'
+                      f'<p>{html.escape(m["note"])}</p><pre aria-label="The exact lines the bot was given here">{html.escape(chr(10).join(m["lines"]))}</pre></details>'
+                      for i, m in enumerate(d["moments"]))
+    c = d["count"]
+    summ = (f'<blockquote class="small-bot"><p>{html.escape(d["summary"])}</p><footer>Perch\'s own short summary, made on the same machine by a '
+            f'small local model from the same lines with no help: the sounds, the title cards and the eleven scene lines.</footer></blockquote>') if d.get("summary") else ""
+    body = f"""
+<p class="made">{MARK}This video summary page was made using the Perch video player for bots by Claude.</p>
+<h1 class="v-h1">A bot watched Steamboat Willie, with almost no words to go on.</h1>
+<p class="lede">Steamboat Willie (1928) is seven and a half minutes of music, whistling and animal noises, with barely a word spoken.
+Perch played it and gave Claude timed lines: the sounds by name, the words on the title cards, where scenes changed, and one line
+from a local vision model for each new scene. Claude read only those lines and said what the film was about. Then it compared that
+with what it already knew about the film.</p>
+
+{tape}
+<div class="legend">{legend}<span>Gaps mark the scene changes Perch found. The numbered pins open the exact lines.</span></div>
+
+<h2>Two readings, side by side</h2>
+<p style="max-width:68ch">On the left, what Claude said from the lines alone, before using anything it knew. On the right, what
+actually happens in the film.</p>
+<div class="tally">{tally}</div>
+<div class="pair2">
+  <div class="row head"><span><i style="background:var(--perch)"></i>From the lines only</span><span><i style="background:var(--ink2)"></i>What happens in the film</span><span></span></div>
+  {rows}
+</div>
+{summ}
+
+<h2>What it shows about the player</h2>
+<div class="cols" style="max-width:1080px">
+  <div><h3>The ears are good</h3><p>With no dialogue at all, the sounds alone gave away the whistling, the livestock coming aboard, the
+  animals being played inside the music, and the laughing parrot.</p></div>
+  <div><h3>The cuts were missed</h3><p>Perch found only ten scene changes in black-and-white drawings that cut far more often, so the
+  vision model saw eleven frames. Minnie Mouse never got a line. The next version reads the cuts from the video file itself.</p></div>
+  <div><h3>Quiet words were dropped</h3><p>The parrot's shout was heard as speech, but too unsure to write down. It will be written out
+  with a low “sure” number instead of being left out.</p></div>
+</div>
+
+<h2>What the bot was given</h2>
+<div class="facts">
+  <div><b>{d["lines"]} lines</b>{c["sound"]} sounds by name, {c["text"]} title-card words, {c["see"]} scene descriptions</div>
+  <div><b>{d["chars"] / 1000:.0f} KB of text</b>about {d["chars"] // 4:,} tokens; the film file is {(d.get("video_bytes") or 0) / 1e6:.0f} MB</div>
+  <div><b>{d["took"] / 60:.0f} minutes</b>on one home machine with no cloud, nearly all of it the scene descriptions</div>
+  <div><b>No frames</b>not one picture was sent to Claude</div>
+</div>
+
+<h2>The exact lines at five moments</h2>
+<div class="moments">{moments}</div>
+
+<h2>Watch it, then try it yourself</h2>
+<div class="watch">
+  <section class="card"><h3>Watch the film</h3>
+    <p>We don't host it. In the United States it has been in the public domain since 1 January 2024, and Wikimedia Commons keeps a copy:</p>
+    <p><b>Steamboat Willie (1928)</b></p>
+    <p><a href="https://commons.wikimedia.org/wiki/File:Steamboat_Willie_(1928)_by_Walt_Disney.webm">Steamboat Willie on Wikimedia Commons</a></p>
+    <p class="note">Mickey Mouse is still Disney's trademark. This page is about how a bot takes in a film, not about Disney.</p></section>
+  <section class="card"><h3>Run Perch on it</h3>
+    <p>Save the film, then:</p>
+    <pre class="code">perch-video --describe --summary steamboat-willie.webm</pre>
+    <p><code>--describe</code> adds one line from your local vision model at each new scene. Without it, the run takes a minute or two.</p>
+    <p class="note">Perch keeps what it learned on your machine, never the film. <a href="../../help/">How Perch works</a></p></section>
+</div>
+"""
+    return body, VIDEO_STYLE + CARTOON_STYLE + (VIDEO_SCRIPT % dur)
+
+
+def build_cartoon():
+    got = cartoon_page()
+    if not got: return
+    body, extra = got
+    page = shell("A bot watched Steamboat Willie: Perch's video player", "demo", SUBNAV("cartoon") + body, 2, extra + SUBNAV_CSS)
+    os.makedirs(os.path.join(OUT, "demo", "cartoon"), exist_ok=True)
+    open(os.path.join(OUT, "demo", "cartoon", "index.html"), "w").write(page)
+
+
 def main():
     shutil.rmtree(OUT, ignore_errors=True)
     shutil.copytree(os.path.join(HERE, "assets"), os.path.join(OUT, "assets"))
@@ -693,6 +853,7 @@ def main():
     open(os.path.join(OUT, "demo", "screens", "index.html"), "w").write(build_demo())
     open(os.path.join(OUT, "demo", "index.html"), "w").write(demo_hub())
     build_video()
+    build_cartoon()
     open(os.path.join(OUT, "robots.txt"), "w").write("User-agent: *\nDisallow: /\n")
     print("built", sum(len(fs) for _, _, fs in os.walk(OUT)), "files in", OUT)
 

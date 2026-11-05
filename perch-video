@@ -73,8 +73,10 @@ def ask_summary(words, room=12000):
     if len(words) > room:
         n = 12; step = len(words) / n; part = room // n - 8
         words = " … ".join(words[int(i * step): int(i * step) + part] for i in range(n))
-    ask = ("Below is what a speech-to-text tool and a screen reader made of a video: best guesses, maybe wrong in places. A long video "
-           "comes as slices from start to end, joined by '…'. In 2 or 3 short sentences say what the whole video seems to be about. "
+    ask = ("Below is what a speech-to-text tool, a screen reader, a sound namer ([sound T: name]) and a scene describer ([scene: ...]) "
+           "made of a video: best guesses, maybe wrong in places. A long video "
+           "comes as slices from start to end, joined by '…'. In 2 or 3 short sentences say what the video is and what happens in it, "
+           "from start to end (the video itself, not how these notes look). "
            "Start with 'I think' and say plainly where you are unsure. Do not guess anyone's sex: say they or the speaker unless a "
            "name is given.\n\n" + words)
     try:
@@ -87,6 +89,22 @@ def ask_summary(words, room=12000):
     if out and len(out) > 900:                                  # long: kept to whole sentences, never cut mid-word
         out = out[:900]; out = out[:max(out.rfind(". "), out.rfind("? "), out.rfind("! ")) + 1] or out
     return out, None
+
+
+def summary_words(rows):
+    """what the summary is made from, in time order: words said and shown, and for a video with few words also what each scene
+    looked like (see lines) and the named sounds (music and speech left out; a sound is named again only after a change)"""
+    out, last = [], None
+    for t_, _, l_ in sorted(rows, key=lambda e: (e[0], e[1])):
+        if l_.startswith(("say ", "sub ", "text ")):
+            out.append(re.sub(r"^\S+ \S+ (?:sure \d+ )?", "", l_).strip("'"))
+        elif l_.startswith("see "):
+            out.append("[scene: " + re.sub(r"^see \S+ ", "", l_).strip("'") + "]")
+        elif l_.startswith("sound "):
+            m_ = re.match(r"sound (\S+)-\S+ (?:sure (\d+) )?'([^']+)'", l_)
+            if m_ and m_.group(3) not in ("Music", "Speech", last) and int(m_.group(2) or 11) >= 6:
+                out.append(f"[sound {m_.group(1).split('.')[0]}: {m_.group(3)}]"); last = m_.group(3)
+    return " ".join(out)
 
 args, opt = sys.argv[1:], {"fps": 4.0, "live": False, "describe": False, "from": 0.0, "to": None, "frame": None}
 src = None
@@ -178,7 +196,7 @@ if opt.get("seen") is not None or opt.get("spoiler"):
     k_ = kept_key(opt["seen"]); meta, rows = kept_load(k_)
     if not meta: sys.exit("err not seen before")
     if opt.get("summary"):                                      # a new summary from what was kept, no need to watch again
-        said = " ".join(re.sub(r"^\S+ \S+ (?:sure \d+ )?", "", l_).strip("'") for _, _, l_ in sorted(rows) if l_.startswith(("say ", "sub ", "text ")))
+        said = summary_words(rows)
         if not said.strip(): sys.exit("err no words kept for it")
         sm, why = ask_summary(said)
         if not sm: sys.exit(f"err summary not made: {why}")
@@ -533,8 +551,8 @@ if about_txt or top_names:
     lessons.append("lesson about: " + (about_txt or "(no word comes back)") + (f" · names: {', '.join(top_names)}" if top_names else "") +
                    (f" · numbers: {', '.join(n_.strip() for n_ in nums)}" if nums else "") + " (from its own words; the words are best guesses)")
 summary = None
-if opt.get("summary") and words_said.strip():
-    summary, why = ask_summary(words_said)
+if opt.get("summary") and words_said.strip() or opt.get("summary") and any(l.startswith(("see ", "sound ")) for _, _, l in lines):
+    summary, why = ask_summary(summary_words(lines))
     if why: lessons.append(f"lesson summary not made: {why} (the local model)")
     if summary: lessons.append(f"lesson summary (the local model, a best guess): {q(summary, 900)}")
 for l in lessons: lines.append(((opt["to"] if opt["to"] is not None else dur), 9, l))
