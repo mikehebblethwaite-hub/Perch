@@ -8,9 +8,14 @@
 #   cut 0:03.0 2                                      a new scene (shot 2): the picture changed all at once
 #   text 0:03.0 'Step 1: turn off the gas'            words on the screen at a cut (slides, signs), read here (no tokens)
 #   see 0:03.0 'a man pointing at a boiler'           with --describe: one line from the local vision model at each cut
-#   say 0:01.2 'ask not what your country...'         speech as words (Whisper, here on the machine), when it has no subtitles
+#   say 0:01.2 sure 9 'ask not what ...'              speech as words (how sure, 1-11, from the speech model's own word confidence)
+#                                                     A guess, like half a phone call: pass it on as "I think they said '...'
+#                                                     (I cannot be 100% sure)", "it sounded like '...'" when sure is low,
+#                                                     with the date when known ("in a speech on 2016-11-30", "around 2016")
+#   (old form) say 0:01.2 'ask not what your country...' speech as words (Whisper, here on the machine), when it has no subtitles
 #                                                     (or always with --speech); the V line names the language it heard
-#   sound 0:03.2-0:05.0 'Dog' 0.82                    a sound named (YAMNet, 521 kinds, here on the machine) and how sure (0-1)
+#   sound 0:03.2-0:05.0 sure 9 'Dog'                  a sound named (YAMNet, 521 kinds, here on the machine), how sure 1-11:
+#                                                     pass it on as "it sounded like a dog" (never "there was a dog")
 #   s 0:03.2 L7 tone 440Hz b 2-9-3-1-1                its sound, when it changes (perch_sound.py): loudness 1-11, quiet/tone/
 #                                                     voice?/music?/noise/bang, five bands 1-11 (low..high); --no-sound: none
 #   moves 0:04.2-0:07.9 bottom-left > bottom-right    something moved, from where to where (a 3x3 grid), in one line
@@ -109,7 +114,27 @@ textsubs = [s for s in subs if s.get("codec_name") in ("subrip", "ass", "ssa", "
 langs = ",".join(sorted({(s.get("tags") or {}).get("language", "und") for s in textsubs}))
 sound = any(s.get("codec_type") == "audio" for s in streams)
 lines = []                                       # (time, order, text): merged and sorted at the end (or paced, --live)
-head = f"V {q(title)} {ts(dur)} {v.get('width')}x{v.get('height')} {fps:.4g}fps" + (" sound" if sound else "") + (f" subs:{langs}" if textsubs else "")
+def video_date():
+    tags = {**(info.get("format", {}).get("tags") or {}), **(v.get("tags") or {})}
+    for k in ("date", "DATE"):
+        m = re.match(r"(\d{4})-(\d{2})-(\d{2})", str(tags.get(k, "")))
+        if m and m.group(1) > "1900" and not str(tags.get(k, "")).startswith("1970"):
+            return f"{m.group(0)} (from its {'own date' if k != 'creation_time' else 'file: when it was made or copied, maybe not when it was said'})"
+    name = os.path.basename(src.split("?")[0]) + " " + title
+    m = re.search(r"(?<!\d)(\d{1,2})[._-](\d{1,2})[._-]((?:19|20)\d{2})(?!\d)", name)
+    if m and 1 <= int(m.group(1)) <= 31 and 1 <= int(m.group(2)) <= 12:
+        return f"{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d} (from its name)"
+    m = re.search(r"(?<!\d)((?:19|20)\d{2})[._-](\d{1,2})[._-](\d{1,2})(?!\d)", name)
+    if m: return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d} (from its name)"
+    m = re.search(r"(?<!\d)((?:19[5-9]|20[0-4])\d)(?!\d)", name)
+    if m: return f"around {m.group(1)} (a year in its name)"
+    for k in ("creation_time", "com.apple.quicktime.creationdate"):
+        m = re.match(r"(\d{4})-(\d{2})-(\d{2})", str(tags.get(k, "")))
+        if m and m.group(1) > "1900" and not str(tags.get(k, "")).startswith("1970"):
+            return f"{m.group(0)} (the file's: when it was made or copied, maybe not when it was said)"
+    return None
+when = video_date()
+head = f"V {q(title)} {ts(dur)} {v.get('width')}x{v.get('height')} {fps:.4g}fps" + (" sound" if sound else "") + (f" subs:{langs}" if textsubs else "") + (f" date {when}" if when else "")
 for c in info.get("chapters", []):
     lines.append((float(c.get("start_time", 0)), 0, f"ch {ts(float(c.get('start_time', 0)))} {q((c.get('tags') or {}).get('title', ''))}"))
 
@@ -251,7 +276,7 @@ if sound and not opt.get("nosound") and (opt.get("speech") or not textsubs):
                 """one try: (segments [(t, words)], language, how many loops)"""
                 try: os.remove(base + ".json")
                 except OSError: pass
-                subprocess.run([WHISPER, "-m", model, "-f", wav, "-l", lang, "-mc", "0", "-np", "-oj", "-of", base], capture_output=True, text=True, timeout=1800)
+                subprocess.run([WHISPER, "-m", model, "-f", wav, "-l", lang, "-mc", "0", "-np", "-ojf", "-of", base], capture_output=True, text=True, timeout=1800)
                 try: j = json.load(open(base + ".json"))
                 except (OSError, ValueError): return [], None, 1
                 segs, loops = [], 0
@@ -259,7 +284,9 @@ if sound and not opt.get("nosound") and (opt.get("speech") or not textsubs):
                     words = (seg.get("text") or "").strip()
                     if not words or re.fullmatch(r"[\[(].*[\])]", words): continue          # [music], (applause): the sound lines say those
                     if loop(words): loops += 1; continue
-                    segs.append((a + seg.get("offsets", {}).get("from", 0) / 1000, words))
+                    ps = [tk.get("p", 0) for tk in seg.get("tokens", []) if not str(tk.get("text", "")).startswith("[_")]
+                    sure = 1 + round(10 * min(1.0, max(0.0, ((sum(ps) / len(ps)) if ps else 0.5) - 0.4) / 0.6))   # 1..11 (Mike's scale)
+                    segs.append((a + seg.get("offsets", {}).get("from", 0) / 1000, words, sure))
                 return segs, (j.get("result") or {}).get("language") or (None if lang == "auto" else lang), loops
             want = opt.get("lang", "auto")
             prefer = opt.get("hint") if want == "auto" else None        # a language a piece before needed: tried first, still checked
@@ -270,16 +297,16 @@ if sound and not opt.get("nosound") and (opt.get("speech") or not textsubs):
                 # the player adjusts itself: the language the clear pieces were in, else English; then the better model; the clearest wins
                 tries = [(l, WMODEL) for l in dict.fromkeys(langs + ["en"]) if l != lang]
                 if os.path.isfile(BETTER) and BETTER != WMODEL: tries += [("auto", BETTER)] + [(l, BETTER) for l in dict.fromkeys(langs + ["en"])]
-                best = (len(" ".join(w for _, w in segs).split()) - 50 * loops, segs, lang, loops, None)
+                best = (len(" ".join(w for _, w, _s in segs).split()) - 50 * loops, segs, lang, loops, None)
                 for l, m in tries:
                     s2, lang2, loops2 = hear(l, m)
-                    score = len(" ".join(w for _, w in s2).split()) - 50 * loops2
+                    score = len(" ".join(w for _, w, _s in s2).split()) - 50 * loops2
                     if score > best[0]: best = (score, s2, lang2, loops2, (l, m))
                     if loops2 == 0 and s2: break
                 _, segs, lang, loops, how = best
                 if how and how[0] != "auto": opt["hint"] = how[0]; adjusted_to.append((how[0], lang))   # the next pieces try this language first
                 if how: lines.append((a, 1, f"! adjusted {ts(a)} lang {how[0]}" + (f" quality {os.path.basename(how[1])[5:-4]}" if how[1] != WMODEL else "") + " (the first try made loops)"))
-            for t, words in segs: lines.append((t, 1, f"say {ts(t)} {q(words)}"))
+            for t, words, sure in segs: lines.append((t, 1, f"say {ts(t)} sure {sure} {q(words)}"))
             if loops: lines.append((a, 1, f"! speech unclear {ts(a)}-{ts(b)} (try: back, set lang, set quality)"))
             if segs and lang and lang not in langs: langs.append(lang)
             a = b
@@ -288,7 +315,7 @@ if sound and not opt.get("nosound") and (opt.get("speech") or not textsubs):
         lines.append((opt["from"], 1, "! speech not read: no Whisper here (see the README)"))
 if sound and not opt.get("nosound"):
     if runs is None: lines.append((opt["from"], 6, "! sounds not named: no sound tagger here (see the README)"))
-    for t0, t1, n, sc in runs or []: lines.append((t0, 6, f"sound {ts(t0)}-{ts(t1)} {q(n)} {sc:.2f}"))
+    for t0, t1, n, sc in runs or []: lines.append((t0, 6, f"sound {ts(t0)}-{ts(t1)} sure {1 + round(10 * min(1.0, max(0.0, sc)))} {q(n)}"))
 
 # ---------- at each scene: the words on the screen (read here) and, if asked, one line from the local model ----------
 def frame_at(t):
@@ -324,7 +351,7 @@ for i, t in enumerate(sorted(set([opt["from"]] + cuts + reads))):
 # ---------- out: sorted by time; --live: at the video's own pace ----------
 lines = [e for e in lines if not (e[0] < opt["from"] - 0.01 or (opt["to"] is not None and e[0] > opt["to"]))]
 # where a sound is named (the tagger), the rough s lines add nothing: they stay only for stretches nothing named
-named = [tuple(map(secs, re.match(r"sound (\S+)-(\S+) ", l).groups())) for _, k, l in lines if l.startswith("sound ")]
+named = [tuple(map(secs, re.match(r"sound (\S+)-(\S+) ", l).groups())) for _, k, l in lines if l.startswith("sound ")]   # 'sound T0-T1 sure N ...' 
 lines = [e for e in lines if not (e[2].startswith("s ") and any(a - 0.05 <= e[0] <= b for a, b in named))]
 if opt.get("scenes"):                                   # one line per scene, everything that happens in it
     edges = [opt["from"]] + cuts + [opt["to"] if opt["to"] is not None else dur]
@@ -336,10 +363,10 @@ if opt.get("scenes"):                                   # one line per scene, ev
             w = l.split(" ", 2)
             if w[0] in ("text", "see"): parts.append(f"{w[0]} {w[2]}")
             elif w[0] == "sub": parts.append(f"sub {w[1]} {w[2]}")
-            elif w[0] == "say": parts.append(f"say {w[1]} {w[2]}")
+            elif w[0] == "say": parts.append(f"say {w[1]} {w[2]}")                     # w[2] = "sure N 'words'"
             elif w[0] == "sound":
-                m = re.match(r"sound (\S+)-(\S+) ('(?:[^'\\]|\\.)*') (\S+)", l)
-                if m: sounds.append((m.group(1), m.group(3).strip("'"), None, m.group(2)))
+                m = re.match(r"sound (\S+)-(\S+) sure (\d+) ('(?:[^'\\]|\\.)*')", l)
+                if m: sounds.append((m.group(1), f"{m.group(4).strip(chr(39))} (sure {m.group(3)})", None, m.group(2)))
             elif w[0] == "ch": parts.append(f"chapter {w[2]}")
             elif w[0] == "moves": parts.append(f"moves {w[2]} ({w[1]})")
             elif w[0] == "s":
