@@ -18,7 +18,10 @@
 #   --scenes     the whole video at a glance: one line per scene with everything in it (words, subtitles, movement, sounds)
 #   --pack OUT   the lines zipped into OUT (to keep or send); perch-video --unpack OUT gives them back to read (a bot reads
 #                the lines, never the zipped bytes: encoded data costs a bot more, not less)
-# Usage: perch-video [--fps N] [--live] [--describe] [--scenes] [--pack OUT] [--from T] [--to T] FILE|URL
+#   --lang L     the speech's language (en, cy, fr ...; default auto)   --quality Q  base (default) | small (better, slower) | ...
+# A session a bot drives as it plays (adjust, replay, go on): perch-video NAME play FILE, then read / back N / set lang|quality|speech V /
+#   seek T / pause / go / status / stop (perch_play.py)
+# Usage: perch-video [--fps N] [--live] [--describe] [--scenes] [--pack OUT] [--lang L] [--quality Q] [--from T] [--to T] FILE|URL
 #   --fps N      how often motion is checked (default 4 a second; the scene/motion pass sees a 64x36 grey copy only)
 #   --live       lines come out at the video's own pace (a bot watching along); default: as fast as the box can go
 #   --describe   a line from the local vision model (Ollama, PERCH_MODEL, default gemma-chuck) at each cut: local, no tokens
@@ -28,6 +31,12 @@ import json, os, re, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path[:0] = [HERE, "/usr/lib/perch"]
+# a session a bot drives while the video plays (perch_play.py): perch-video NAME play FILE | read | back N | set ... | seek | ...
+if len(sys.argv) >= 3 and re.fullmatch(r"[a-z0-9-]{1,40}", sys.argv[1]) and sys.argv[2] in (
+        "--serve", "play", "read", "back", "set", "seek", "pause", "go", "status", "stop"):
+    import perch_play
+    if sys.argv[2] == "--serve": perch_play.serve(HERE, sys.argv[1], sys.argv[3:]); sys.exit(0)
+    perch_play.client(HERE, sys.argv[1], sys.argv[2:])
 USAGE = "usage: perch-video [--fps N] [--live] [--describe] [--from T] [--to T] FILE|URL   |   perch-video --frame T FILE|URL"
 GW, GH = 64, 36                                   # the grey copy the scene/motion pass looks at: numbers, never shown
 RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "perch-video"); os.makedirs(RUN, mode=0o700, exist_ok=True)
@@ -54,6 +63,8 @@ try:
         elif a == "--describe": opt["describe"] = True
         elif a == "--no-sound": opt["nosound"] = True
         elif a == "--speech": opt["speech"] = True
+        elif a == "--lang": opt["lang"] = args.pop(0); assert re.fullmatch(r"auto|[a-z]{2,3}", opt["lang"])
+        elif a == "--quality": opt["quality"] = args.pop(0); assert opt["quality"] in ("tiny", "base", "small", "medium", "large-v3")
         elif a == "--scenes": opt["scenes"] = True
         elif a in ("--pack", "--unpack"): opt[a[2:]] = args.pop(0)
         elif a in ("--from", "--to", "--frame"): opt[a[2:]] = secs(args.pop(0))
@@ -122,7 +133,8 @@ def grid_name(i):
 cmd = FF + (["-ss", str(opt["from"])] if opt["from"] else []) + ["-i", src] + (["-t", str(opt["to"] - opt["from"])] if opt["to"] else []) + \
       ["-an", "-sn", "-vf", f"fps={opt['fps']},scale={GW}:{GH},format=gray", "-f", "rawvideo", "-"]
 p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-prev, k, seg = None, 0, None                       # seg: a run of movement [start, first cells' centre, last centre, end]
+prev, k, seg = None, 0, None
+reads, last_read = [], None                         # when to read the words on screen: cuts, and every 2 s if the picture changed                       # seg: a run of movement [start, first cells' centre, last centre, end]
 def centre(cells):
     return (sum(i % 3 for i in cells) / len(cells), sum(i // 3 for i in cells) / len(cells))
 def place(c):
@@ -141,7 +153,10 @@ while True:
     if prev is not None:
         d = [abs(a - b) for a, b in zip(fr, prev)]
         whole = sum(d) / size
-        if whole > 28:                                  # most of the picture changed at once: a new scene
+        ha = [0] * 16; hb = [0] * 16
+        for a_, b_ in zip(fr, prev): ha[a_ >> 4] += 1; hb[b_ >> 4] += 1
+        mix = sum(abs(a_ - b_) for a_, b_ in zip(ha, hb)) / (2 * size)         # 0 = the same light and dark, 1 = all different
+        if whole > 28 and mix > 0.35:                   # the picture changed at once, and what is in it: a new scene (a pan keeps the mix)
             end_seg(t); cuts.append(t); lines.append((t, 2, f"cut {ts(t)} {len(cuts) + 1}"))
         else:
             cells = []
@@ -154,6 +169,10 @@ while True:
                 if seg is None: seg = [t, c, c, t]
                 else: seg[2] = c; seg[3] = t
             elif seg and t - seg[3] > 0.6: end_seg(seg[3] + 1 / opt["fps"])    # still for a moment: that movement is over
+    if t >= (reads[-1] if reads else -9) + 2.0 and (last_read is None or sum(abs(a_ - b_) for a_, b_ in zip(fr, last_read)) / size > 6):
+        reads.append(t); last_read = fr
+    if cuts and abs(cuts[-1] - t) < 1e-6 and (not reads or reads[-1] != t):
+        reads.append(t); last_read = fr
     prev = fr
 p.wait()
 end_seg(opt["from"] + k / opt["fps"])
@@ -169,38 +188,78 @@ if sound and not opt.get("nosound"):
 # ---------- speech as words (Whisper) and sounds by name (YAMNet), both on this machine; skipped, and said, when not set up ----------
 MODELS = os.environ.get("PERCH_MODELS", os.path.expanduser("~/.cache/perch-models"))
 WHISPER = os.environ.get("PERCH_WHISPER", os.path.join(MODELS, "whisper.cpp", "build", "bin", "whisper-cli"))
-WMODEL = os.environ.get("PERCH_WHISPER_MODEL", os.path.join(MODELS, "whisper.cpp", "models", "ggml-base.bin"))
+WMODEL = os.environ.get("PERCH_WHISPER_MODEL", os.path.join(MODELS, "whisper.cpp", "models", f"ggml-{opt.get('quality', 'base')}.bin"))
+BETTER = os.path.join(MODELS, "whisper.cpp", "models", "ggml-small.bin")      # tried by the player itself when a piece stays unclear
+VADM = os.environ.get("PERCH_VAD_MODEL", os.path.join(MODELS, "whisper.cpp", "models", "ggml-silero-v5.1.2.bin"))
 TAGPY = os.environ.get("PERCH_TAG_PYTHON", os.path.join(MODELS, "venv", "bin", "python"))
+def tag_runs():
+    """the tagger's sound runs [(t0, t1, name, score)], or None without a tagger"""
+    tagger = os.path.join(HERE, "perch_tag.py") if os.path.isfile(os.path.join(HERE, "perch_tag.py")) else "/usr/lib/perch/perch_tag.py"
+    if not (os.access(TAGPY, os.X_OK) and os.path.isfile(os.path.join(MODELS, "yamnet", "yamnet.tflite"))): return None
+    r = subprocess.run([TAGPY, tagger, os.path.join(MODELS, "yamnet"), src, str(opt["from"]), str(opt["to"]) if opt["to"] else "-"],
+                       capture_output=True, text=True, timeout=1800)
+    out = []
+    for l in r.stdout.splitlines():
+        try: e = json.loads(l); out.append((e["t0"], e["t1"], e["name"], e["score"]))
+        except (ValueError, KeyError): pass
+    return out
+VOICE = re.compile(r"speech|singing|sing|choir|vocal|rapping|narration|conversation|chant|yodel|whisper|shout|babbl|monolog", re.I)
+def loop(words):
+    """a made-up loop: the same few words over and over (Whisper does this on noise)"""
+    w = words.lower().split()
+    for n in (1, 2, 3, 4):
+        for i in range(0, max(0, len(w) - n * 5) + 1):
+            if all(w[i + j * n: i + (j + 1) * n] == w[i: i + n] for j in range(5)): return True
+    return False
+runs = tag_runs() if sound and not opt.get("nosound") else None
 if sound and not opt.get("nosound") and (opt.get("speech") or not textsubs):
     if os.access(WHISPER, os.X_OK) and os.path.isfile(WMODEL):
-        wav, base = os.path.join(RUN, "speech.wav"), os.path.join(RUN, "speech")
-        subprocess.run(FF + (["-ss", str(opt["from"])] if opt["from"] else []) + ["-i", src] + (["-t", str(opt["to"] - opt["from"])] if opt["to"] else []) +
-                       ["-vn", "-ac", "1", "-ar", "16000", "-y", wav], capture_output=True, timeout=1800)
-        r = subprocess.run([WHISPER, "-m", WMODEL, "-f", wav, "-l", "auto", "-np", "-oj", "-of", base], capture_output=True, text=True, timeout=3600)
-        try:
-            j = json.load(open(base + ".json"))
-            lang = (j.get("result") or {}).get("language")
-            if lang: head += f" speech:{lang}"
-            for seg in j.get("transcription", []):
-                words = (seg.get("text") or "").strip()
-                if words and not re.fullmatch(r"[\[(].*[\])]", words):        # [music], (applause): the sound lines say those
-                    t = opt["from"] + seg.get("offsets", {}).get("from", 0) / 1000
-                    lines.append((t, 1, f"say {ts(t)} {q(words)}"))
-        except (OSError, ValueError):
-            lines.append((opt["from"], 1, "! speech not read"))
+        end = opt["to"] if opt["to"] is not None else dur
+        langs, a = [], opt["from"]
+        while a < end - 0.3:
+            b = min(end, a + 30.0)
+            if runs is not None and not any(VOICE.search(n) and t0 < b and t1 > a for t0, t1, n, sc in runs):
+                a = b; continue                                    # only music or noise here: nothing to hear as words
+            wav, base = os.path.join(RUN, "speech.wav"), os.path.join(RUN, "speech")
+            subprocess.run(FF + ["-ss", str(a), "-i", src, "-t", str(b - a), "-vn", "-ac", "1", "-ar", "16000", "-y", wav], capture_output=True, timeout=600)
+            def hear(lang, model):
+                """one try: (segments [(t, words)], language, how many loops)"""
+                try: os.remove(base + ".json")
+                except OSError: pass
+                subprocess.run([WHISPER, "-m", model, "-f", wav, "-l", lang, "-mc", "0", "-np", "-oj", "-of", base], capture_output=True, text=True, timeout=1800)
+                try: j = json.load(open(base + ".json"))
+                except (OSError, ValueError): return [], None, 1
+                segs, loops = [], 0
+                for seg in j.get("transcription", []):
+                    words = (seg.get("text") or "").strip()
+                    if not words or re.fullmatch(r"[\[(].*[\])]", words): continue          # [music], (applause): the sound lines say those
+                    if loop(words): loops += 1; continue
+                    segs.append((a + seg.get("offsets", {}).get("from", 0) / 1000, words))
+                return segs, (j.get("result") or {}).get("language") or (None if lang == "auto" else lang), loops
+            want = opt.get("lang", "auto")
+            segs, lang, loops = hear(want, WMODEL)
+            if loops and want == "auto":
+                # the player adjusts itself: the language the clear pieces were in, else English; then the better model; the clearest wins
+                tries = [(l, WMODEL) for l in dict.fromkeys(langs + ["en"]) if l != lang]
+                if os.path.isfile(BETTER) and BETTER != WMODEL: tries += [("auto", BETTER)] + [(l, BETTER) for l in dict.fromkeys(langs + ["en"])]
+                best = (len(" ".join(w for _, w in segs).split()) - 50 * loops, segs, lang, loops, None)
+                for l, m in tries:
+                    s2, lang2, loops2 = hear(l, m)
+                    score = len(" ".join(w for _, w in s2).split()) - 50 * loops2
+                    if score > best[0]: best = (score, s2, lang2, loops2, (l, m))
+                    if loops2 == 0 and s2: break
+                _, segs, lang, loops, how = best
+                if how: lines.append((a, 1, f"! adjusted {ts(a)} lang {how[0]}" + (f" quality {os.path.basename(how[1])[5:-4]}" if how[1] != WMODEL else "") + " (the first try made loops)"))
+            for t, words in segs: lines.append((t, 1, f"say {ts(t)} {q(words)}"))
+            if loops: lines.append((a, 1, f"! speech unclear {ts(a)}-{ts(b)} (try: back, set lang, set quality)"))
+            if segs and lang and lang not in langs: langs.append(lang)
+            a = b
+        if langs: head += " speech:" + ",".join(langs)
     else:
         lines.append((opt["from"], 1, "! speech not read: no Whisper here (see the README)"))
 if sound and not opt.get("nosound"):
-    tagger = os.path.join(HERE, "perch_tag.py") if os.path.isfile(os.path.join(HERE, "perch_tag.py")) else "/usr/lib/perch/perch_tag.py"
-    if os.access(TAGPY, os.X_OK) and os.path.isfile(os.path.join(MODELS, "yamnet", "yamnet.tflite")):
-        r = subprocess.run([TAGPY, tagger, os.path.join(MODELS, "yamnet"), src, str(opt["from"]), str(opt["to"]) if opt["to"] else "-"],
-                           capture_output=True, text=True, timeout=1800)
-        for l in r.stdout.splitlines():
-            try: e = json.loads(l)
-            except ValueError: continue
-            lines.append((e["t0"], 6, f"sound {ts(e['t0'])}-{ts(e['t1'])} {q(e['name'])} {e['score']:.2f}"))
-    else:
-        lines.append((opt["from"], 6, "! sounds not named: no sound tagger here (see the README)"))
+    if runs is None: lines.append((opt["from"], 6, "! sounds not named: no sound tagger here (see the README)"))
+    for t0, t1, n, sc in runs or []: lines.append((t0, 6, f"sound {ts(t0)}-{ts(t1)} {q(n)} {sc:.2f}"))
 
 # ---------- at each scene: the words on the screen (read here) and, if asked, one line from the local model ----------
 def frame_at(t):
@@ -212,15 +271,17 @@ try:
 except ImportError:
     reader = None
 seen_text = set()
-for i, t in enumerate([opt["from"]] + cuts):
+for i, t in enumerate(sorted(set([opt["from"]] + cuts + reads))):
     f = frame_at(t)
     if not f: continue
     if reader and reader.available():
         from PIL import Image
         im = Image.open(f); im.load()
         for x, y, w, h, words in reader.read(im, [(0, 0, im.width, im.height)], page=True):
-            if words not in seen_text: lines.append((t, 4, f"text {ts(t)} {q(words)}")); seen_text.add(words)
-    if opt["describe"]:
+            real = [w_ for w_ in re.findall(r"[A-Za-z\u00c0-\u024f]{3,}", words) if re.search(r"[aeiouyAEIOUY]", w_)]
+            if (any(len(w_) >= 4 for w_ in real) or len(real) >= 2) and words not in seen_text:   # junk like 'Bf', '= ul' left out
+                lines.append((t, 4, f"text {ts(t)} {q(words)}")); seen_text.add(words)
+    if opt["describe"] and (t in cuts or t == opt["from"]):
         import base64, urllib.request
         body = json.dumps({"model": os.environ.get("PERCH_MODEL", "gemma-chuck"), "stream": False, "keep_alive": "10m",
                            "messages": [{"role": "user", "content": "Say in one short line what this video frame shows. No preamble.",

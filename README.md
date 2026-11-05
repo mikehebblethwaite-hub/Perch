@@ -55,6 +55,19 @@ python3 -m venv ../venv && ../venv/bin/pip install ai-edge-litert numpy
 ```
 Without them perch-video says so and carries on with everything else.
 
+Every video is different and its sound varies a lot, so a bot can drive a video while it plays and adjust until it is clear:
+```bash
+./perch-video myvid play FILE      # it plays at its own pace (--fast: as fast as the box can go)
+./perch-video myvid read           # the lines up to now, only the new ones
+./perch-video myvid set lang en    # or: set quality small (better on poor sound) · set speech on|off|auto
+./perch-video myvid back 30        # the last 30 seconds again with the settings now
+./perch-video myvid seek 1:30      # also: pause · go · status · stop
+```
+The player adjusts itself too: when a piece of speech comes back as a made-up loop it tries the language the clear parts were
+in, then the better model, keeps the clearest, and says so (`! adjusted 0:30.0 lang en`). Tried on three real videos: a
+Commons speech (the base model took it for Welsh until the player switched to English), a bamboo band (Music, no words, no
+false cuts) and a film's song (the lyrics line by line, every credit off the screen).
+
 ## How a look answers (your settings)
 
 Every look (web pages, the display, VMs) answers in one of four ways:
