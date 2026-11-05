@@ -25,6 +25,7 @@
 #                the lines, never the zipped bytes: encoded data costs a bot more, not less)
 #   --seen [KEY|FILE]  what was kept from videos seen before (no KEY: the list); works with the footage gone
 #                      (the person's switch: perch-settings set spoilers on tells it at the start; off by default)
+#   --seen KEY --summary  a new summary from the kept lines (the whole video in slices; no need to watch it again)
 #   --spoiler KEY|FILE the kept summary (never told at the start: a bot that saw a video before hears only "seen before, about ...")
 #   --summary    a lesson line from the local model (Ollama, PERCH_MODEL) saying what the video seems to be about, as a best guess
 #   --hint L     try this language first when guessing (it is still checked; the session passes on what a piece needed)
@@ -59,9 +60,33 @@ def secs(v):
     p = [float(x) for x in str(v).split(":")]
     return sum(x * 60 ** i for i, x in enumerate(reversed(p)))
 
-def q(t):
-    t = re.sub(r"\s+", " ", str(t or "")).strip()[:300]
+def q(t, n=300):
+    t = re.sub(r"\s+", " ", str(t or "")).strip()[:n]
     return "'" + t.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def ask_summary(words, room=12000):
+    """the local model's short best guess at what a video is about, from its words; a long video is sent as even slices from
+    start to end (not just its first minutes). -> (summary or None, why not or None)"""
+    import urllib.request
+    words = words.strip()
+    if len(words) > room:
+        n = 12; step = len(words) / n; part = room // n - 8
+        words = " … ".join(words[int(i * step): int(i * step) + part] for i in range(n))
+    ask = ("Below is what a speech-to-text tool and a screen reader made of a video: best guesses, maybe wrong in places. A long video "
+           "comes as slices from start to end, joined by '…'. In 2 or 3 short sentences say what the whole video seems to be about. "
+           "Start with 'I think' and say plainly where you are unsure. Do not guess anyone's sex: say they or the speaker unless a "
+           "name is given.\n\n" + words)
+    try:
+        body = json.dumps({"model": os.environ.get("PERCH_MODEL", "gemma-chuck"), "stream": False, "keep_alive": "10m",
+                           "messages": [{"role": "user", "content": ask}]}).encode()
+        r_ = json.load(urllib.request.urlopen(urllib.request.Request(os.environ.get("PERCH_OLLAMA", "http://127.0.0.1:11434") + "/api/chat", body), timeout=900))
+        out = re.sub(r"\s+", " ", r_.get("message", {}).get("content", "")).strip() or None
+    except Exception as e:
+        return None, type(e).__name__
+    if out and len(out) > 900:                                  # long: kept to whole sentences, never cut mid-word
+        out = out[:900]; out = out[:max(out.rfind(". "), out.rfind("? "), out.rfind("! ")) + 1] or out
+    return out, None
 
 args, opt = sys.argv[1:], {"fps": 4.0, "live": False, "describe": False, "from": 0.0, "to": None, "frame": None}
 src = None
@@ -138,7 +163,7 @@ if opt.get("seen") is not None or opt.get("spoiler"):
     if opt.get("spoiler"):
         meta, _ = kept_load(kept_key(opt["spoiler"]))
         if not meta: sys.exit("err not seen before")
-        print(f"summary (the local model, a best guess, made {meta.get('seen', '?')}): {q(meta['summary'])}" if meta.get("summary")
+        print(f"summary (the local model, a best guess, made {meta.get('seen', '?')}): {q(meta['summary'], 900)}" if meta.get("summary")
               else "! no summary kept for it (perch-video --summary FILE makes one)"); sys.exit(0)
     if opt["seen"] == "":                                       # every video seen, newest first
         got = []
@@ -152,6 +177,13 @@ if opt.get("seen") is not None or opt.get("spoiler"):
         sys.exit(0)
     k_ = kept_key(opt["seen"]); meta, rows = kept_load(k_)
     if not meta: sys.exit("err not seen before")
+    if opt.get("summary"):                                      # a new summary from what was kept, no need to watch again
+        said = " ".join(re.sub(r"^\S+ \S+ (?:sure \d+ )?", "", l_).strip("'") for _, _, l_ in sorted(rows) if l_.startswith(("say ", "sub ", "text ")))
+        if not said.strip(): sys.exit("err no words kept for it")
+        sm, why = ask_summary(said)
+        if not sm: sys.exit(f"err summary not made: {why}")
+        meta["summary"] = sm; kept_save(k_, meta, rows)
+        print(f"summary (the local model, a best guess, made now from the kept lines): {q(sm, 900)}"); sys.exit(0)
     print(f"! kept {k_}: {q(meta.get('name', '?'))} seen {meta.get('seen', '?')}" + (f", lang {meta['lang']}" if meta.get("lang") else "") +
           (f", lines of {meta['span']}" if meta.get("span") else ", no lines kept") + (" · a summary is kept: --spoiler " + k_ if meta.get("summary") else ""))
     if meta.get("head"): print(meta["head"])
@@ -325,7 +357,7 @@ if known.get("about") or known.get("span"):
         spoil = "off"
     lines.append((opt["from"], 0, f"! seen before ({known.get('seen', '?')}): perch-video --seen {VKEY}" +
                   (f"; about: {known['about']}" if known.get("about") else "") +
-                  ((f"; summary then: {q(known['summary'])}" if spoil == "on" else
+                  ((f"; summary then: {q(known['summary'], 900)}" if spoil == "on" else
                     "; a summary is kept, not told unless asked: perch-video --spoiler " + VKEY) if known.get("summary") else "")))
 if known.get("lang") and opt.get("lang", "auto") == "auto" and not opt.get("hint"):
     opt["hint"] = known["lang"]; lines.append((opt["from"], 0, f"! from lessons: lang {known['lang']} (this video taught it before; still checked)"))
@@ -502,18 +534,9 @@ if about_txt or top_names:
                    (f" · numbers: {', '.join(n_.strip() for n_ in nums)}" if nums else "") + " (from its own words; the words are best guesses)")
 summary = None
 if opt.get("summary") and words_said.strip():
-    import urllib.request
-    ask = ("Below is what a speech-to-text tool and a screen reader made of a video: best guesses, maybe wrong in places. In 2 or 3 short "
-           "sentences say what the video seems to be about. Start with 'I think' and say plainly where you are unsure. Do not guess "
-           "anyone's sex: say they or the speaker unless a name is given.\n\n" + words_said[:12000])
-    try:
-        body = json.dumps({"model": os.environ.get("PERCH_MODEL", "gemma-chuck"), "stream": False, "keep_alive": "10m",
-                           "messages": [{"role": "user", "content": ask}]}).encode()
-        r_ = json.load(urllib.request.urlopen(urllib.request.Request(os.environ.get("PERCH_OLLAMA", "http://127.0.0.1:11434") + "/api/chat", body), timeout=900))
-        summary = re.sub(r"\s+", " ", r_.get("message", {}).get("content", "")).strip()[:600] or None
-    except Exception as e:
-        lessons.append(f"lesson summary not made: {type(e).__name__} (the local model)")
-    if summary: lessons.append(f"lesson summary (the local model, a best guess): {q(summary)}")
+    summary, why = ask_summary(words_said)
+    if why: lessons.append(f"lesson summary not made: {why} (the local model)")
+    if summary: lessons.append(f"lesson summary (the local model, a best guess): {q(summary, 900)}")
 for l in lessons: lines.append(((opt["to"] if opt["to"] is not None else dur), 9, l))
 try:                                                            # kept for next time: lessons + lines, never the footage
     mine, rows = kept_load(VKEY)
