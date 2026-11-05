@@ -40,7 +40,20 @@ small picture when the answer really is in the picture.
 Its sound comes as a few numbers when it changes (`s` lines; `./perch-sound FILE` for any sound file), the way a ZX81 tape
 held a program in a few kilobytes: loudness 1-11; quiet, a tone and its pitch, voice?, music?, noise or a bang; and five bands
 1-11 from low to high. A test file of silence, two tones, hiss, one knock and a short tune: every sound named and timed
-(the knock at 6.5 s exactly). Not yet: speech as words (a local Whisper) and sounds by name (a small sound tagger).
+(the knock at 6.5 s exactly).
+
+Speech comes as words (`say` lines) from [whisper.cpp](https://github.com/ggml-org/whisper.cpp) and sounds by name (`sound`
+lines, 521 kinds such as Speech, Dog, Siren, Music) from Google's YAMNet, both on your machine. A slide with a famous speech and
+no subtitles: every word, the language (`speech:en`), and `Speech` 0:00-0:10.7. Set up once in `~/.cache/perch-models`:
+```bash
+git clone --depth 1 https://github.com/ggml-org/whisper.cpp ~/.cache/perch-models/whisper.cpp
+cd ~/.cache/perch-models/whisper.cpp && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j && sh models/download-ggml-model.sh base
+mkdir -p ../yamnet && cd ../yamnet
+curl -LO https://storage.googleapis.com/mediapipe-models/audio_classifier/yamnet/float32/1/yamnet.tflite
+curl -LO https://raw.githubusercontent.com/tensorflow/models/master/research/audioset/yamnet/yamnet_class_map.csv
+python3 -m venv ../venv && ../venv/bin/pip install ai-edge-litert numpy
+```
+Without them perch-video says so and carries on with everything else.
 
 ## How a look answers (your settings)
 
@@ -128,7 +141,7 @@ finds the skill in `.claude/skills/perch`.
 - `perch-settings`, `perch_settings.py`: how a look answers (mode, line cut, picture size)
 - `perch_read.py`: reading words from pixels where an app gives none
 - `perch-text.c` (`libperch-text.so`), `perch-run`: the words an app draws, caught at the drawing call
-- `perch-video`: a video player for bots (timed lines, not frames)
+- `perch-video`: a video player for bots (timed lines, not frames); `perch-sound`, `perch_sound.py`: sound as numbers; `perch_tag.py`: sounds by name (YAMNet)
 - `demo/`: the demos; `perch-report`: your result as a report
 - `vm-win/`: the Windows test VM
 - `site/`: the Perch website (`python3 site/build.py`), with the measured runs it shows in `site/data/`

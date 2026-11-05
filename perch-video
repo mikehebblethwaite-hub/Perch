@@ -8,6 +8,9 @@
 #   cut 0:03.0 2                                      a new scene (shot 2): the picture changed all at once
 #   text 0:03.0 'Step 1: turn off the gas'            words on the screen at a cut (slides, signs), read here (no tokens)
 #   see 0:03.0 'a man pointing at a boiler'           with --describe: one line from the local vision model at each cut
+#   say 0:01.2 'ask not what your country...'         speech as words (Whisper, here on the machine), when it has no subtitles
+#                                                     (or always with --speech); the V line names the language it heard
+#   sound 0:03.2-0:05.0 'Dog' 0.82                    a sound named (YAMNet, 521 kinds, here on the machine) and how sure (0-1)
 #   s 0:03.2 L7 tone 440Hz b 2-9-3-1-1                its sound, when it changes (perch_sound.py): loudness 1-11, quiet/tone/
 #                                                     voice?/music?/noise/bang, five bands 1-11 (low..high); --no-sound: none
 #   moves 0:04.2-0:07.9 bottom-left > bottom-right    something moved, from where to where (a 3x3 grid), in one line
@@ -50,6 +53,7 @@ try:
         elif a == "--live": opt["live"] = True
         elif a == "--describe": opt["describe"] = True
         elif a == "--no-sound": opt["nosound"] = True
+        elif a == "--speech": opt["speech"] = True
         elif a == "--scenes": opt["scenes"] = True
         elif a in ("--pack", "--unpack"): opt[a[2:]] = args.pop(0)
         elif a in ("--from", "--to", "--frame"): opt[a[2:]] = secs(args.pop(0))
@@ -162,6 +166,42 @@ if sound and not opt.get("nosound"):
     except Exception as e:
         lines.append((opt["from"], 6, f"! sound not read: {type(e).__name__}"))
 
+# ---------- speech as words (Whisper) and sounds by name (YAMNet), both on this machine; skipped, and said, when not set up ----------
+MODELS = os.environ.get("PERCH_MODELS", os.path.expanduser("~/.cache/perch-models"))
+WHISPER = os.environ.get("PERCH_WHISPER", os.path.join(MODELS, "whisper.cpp", "build", "bin", "whisper-cli"))
+WMODEL = os.environ.get("PERCH_WHISPER_MODEL", os.path.join(MODELS, "whisper.cpp", "models", "ggml-base.bin"))
+TAGPY = os.environ.get("PERCH_TAG_PYTHON", os.path.join(MODELS, "venv", "bin", "python"))
+if sound and not opt.get("nosound") and (opt.get("speech") or not textsubs):
+    if os.access(WHISPER, os.X_OK) and os.path.isfile(WMODEL):
+        wav, base = os.path.join(RUN, "speech.wav"), os.path.join(RUN, "speech")
+        subprocess.run(FF + (["-ss", str(opt["from"])] if opt["from"] else []) + ["-i", src] + (["-t", str(opt["to"] - opt["from"])] if opt["to"] else []) +
+                       ["-vn", "-ac", "1", "-ar", "16000", "-y", wav], capture_output=True, timeout=1800)
+        r = subprocess.run([WHISPER, "-m", WMODEL, "-f", wav, "-l", "auto", "-np", "-oj", "-of", base], capture_output=True, text=True, timeout=3600)
+        try:
+            j = json.load(open(base + ".json"))
+            lang = (j.get("result") or {}).get("language")
+            if lang: head += f" speech:{lang}"
+            for seg in j.get("transcription", []):
+                words = (seg.get("text") or "").strip()
+                if words and not re.fullmatch(r"[\[(].*[\])]", words):        # [music], (applause): the sound lines say those
+                    t = opt["from"] + seg.get("offsets", {}).get("from", 0) / 1000
+                    lines.append((t, 1, f"say {ts(t)} {q(words)}"))
+        except (OSError, ValueError):
+            lines.append((opt["from"], 1, "! speech not read"))
+    else:
+        lines.append((opt["from"], 1, "! speech not read: no Whisper here (see the README)"))
+if sound and not opt.get("nosound"):
+    tagger = os.path.join(HERE, "perch_tag.py") if os.path.isfile(os.path.join(HERE, "perch_tag.py")) else "/usr/lib/perch/perch_tag.py"
+    if os.access(TAGPY, os.X_OK) and os.path.isfile(os.path.join(MODELS, "yamnet", "yamnet.tflite")):
+        r = subprocess.run([TAGPY, tagger, os.path.join(MODELS, "yamnet"), src, str(opt["from"]), str(opt["to"]) if opt["to"] else "-"],
+                           capture_output=True, text=True, timeout=1800)
+        for l in r.stdout.splitlines():
+            try: e = json.loads(l)
+            except ValueError: continue
+            lines.append((e["t0"], 6, f"sound {ts(e['t0'])}-{ts(e['t1'])} {q(e['name'])} {e['score']:.2f}"))
+    else:
+        lines.append((opt["from"], 6, "! sounds not named: no sound tagger here (see the README)"))
+
 # ---------- at each scene: the words on the screen (read here) and, if asked, one line from the local model ----------
 def frame_at(t):
     out = os.path.join(RUN, "scene.png")
@@ -193,6 +233,9 @@ for i, t in enumerate([opt["from"]] + cuts):
 
 # ---------- out: sorted by time; --live: at the video's own pace ----------
 lines = [e for e in lines if not (e[0] < opt["from"] - 0.01 or (opt["to"] is not None and e[0] > opt["to"]))]
+# where a sound is named (the tagger), the rough s lines add nothing: they stay only for stretches nothing named
+named = [tuple(map(secs, re.match(r"sound (\S+)-(\S+) ", l).groups())) for _, k, l in lines if l.startswith("sound ")]
+lines = [e for e in lines if not (e[2].startswith("s ") and any(a - 0.05 <= e[0] <= b for a, b in named))]
 if opt.get("scenes"):                                   # one line per scene, everything that happens in it
     edges = [opt["from"]] + cuts + [opt["to"] if opt["to"] is not None else dur]
     out = [head]
@@ -203,6 +246,10 @@ if opt.get("scenes"):                                   # one line per scene, ev
             w = l.split(" ", 2)
             if w[0] in ("text", "see"): parts.append(f"{w[0]} {w[2]}")
             elif w[0] == "sub": parts.append(f"sub {w[1]} {w[2]}")
+            elif w[0] == "say": parts.append(f"say {w[1]} {w[2]}")
+            elif w[0] == "sound":
+                m = re.match(r"sound (\S+)-(\S+) ('(?:[^'\\]|\\.)*') (\S+)", l)
+                if m: sounds.append((m.group(1), m.group(3).strip("'"), None, m.group(2)))
             elif w[0] == "ch": parts.append(f"chapter {w[2]}")
             elif w[0] == "moves": parts.append(f"moves {w[2]} ({w[1]})")
             elif w[0] == "s":
@@ -214,6 +261,7 @@ if opt.get("scenes"):                                   # one line per scene, ev
                 j = k
                 while j + 1 < len(sounds) and sounds[j + 1][1].startswith("tone") and sounds[k][1].startswith("tone"): j += 1
                 if j > k: sd.append(f"tones {'/'.join(x[1].split()[1][:-2] for x in sounds[k:j + 1])}Hz {sounds[k][0]}")
+                elif sounds[k][2] is None: sd.append(f"{sounds[k][1]} {sounds[k][0]}-{sounds[k][3]}")      # a named sound and its span
                 else: sd.append(f"{sounds[k][1]} {sounds[k][0]} L{sounds[k][2]}")
                 k = j + 1
             parts.append("sound " + ", ".join(sd))
