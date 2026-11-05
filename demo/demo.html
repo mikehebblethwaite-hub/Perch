@@ -14,6 +14,7 @@ header{display:grid;grid-template-columns:1fr auto;gap:8px 32px;align-items:end}
 h1{font-size:44px;line-height:1.05;margin:0;font-weight:700;letter-spacing:-.01em}
 .lede{margin:6px 0 0;color:var(--ink2);max-width:68ch}
 .ask{grid-column:1/-1;display:flex;gap:16px;align-items:center;margin-top:18px}
+@media (max-width:700px){.ask{flex-direction:column;align-items:stretch;gap:12px}.ask .bubble{width:100%}.ask .btns{display:flex;flex-direction:column}.ask .btns button{width:100%}}
 .bubble{flex:1;background:var(--panel);border:1px solid var(--rule);border-radius:18px 18px 18px 4px;padding:12px 18px;font-size:18px}
 .bubble small{display:block;color:var(--muted);font-size:13px}
 button{font:inherit;font-weight:700;font-size:17px;padding:12px 22px;border-radius:10px;border:0;background:var(--ink);color:var(--bg);cursor:pointer}
