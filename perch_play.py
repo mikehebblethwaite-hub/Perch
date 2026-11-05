@@ -8,6 +8,7 @@
 #   perch-video NAME set quality base|small  the speech model (small: better on poor sound, slower)
 #   perch-video NAME set speech on|off|auto  words from speech always / never / when there are no subtitles (default)
 #   perch-video NAME lessons                 what this video taught the player so far (also kept for the next time it plays)
+#   perch-video NAME summary                 the summary kept from before (only when asked: no spoilers)
 #   perch-video NAME seek T | pause | go | status | stop
 # The player works ahead in 30-second pieces with perch-video itself (so its own adjusting, "! adjusted ...", applies in each);
 # a change of settings drops the pieces it made ahead and makes them again. Nothing is kept on disk but the pieces in memory.
@@ -89,6 +90,7 @@ class Player:
         head, rest = (out[0], out[1:]) if out and out[0].startswith("V ") else (None, out)
         got = []
         for l in rest:
+            if a > 0.05 and l.startswith(("! seen before", "! from lessons")): continue   # said once, at the start
             m = re.match(r"\S+ (\d+:\d+(?::\d+)?\.\d)", l)
             got.append((secs(m.group(1)) if m else a, l))
         if not out: got.append((a, f"! not read {ts(a)}-{ts(b)}: " + (r.stderr.strip()[:200] or "no answer")))
@@ -124,6 +126,9 @@ class Player:
             if c == "lessons":
                 got = [l for _, l in self.lines if l.startswith(("lesson", "! adjusted", "! from lessons"))]
                 return "\n".join(got or ["! no lessons yet (they come as the pieces are made)"]) + "\n"
+            if c == "summary":
+                r = subprocess.run([os.path.join(self.here, "perch-video"), "--spoiler", self.src], capture_output=True, text=True, timeout=60)
+                return (r.stdout or r.stderr or "! no answer\n")
             if c == "read":
                 now = self.pos()
                 new = [l for t, l in self.lines if self.told - 1e-6 <= t <= now and not (t < self.told)]
@@ -155,7 +160,7 @@ class Player:
             elif c == "stop":
                 threading.Timer(0.2, lambda: os._exit(0)).start(); return "ok stopped\n"
             else:
-                return "err say: read · back [N] · set lang|quality|speech V · seek T · pause · go · status · lessons · stop\n"
+                return "err say: read · back [N] · set lang|quality|speech V · seek T · pause · go · status · lessons · summary · stop\n"
         # back: made again now, outside the lock (it takes a while); its lines replace the old ones for that stretch
         head, got = self.piece(a, b)
         with self.lock:

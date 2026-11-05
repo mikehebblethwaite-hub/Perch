@@ -2,8 +2,8 @@
 # Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
 # perch-settings: how Perch answers a bot's look (web pages, a display, VMs), saved in ~/.config/perch/settings.json.
 #   perch-settings                    what is set now
-#   perch-settings set KEY VALUE      mode auto|words|ocr|picture · cut 0|20-400 · zoom 25-100
-#   perch-settings reset              back to auto, 60, 50
+#   perch-settings set KEY VALUE      mode auto|words|ocr|picture · cut 0|20-400 · zoom 25-100 · spoilers off|on
+#   perch-settings reset              back to auto, 60, 50, spoilers off
 #   perch-settings page               a settings page on this machine only (127.0.0.1, a one-off key in the address,
 #                                          stops after 15 idle minutes), with a live preview of what a bot would get
 # One call can still choose for itself: --mode / --cut / --zoom on perch-web, perch-look, perch-vmlook,
@@ -15,7 +15,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path[:0] = [HERE, "/usr/lib/perch"]
 import perch_settings as settings                      # noqa: E402
 
-USAGE = ("usage: perch-settings [set mode auto|words|ocr|picture | set cut 0|20-400 | set zoom 25-100 | reset | page]")
+USAGE = ("usage: perch-settings [set mode auto|words|ocr|picture | set cut 0|20-400 | set zoom 25-100 | set spoilers off|on | reset | page]")
 first = lambda *ps: next((p for p in ps if os.path.exists(p)), ps[0])
 # the made-up inbox shipped with Perch (the preview never opens a real page) and the site's fonts: in the repo, or packaged
 SAMPLE = first(os.path.join(HERE, "demo", "inbox.html"), "/usr/share/perch/inbox.html")
@@ -36,7 +36,7 @@ def show(s):
         if bad: src = f"saved, but {', '.join(bad)} not allowed there, so the default is used"
     except (OSError, ValueError):
         if os.path.exists(settings.PATH): src = "the saved file cannot be read, so the defaults are used"
-    return (f"mode {s['mode']}\ncut {s['cut']}\nzoom {s['zoom']}\n({src}: {settings.PATH})\n")
+    return (f"mode {s['mode']}\ncut {s['cut']}\nzoom {s['zoom']}\nspoilers {s['spoilers']}\n({src}: {settings.PATH})\n")
 
 
 args = sys.argv[1:]
@@ -66,6 +66,7 @@ MODES = [
     ("picture", "Picture", "A small picture of the whole screen. The same price however busy the screen is."),
 ]
 CUTS = [(0, "Never: whole lines"), (40, "40 characters"), (60, "60 characters"), (80, "80 characters"), (120, "120 characters")]
+SPOILERS = [("off", "No spoilers: the summary only when asked"), ("on", "Tell the kept summary at the start")]
 ZOOMS = [(25, "25%: the size of a stamp"), (35, "35%"), (50, "50%: readable"), (75, "75%"), (100, "100%: a full screenshot")]
 
 
@@ -153,6 +154,9 @@ web pages, your display and virtual machines, unless the bot asks for something 
 <fieldset><legend><label for="zoom">Picture size</label></legend>
 <select name="zoom" id="zoom">{options("zoom", ZOOMS, s["zoom"])}</select>
 <p class="help">Used by Picture, and by Let Perch choose when it picks the picture.</p></fieldset>
+<fieldset><legend><label for="spoilers">A video seen before</label></legend>
+<select name="spoilers" id="spoilers">{options("spoilers", SPOILERS, s["spoilers"])}</select>
+<p class="help">With no spoilers the bot is told it saw the video before and what it was about. It gets the kept summary only when it asks for it.</p></fieldset>
 <button type="submit">Save settings</button><p class="saved" id="note" role="status">{html.escape(note)}</p>
 </form>
 </section>

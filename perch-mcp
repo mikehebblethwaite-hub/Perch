@@ -144,13 +144,13 @@ TOOLS = [
     {"name": "perch_video_session",
      "description": "Drive a video while it plays, the bot's way, and adjust until it is clear: play (src), read (the lines up to "
                     "where it is, only new ones), set (key lang|quality|speech, value e.g. en, small, on), back (seconds: that stretch "
-                    "again with the settings now), seek (t), pause, go, status, stop. The player also adjusts itself and says so "
+                    "again with the settings now), seek (t), pause, go, status, lessons, summary (the summary kept from an earlier viewing: only ask when you want it, no spoilers), stop. The player also adjusts itself and says so "
                     "('! adjusted'). Speech lines (say T sure N 'words') are a best guess: pass them on as \"I think they said '...' (I can't be "
                     "100% sure)\", or \"it sounded like '...'\" when sure is 5 or less, with the date if the V line has one; sounds the same way (\"it sounded like a dog\"). Every video is different: when lines say '! speech unclear' or the words are in the wrong "
                     "language, set lang or quality and go back.",
      "inputSchema": {"type": "object", "properties": {
          "session": {"type": "string", "description": "one short name for this video (a-z, 0-9, -)"},
-         "action": {"type": "string", "enum": ["play", "read", "set", "back", "seek", "pause", "go", "status", "stop"]},
+         "action": {"type": "string", "enum": ["play", "read", "set", "back", "seek", "pause", "go", "status", "lessons", "summary", "stop"]},
          "src": {"type": "string", "description": "for play: a video file's full path or an http(s) address"},
          "fast": {"type": "boolean", "description": "for play: as fast as the box can go instead of the video's own pace"},
          "key": {"type": "string", "enum": ["lang", "quality", "speech"]}, "value": {"type": "string"},
@@ -249,7 +249,7 @@ def call(name, a):
             args += ["back", str(n)]
         elif act == "seek":
             args += ["seek", need(a, "t", re.compile(r"^\d{1,2}(:\d{1,2}){0,2}(\.\d+)?$"))]
-        elif act in ("read", "pause", "go", "status", "stop"):
+        elif act in ("read", "pause", "go", "status", "lessons", "summary", "stop"):
             args += [act]
         else:
             raise Bad("unknown action")

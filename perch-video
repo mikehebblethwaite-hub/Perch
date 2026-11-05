@@ -23,6 +23,9 @@
 #   --scenes     the whole video at a glance: one line per scene with everything in it (words, subtitles, movement, sounds)
 #   --pack OUT   the lines zipped into OUT (to keep or send); perch-video --unpack OUT gives them back to read (a bot reads
 #                the lines, never the zipped bytes: encoded data costs a bot more, not less)
+#   --seen [KEY|FILE]  what was kept from videos seen before (no KEY: the list); works with the footage gone
+#                      (the person's switch: perch-settings set spoilers on tells it at the start; off by default)
+#   --spoiler KEY|FILE the kept summary (never told at the start: a bot that saw a video before hears only "seen before, about ...")
 #   --summary    a lesson line from the local model (Ollama, PERCH_MODEL) saying what the video seems to be about, as a best guess
 #   --hint L     try this language first when guessing (it is still checked; the session passes on what a piece needed)
 #   --lang L     the speech's language (en, cy, fr ...; default auto)   --quality Q  base (default) | small (better, slower) | ...
@@ -40,7 +43,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path[:0] = [HERE, "/usr/lib/perch"]
 # a session a bot drives while the video plays (perch_play.py): perch-video NAME play FILE | read | back N | set ... | seek | ...
 if len(sys.argv) >= 3 and re.fullmatch(r"[a-z0-9-]{1,40}", sys.argv[1]) and sys.argv[2] in (
-        "--serve", "play", "read", "back", "set", "seek", "pause", "go", "status", "lessons", "stop"):
+        "--serve", "play", "read", "back", "set", "seek", "pause", "go", "status", "lessons", "summary", "stop"):
     import perch_play
     if sys.argv[2] == "--serve": perch_play.serve(HERE, sys.argv[1], sys.argv[3:]); sys.exit(0)
     perch_play.client(HERE, sys.argv[1], sys.argv[2:])
@@ -75,7 +78,8 @@ try:
         elif a == "--lang": opt["lang"] = args.pop(0); assert re.fullmatch(r"auto|[a-z]{2,3}", opt["lang"])
         elif a == "--quality": opt["quality"] = args.pop(0); assert opt["quality"] in ("tiny", "base", "small", "medium", "large-v3")
         elif a == "--scenes": opt["scenes"] = True
-        elif a in ("--pack", "--unpack"): opt[a[2:]] = args.pop(0)
+        elif a in ("--pack", "--unpack", "--spoiler"): opt[a[2:]] = args.pop(0)
+        elif a == "--seen": opt["seen"] = args.pop(0) if args and not args[0].startswith("-") else ""
         elif a in ("--from", "--to", "--frame"): opt[a[2:]] = secs(args.pop(0))
         elif a.startswith("-"): raise ValueError
         elif src is None: src = a
@@ -86,6 +90,74 @@ if opt.get("unpack"):
     import gzip
     try: sys.stdout.write(gzip.open(opt["unpack"], "rt", encoding="utf-8").read()); sys.exit(0)
     except (OSError, EOFError): sys.exit("err not a perch-video pack")
+# ---------- kept: what a video taught, one small file per video on this machine (never the footage) ----------
+# ~/.local/share/perch/videos/KEY.gz: line 1 the lessons (json), then the lines with their times. Shown again with --seen KEY
+# even when the video itself is gone. No spoilers: a bot is told it saw the video before and what it was about, but the summary
+# only when it asks (--spoiler KEY, or the session's "summary").
+KEPT = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "perch", "videos")
+def video_key(p):
+    import hashlib
+    h = hashlib.sha256()
+    try:
+        with open(p, "rb") as f: h.update(f.read(1 << 20))
+        h.update(str(os.path.getsize(p)).encode())
+    except OSError:
+        h.update(p.encode())                                    # an address: the address itself
+    return h.hexdigest()[:24]
+def kept_load(k):
+    import gzip
+    try:
+        with gzip.open(os.path.join(KEPT, k + ".gz"), "rt", encoding="utf-8") as f:
+            meta = json.loads(f.readline()); rows = []
+            for l in f:
+                t_, p_, l_ = l.rstrip("\n").split("\t", 2); rows.append((float(t_), int(p_), l_))
+            return meta, rows
+    except (OSError, ValueError, EOFError):
+        return {}, []
+def kept_save(k, meta, rows):
+    import gzip
+    os.makedirs(KEPT, mode=0o700, exist_ok=True)
+    old = os.umask(0o077)
+    with gzip.open(os.path.join(KEPT, k + ".gz.new"), "wt", encoding="utf-8") as f:
+        f.write(json.dumps(meta, ensure_ascii=False) + "\n")
+        for t_, p_, l_ in sorted(rows, key=lambda e: (e[0], e[1])): f.write(f"{t_:.2f}\t{p_}\t{l_}\n")
+    os.umask(old); os.replace(os.path.join(KEPT, k + ".gz.new"), os.path.join(KEPT, k + ".gz"))
+def kept_migrate():                                             # the old one-file store (video-lessons.json) moved over once
+    oldf = os.path.join(os.path.dirname(KEPT), "video-lessons.json")
+    try: allv = json.load(open(oldf))
+    except (OSError, ValueError): return
+    for k_, m_ in allv.items():
+        if not os.path.exists(os.path.join(KEPT, k_ + ".gz")): kept_save(k_, m_, [])
+    os.remove(oldf)
+kept_migrate()
+def kept_key(x):                                                # a file, an address, or a KEY from --seen
+    if re.fullmatch(r"[0-9a-f]{24}", x or ""): return x
+    if x and (os.path.isfile(x) or re.match(r"^https?://\S+$", x)): return video_key(x)
+    sys.exit(f"err no such video or key: {x}")
+if opt.get("seen") is not None or opt.get("spoiler"):
+    if opt.get("spoiler"):
+        meta, _ = kept_load(kept_key(opt["spoiler"]))
+        if not meta: sys.exit("err not seen before")
+        print(f"summary (the local model, a best guess, made {meta.get('seen', '?')}): {q(meta['summary'])}" if meta.get("summary")
+              else "! no summary kept for it (perch-video --summary FILE makes one)"); sys.exit(0)
+    if opt["seen"] == "":                                       # every video seen, newest first
+        got = []
+        for f_ in os.listdir(KEPT) if os.path.isdir(KEPT) else []:
+            if f_.endswith(".gz"):
+                m_, r_ = kept_load(f_[:-3]); got.append((m_.get("seen", ""), f_[:-3], m_, len(r_)))
+        for when, k_, m_, n_ in sorted(got, reverse=True):
+            print(f"seen {k_} {when or '?'} {q(m_.get('name', '?'))} {n_} lines" + (f" about: {m_['about']}" if m_.get("about") else "") +
+                  (" · summary kept" if m_.get("summary") else ""))
+        if not got: print("! no videos seen yet")
+        sys.exit(0)
+    k_ = kept_key(opt["seen"]); meta, rows = kept_load(k_)
+    if not meta: sys.exit("err not seen before")
+    print(f"! kept {k_}: {q(meta.get('name', '?'))} seen {meta.get('seen', '?')}" + (f", lang {meta['lang']}" if meta.get("lang") else "") +
+          (f", lines of {meta['span']}" if meta.get("span") else ", no lines kept") + (" · a summary is kept: --spoiler " + k_ if meta.get("summary") else ""))
+    if meta.get("head"): print(meta["head"])
+    for _, _, l_ in sorted(rows, key=lambda e: (e[0], e[1])): print(l_)
+    for l_ in meta.get("lessons", []): print(l_)
+    sys.exit(0)
 if not src: sys.exit(USAGE)
 if not (re.match(r"^https?://\S+$", src) or os.path.isfile(src)): sys.exit(f"err no such file: {src}")
 FF = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]
@@ -244,25 +316,17 @@ def loop(words):
         for i in range(0, max(0, len(w) - n * 5) + 1):
             if all(w[i + j * n: i + (j + 1) * n] == w[i: i + n] for j in range(5)): return True
     return False
-# ---------- lessons: what this video taught the player, kept per video on this machine, used next time, told to the bot ----------
-LESSONS = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "perch", "video-lessons.json")
-def video_key():
-    import hashlib
-    h = hashlib.sha256()
-    try:
-        with open(src, "rb") as f: h.update(f.read(1 << 20))
-        h.update(str(os.path.getsize(src)).encode())
-    except OSError:
-        h.update(src.encode())                                  # an address: the address itself
-    return h.hexdigest()[:24]
-def lessons_load():
-    try: return json.load(open(LESSONS))
-    except (OSError, ValueError): return {}
-VKEY = video_key()
-known = lessons_load().get(VKEY, {})
-if known.get("about"):
-    lines.append((opt["from"], 0, f"! from lessons: seen before ({known.get('seen', '?')}), about: {known['about']}" +
-                  (f"; summary then: {known['summary']}" if known.get("summary") else "")))
+VKEY = video_key(src)
+known, _ = kept_load(VKEY)
+if known.get("about") or known.get("span"):
+    try:                                                        # the person's switch (perch-settings), never the bot's
+        import perch_settings; spoil = perch_settings.saved()["spoilers"]
+    except (ImportError, KeyError):
+        spoil = "off"
+    lines.append((opt["from"], 0, f"! seen before ({known.get('seen', '?')}): perch-video --seen {VKEY}" +
+                  (f"; about: {known['about']}" if known.get("about") else "") +
+                  ((f"; summary then: {q(known['summary'])}" if spoil == "on" else
+                    "; a summary is kept, not told unless asked: perch-video --spoiler " + VKEY) if known.get("summary") else "")))
 if known.get("lang") and opt.get("lang", "auto") == "auto" and not opt.get("hint"):
     opt["hint"] = known["lang"]; lines.append((opt["from"], 0, f"! from lessons: lang {known['lang']} (this video taught it before; still checked)"))
 adjusted_to = []                                                 # languages the player had to switch to here
@@ -451,15 +515,24 @@ if opt.get("summary") and words_said.strip():
         lessons.append(f"lesson summary not made: {type(e).__name__} (the local model)")
     if summary: lessons.append(f"lesson summary (the local model, a best guess): {q(summary)}")
 for l in lessons: lines.append(((opt["to"] if opt["to"] is not None else dur), 9, l))
-try:
-    allv = lessons_load(); mine = allv.get(VKEY, {})
+try:                                                            # kept for next time: lessons + lines, never the footage
+    mine, rows = kept_load(VKEY)
+    end_ = opt["to"] if opt["to"] is not None else dur
+    whole = opt["from"] <= 0.05 and end_ >= dur - 0.05
+    mine["name"] = os.path.basename(src) if os.path.isfile(src) else src
+    mine["head"] = re.sub(r" speech:\S+", "", head)
     if adjusted_to: mine["lang"] = adjusted_to[-1][0]
     elif heard and "," not in heard.group(1): mine.setdefault("lang", heard.group(1))
-    if about_txt or top_names: mine["about"] = (about_txt + (f" · names: {', '.join(top_names)}" if top_names else ""))[:400]
+    if whole:                                                   # what it is about only from the whole video, not a piece
+        if about_txt or top_names: mine["about"] = (about_txt + (f" · names: {', '.join(top_names)}" if top_names else ""))[:400]
+        mine["lessons"] = [l for l in lessons if not l.startswith("lesson summary")]
     if summary: mine["summary"] = summary
-    mine["seen"] = time.strftime("%Y-%m-%d"); allv[VKEY] = mine
-    os.makedirs(os.path.dirname(LESSONS), mode=0o700, exist_ok=True)
-    old = os.umask(0o077); json.dump(allv, open(LESSONS + ".new", "w")); os.umask(old); os.replace(LESSONS + ".new", LESSONS)
+    new_ = [e for e in lines if not e[2].startswith(("! from lessons", "! seen before", "lesson "))]   # a piece replaces its stretch
+    rows = [e for e in rows if not (opt["from"] - 0.01 <= e[0] < end_ - 0.01 or (whole and e[0] <= end_))] + new_
+    got = sorted({e[0] for e in rows})
+    mine["span"] = "the whole video" if whole or (mine.get("span") == "the whole video") else (f"{ts(got[0])}-{ts(got[-1])} (parts)" if got else "")
+    mine["seen"] = time.strftime("%Y-%m-%d")
+    kept_save(VKEY, mine, rows)
 except OSError:
     pass
 print(head, flush=True)

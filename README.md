@@ -61,10 +61,10 @@ Every video is different and its sound varies a lot, so a bot can drive a video 
 ./perch-video myvid read           # the lines up to now, only the new ones
 ./perch-video myvid set lang en    # or: set quality small (better on poor sound) · set speech on|off|auto
 ./perch-video myvid back 30        # the last 30 seconds again with the settings now
-./perch-video myvid seek 1:30      # also: pause · go · status · stop
+./perch-video myvid seek 1:30      # also: pause · go · status · lessons · summary · stop
 ```
 The player adjusts itself too: when a piece of speech comes back as a made-up loop it tries the language the clear parts were
-in, then the better model, keeps the clearest, and says so (`! adjusted 0:30.0 lang en`). What a video teaches the player goes to the bot as `lesson` lines at the end (and `perch-video NAME lessons` in a session), and is kept per video on this machine (`~/.local/share/perch/video-lessons.json`), so the next time it plays it starts with what worked (`! from lessons: lang en`, still checked). Tried on three real videos: a
+in, then the better model, keeps the clearest, and says so (`! adjusted 0:30.0 lang en`). What a video teaches the player goes to the bot as `lesson` lines at the end (and `perch-video NAME lessons` in a session), and is kept per video on this machine, one small file each (`~/.local/share/perch/videos/KEY.gz`: the lessons and the lines, never the footage; 2.4 KB for a 2½-minute speech), so the next time it plays it starts with what worked (`! from lessons: lang en`, still checked). `perch-video --seen` lists the videos seen; `perch-video --seen KEY` gives back the kept lines even when the video is gone. No spoilers: a video seen before starts with `! seen before …, about: …`, and the kept summary comes only when asked (`perch-video --spoiler KEY`, or `summary` in a session). It's the person's switch, not the bot's: `perch-settings set spoilers on` (or the settings page) tells the summary at the start. Tried on three real videos: a
 Commons speech (the base model took it for Welsh until the player switched to English), a bamboo band (Music, no words, no
 false cuts) and a film's song (the lyrics line by line, every credit off the screen).
 

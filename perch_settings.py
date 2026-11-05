@@ -3,6 +3,9 @@
 #   ~/.config/perch/settings.json   the person's own choice (perch-settings, the settings page, writes it)
 #   PERCH_MODE / PERCH_CUT / PERCH_ZOOM  for one shell or one bot
 #   --mode X  --cut N  --zoom N          for one call (wins over both)
+# spoilers: the person's own switch for their player (settings page / perch-settings only: no flag, no environment, a bot
+#   never sets it). A video seen before: off (default) = "seen before, about ...", the kept summary only when asked
+#   (perch-video --spoiler, the session's "summary"); on = the kept summary told at the start too.
 # Modes:
 #   auto     words, each line of a full look cut short; when even those would cost more than a zoomed-out picture, the picture
 #   words    the screen's own words (from the page or the apps), each line of a full look cut short (`read N` / all: whole)
@@ -12,7 +15,7 @@
 import json, os, re
 
 MODES = ("auto", "words", "ocr", "picture")
-DEFAULTS = {"mode": "auto", "cut": 60, "zoom": 50}
+DEFAULTS = {"mode": "auto", "cut": 60, "zoom": 50, "spoilers": "off"}
 PATH = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "perch", "settings.json")
 
 
@@ -28,7 +31,11 @@ def check(k, v):
         if k == "cut" and not (n == 0 or 20 <= n <= 400): raise ValueError("cut: 20 to 400 characters a line, or 0 for whole lines")
         if k == "zoom" and not 25 <= n <= 100: raise ValueError("zoom: 25 to 100 (% of the screen's size)")
         return n
-    raise ValueError(f"no setting '{k}' (mode, cut, zoom)")
+    if k == "spoilers":
+        v = str(v).strip().lower()
+        if v not in ("off", "on"): raise ValueError("spoilers: off | on")
+        return v
+    raise ValueError(f"no setting '{k}' (mode, cut, zoom, spoilers)")
 
 
 def saved():
@@ -57,7 +64,7 @@ def save(s):
 def load(args):
     """(settings, args without the flags): saved < environment < --flags. A bad flag raises ValueError (the caller says so)."""
     s = saved()
-    for k in DEFAULTS:
+    for k in ("mode", "cut", "zoom"):
         e = os.environ.get("PERCH_" + k.upper())
         if e:
             try: s[k] = check(k, e)
