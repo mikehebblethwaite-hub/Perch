@@ -24,7 +24,7 @@ FB = _mel_bank()
 DCT = np.cos(np.pi / 40 * (np.arange(40)[None, :] + 0.5) * np.arange(20)[:, None])      # DCT-II, 20 coefficients
 
 
-def voice_print(x):
+def voice_print(x, with_tone=False):
     """x: float32 samples of one stretch (16 kHz) -> a vector, or None if too little voice in it"""
     if len(x) < SR * 0.6: return None
     win, hop = 400, 160
@@ -36,7 +36,7 @@ def voice_print(x):
     if voiced.sum() < 30: return None
     mf = (DCT @ np.log(FB @ pw[voiced].T + 1e-9)).T[:, 1:]       # 19 MFCCs per voiced moment
     # pitch: autocorrelation over 40 ms, 70-320 Hz, on the voiced moments
-    f0 = []
+    f0, hnr = [], []
     w2 = 640
     for i in np.nonzero(voiced)[0][::3]:
         s = x[i * hop:i * hop + w2]
@@ -45,10 +45,46 @@ def voice_print(x):
         if ac[0] <= 0: continue
         lo, hi = SR // 320, SR // 70
         k = lo + int(np.argmax(ac[lo:hi]));
-        if ac[k] / ac[0] > 0.45: f0.append(SR / k)
+        if ac[k] / ac[0] > 0.45:
+            f0.append(SR / k); r_ = min(0.999, ac[k] / ac[0]); hnr.append(10 * np.log10(r_ / (1 - r_)))
     p = np.log(f0) if len(f0) >= 8 else None
     pitch = [np.median(p), np.subtract(*np.percentile(p, [75, 25]))] if p is not None else [np.nan, np.nan]
-    return np.concatenate([mf.mean(0), mf.std(0), pitch])
+    # the MFCCs already are the tone of a voice as the ear hears it (the mel scale copies hearing) and pitch is the rest; the
+    # classic extra measures (formants, clearness, brightness, jitter) added nothing on a room recording (tested 5 Nov 2026:
+    # host questions 86% -> 83%, and twice the time), so they are only for a closer listen on clean vowels
+    return np.concatenate([mf.mean(0), mf.std(0)] + ([tone(x, fr, pw, voiced, f0, hnr)] if with_tone else []) + [pitch])
+
+
+def _lpc(f, order=12):                                          # linear prediction (Levinson-Durbin): the vocal tract as a filter
+    r = np.correlate(f, f, "full")[len(f) - 1:len(f) + order]
+    if r[0] <= 0: return None
+    a = np.zeros(order + 1); a[0] = 1.0; e = r[0]
+    for i in range(1, order + 1):
+        k = -(r[i] + a[1:i] @ r[i - 1:0:-1]) / e
+        a[1:i + 1] = a[1:i + 1] + k * np.concatenate([a[i - 1:0:-1], [1.0]]); e *= 1 - k * k
+        if e <= 0: return None
+    return a
+
+
+def tone(x, fr, pw, voiced, f0, hnr):
+    """the tone of a voice, as people hear it: formants F1-F3 and their spacing (the size and shape of throat and mouth),
+    clear or breathy (harmonics to noise), bright or dark (spectral tilt), steady or wobbly (jitter)"""
+    F = []
+    for i in np.nonzero(voiced)[0][::4]:
+        f = np.append(fr[i][0], fr[i][1:] - 0.97 * fr[i][:-1])  # pre-emphasis, as speech analysis does
+        a = _lpc(f)
+        if a is None: continue
+        rts = [r for r in np.roots(a) if np.imag(r) > 0.01]
+        fq = sorted(np.angle(rts) * SR / (2 * np.pi))
+        fq = [v for v in fq if 200 < v < 4000]
+        if len(fq) >= 3: F.append(fq[:3])
+    F = np.median(np.array(F), 0) if len(F) >= 5 else np.array([np.nan] * 3)
+    disp = (F[2] - F[0]) / 2 if not np.isnan(F).any() else np.nan
+    lf = np.log(np.arange(1, pw.shape[1]) * SR / 1024.0)        # brightness: slope of loudness against frequency
+    tilt = np.median([np.polyfit(lf, np.log(pw[i, 1:] + 1e-9), 1)[0] for i in np.nonzero(voiced)[0][::6]])
+    jit = float(np.median(np.abs(np.diff(f0)) / np.array(f0[1:]))) if len(f0) >= 8 else np.nan
+    h = float(np.median(hnr)) if len(hnr) >= 8 else np.nan
+    return np.array([np.log(F[0]) if F[0] > 0 else np.nan, np.log(F[1]), np.log(F[2]), np.log(disp) if disp > 0 else np.nan, tilt, h, jit])
 
 
 def _kmeans(X, k, rng, iters=40):
