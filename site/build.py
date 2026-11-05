@@ -18,7 +18,15 @@ NAV = [("home", "", "Home"), ("demo", "demo/", "Demo"), ("help", "help/", "Help"
 
 def shell(title, nav, body, depth, extra_head=""):
     up = "../" * depth
-    links = "".join(f'<a href="{up}{href}"{" aria-current=page" if key == nav else ""}>{text}</a>' for key, href, text in NAV)
+    def item(key, href, text):
+        cur = " aria-current=page" if key == nav else ""
+        if key != "demo":
+            return f'<a href="{up}{href}"{cur}>{text}</a>'
+        subs = "".join(f'<a href="{up}demo/{k}/">{html.escape(t)}</a>' for k, t, *_ in DEMOS())
+        return (f'<details class="drop"><summary{" class=cur" if cur else ""}>{text}<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" '
+                f'fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></summary>'
+                f'<div class="drop-menu"><a href="{up}demo/">All demos</a>{subs}</div></details>')
+    links = "".join(item(*n) for n in NAV)
     return f"""<!doctype html>
 <!-- Copyright (c) 2026 Mike J Hebblethwaite. All rights reserved. Perch is open-source: https://github.com/mikehebblethwaite-hub/Perch -->
 <html lang="en-GB"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -26,6 +34,8 @@ def shell(title, nav, body, depth, extra_head=""):
 <link rel="stylesheet" href="{up}assets/site.css">{extra_head}</head><body>
 <header class="top"><div class="wrap"><a class="mark" href="{up}">{MARK}Perch</a><nav aria-label="Site">{links}</nav></div></header>
 <main><div class="wrap">{body}</div></main>
+<script>document.addEventListener("click",e=>{{document.querySelectorAll("details.drop[open]").forEach(d=>{{if(!d.contains(e.target))d.open=false}})}});
+document.addEventListener("keydown",e=>{{if(e.key==="Escape")document.querySelectorAll("details.drop[open]").forEach(d=>{{d.open=false;d.querySelector("summary").focus()}})}});</script>
 <footer><div class="wrap">Perch © 2026 Mike J Hebblethwaite. <a href="https://github.com/mikehebblethwaite-hub/Perch">Open source on GitHub</a> · <a href="https://ko-fi.com/mikehebblethwaite">Support on Ko-fi</a></div></footer>
 </body></html>
 """

@@ -18,6 +18,19 @@ a{color:var(--perch)} a:focus-visible,button:focus-visible{outline:3px solid var
 .top nav{display:flex;gap:6px;margin-left:auto;flex-wrap:wrap}
 .top nav a{color:var(--ink2);text-decoration:none;padding:6px 12px;border-radius:8px;font-size:16px}
 .top nav a:hover{background:var(--bg)} .top nav a[aria-current]{color:var(--ink);font-weight:700;background:var(--bg)}
+.drop{position:relative}
+.drop summary{list-style:none;cursor:pointer;color:var(--ink2);padding:6px 10px 6px 12px;border-radius:8px;font-size:16px;display:flex;align-items:center;gap:4px}
+.drop summary::-webkit-details-marker{display:none}
+.drop summary svg{width:12px;height:12px;transition:transform .15s}
+.drop[open] summary svg{transform:rotate(180deg)}
+.drop summary:hover,.drop[open] summary{background:var(--bg)} .drop summary.cur{color:var(--ink);font-weight:700;background:var(--bg)}
+.drop summary:focus-visible{outline:3px solid var(--perch);outline-offset:3px}
+.drop-menu{position:absolute;right:0;top:calc(100% + 6px);z-index:10;min-width:250px;background:var(--panel);border:1px solid var(--rule);border-radius:12px;
+  box-shadow:0 10px 30px rgba(10,20,30,.16);padding:6px;display:flex;flex-direction:column}
+.top nav .drop-menu a{padding:10px 12px;border-radius:8px;color:var(--ink);font-size:16px}
+.top nav .drop-menu a:first-child{color:var(--ink2);border-bottom:1px solid var(--rule);border-radius:8px 8px 0 0;margin-bottom:4px}
+@media (prefers-reduced-motion:reduce){.drop summary svg{transition:none}}
+@media (max-width:700px){.top .wrap{position:relative}.drop{position:static}.drop-menu{left:16px;right:16px;top:calc(100% - 4px);min-width:0}}
 .beta{display:inline-block;background:var(--beta-bg);color:var(--beta);font-size:13px;font-weight:700;padding:2px 10px;border-radius:20px;vertical-align:middle}
 main{padding:40px 0 64px}
 h1{font-size:46px;line-height:1.08;margin:0 0 14px;letter-spacing:-.015em;max-width:20ch}
