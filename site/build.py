@@ -35,7 +35,7 @@ def run_data():
     ev = json.load(open(os.path.join(RUN, "run.json")))
     for e in ev:
         if e.get("img"):
-            e["img"] = re.sub(r"^/tape/(shot-\d+\.png).*$", r"shots/\1", e["img"])
+            e["img"] = re.sub(r"^/tape/(shot-\d+\.png).*$", r"../shots/\1", e["img"])
     res = next(e for e in ev if e["kind"] == "done")["result"]
     return ev, res
 
@@ -157,7 +157,7 @@ PAGES["index.html"] = ("Perch: bots see screens without screenshots", "home", f"
 <h1>Your bot can see the screen without taking screenshots.</h1>
 <p class="lede">Perch sits where the screen is drawn and tells a bot what is there: the words, the buttons and the boxes they sit in.
 After that it sends only what changed. The bot reads exact text instead of guessing at pictures, and it spends far fewer tokens doing it.</p>
-<div class="cta"><a class="btn solid" href="demo/">Watch the demo</a><a class="btn" href="help/">How it works</a></div>
+<div class="cta"><a class="btn solid" href="demo/">See the demos</a><a class="btn" href="help/">How it works</a></div>
 
 <div class="pair" aria-label="One look at the same inbox, as each bot was sent it">
   <section class="card"><h3><i style="background:var(--shot)"></i>Sent as a screenshot</h3>
@@ -178,7 +178,7 @@ After that it sends only what changed. The bot reads exact text instead of guess
   <div><b>{X_TIME:.1f}× quicker</b>{P["wall"] / 60:.0f} minutes against {S["wall"] / 60:.0f}</div>
   <div><b>Same answers</b>both bots found the 4 emails that need a reply</div>
 </div>
-<p class="note">Measured on one run, on one machine, with a 7.5B model on its processor. Tokens are counted as a chat model like Claude bills them, with each screenshot at Claude's 1,365. <a href="demo/">See the whole run</a>.</p>
+<p class="note">Measured on one run, on one machine, with a 7.5B model on its processor. Tokens are counted as a chat model like Claude bills them, with each screenshot at Claude's 1,365. <a href="demo/screens/">See the whole run</a>.</p>
 
 {win_section()}
 {read_section()}
@@ -186,7 +186,7 @@ After that it sends only what changed. The bot reads exact text instead of guess
 <h2>Video, the bot's way</h2>
 <p style="max-width:68ch">Perch also plays videos for bots: no frames, just timed lines of what was said, shown and heard. Claude watched a
 whole 89-minute Stanford lecture this way and wrote a summary of it from those lines alone.</p>
-<div class="cta"><a class="btn" href="video/">Read the lecture summary</a></div>
+<div class="cta"><a class="btn" href="demo/video/">Read the lecture summary</a></div>
 <h2>What it does</h2>
 <div class="cols">
   <div><h3>Reads the screen as data</h3><p>Pictures are made from words and boxes that already exist. Perch catches them before they become pixels, so nothing has to be turned back into text.</p></div>
@@ -324,11 +324,51 @@ help_page("questions.html", """
 """)
 
 
+
+# ---------------- the demos: one page per thing Perch can do; a new ability adds a line here ----------------
+def DEMOS():
+    v = {}
+    try: v = json.load(open(os.path.join(HERE, "data", "video-demo.json")))
+    except (OSError, ValueError): pass
+    return [
+        ("screens", "Screens without screenshots",
+         "One email job done twice by the same model: once seeing screenshots, once seeing the screen through Perch. Watch both side by side.",
+         f"{X_TOK:.1f}× fewer tokens", "the same answers, in a third of the time"),
+        ("video", "Video, the bot's way",
+         "Claude watched an 89-minute Stanford lecture as timed lines of speech, slide words and sounds, with no frames, and wrote a summary from them.",
+         f"{v.get('lines', 0):,} lines", f"for an {round(v.get('dur', 5343) / 60)}-minute lecture, about {v.get('chars', 0) // 4:,} tokens"),
+    ]
+
+
+def SUBNAV(here):
+    links = "".join(f'<a href="../{k}/"{" aria-current=page" if k == here else ""}>{html.escape(t)}</a>' for k, t, *_ in DEMOS())
+    return f'<nav class="subnav" aria-label="Demos"><a href="../">All demos</a>{links}</nav>'
+
+
+SUBNAV_CSS = """<style>.subnav{display:flex;flex-wrap:wrap;gap:4px 6px;margin:-12px 0 26px;font-size:15px}
+.subnav a{padding:5px 12px;border-radius:20px;border:1px solid var(--rule);color:var(--ink2);text-decoration:none;background:var(--panel)}
+.subnav a:hover{border-color:var(--ink2)} .subnav a[aria-current]{background:var(--ink);color:var(--bg);border-color:var(--ink)}</style>"""
+
+
+def demo_hub():
+    cards = "".join(f"""<a class="demo-card" href="{k}/"><h2>{html.escape(t)}</h2><p>{html.escape(d)}</p>
+<div class="demo-num"><b>{html.escape(n)}</b>{html.escape(m)}</div><span class="demo-go">Open the demo</span></a>""" for k, t, d, n, m in DEMOS())
+    body = f"""<h1>Demos</h1>
+<p class="lede">Each one is a real, measured run of something Perch can do. New ones arrive as Perch learns them.</p>
+<div class="demos">{cards}</div>"""
+    css = """<style>.demos{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:22px;margin-top:30px}
+.demo-card{display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--rule);border-radius:14px;padding:20px 22px;color:var(--ink);text-decoration:none}
+.demo-card:hover{border-color:var(--perch)} .demo-card h2{margin:0 0 6px;font-size:24px} .demo-card p{margin:0 0 16px;color:var(--ink2);flex:1}
+.demo-num{border-top:3px solid var(--rule);padding-top:8px;color:var(--ink2);font-size:15px} .demo-num b{display:block;font-size:26px;color:var(--ink)}
+.demo-go{margin-top:16px;font-weight:700;color:var(--perch)}</style>"""
+    return shell("Demos: Perch", "demo", body, 1, css)
+
+
 def build_demo():
     src = open(os.path.join(PERCH, "demo", "demo.html")).read()
     # the replay only: no live run on this site; data from run.json next to it
     src = src.replace('<button id="go" class="second">Run it live</button>', '')
-    src = src.replace('fetch("/last-run")', 'fetch("run.json")')
+    src = src.replace('fetch("/last-run")', 'fetch("../run.json")')
     src = re.sub(r'\$\("go"\)\.textContent = `Run it live[^;]*;', '', src)
     src = re.sub(r'\$\("go"\)\.onclick = async \(\) => \{.*?\};\n', '', src, flags=re.S)
     src = re.sub(r'const es = new EventSource\("/events"\);.*?lastRun\(\);', 'lastRun();', src, flags=re.S)
@@ -390,7 +430,8 @@ def build_demo():
         "@media (max-width:900px){.lanes,.graphs,.answers{grid-template-columns:1fr}.race{grid-template-columns:90px 1fr 110px}.facts{grid-template-columns:repeat(2,1fr)}h1{font-size:34px}.page>header{grid-template-columns:1fr}}")
     assert "\nheader{" not in style and "}header{" not in style, "demo build: the demo's header rule would style the site's header"
     src = src.replace("Watch the last run side by side", "Watch the run side by side")
-    page = shell("Demo: Perch", "demo", body, 1, f"<style>{style}\n.page{{padding:0}}{dstyle}</style>")
+    body = SUBNAV("screens") + body
+    page = shell("Screens without screenshots: Perch demo", "demo", body, 2, f"<style>{style}\n.page{{padding:0}}{dstyle}</style>" + SUBNAV_CSS)
     page = page.replace('<main><div class="wrap">', '<main><div class="wrap" style="max-width:1500px">')
     return page
 
@@ -608,9 +649,13 @@ def build_video():
     got = video_page()
     if not got: return
     body, extra = got
-    page = shell("A bot watched a lecture: Perch's video player", "demo", body, 1, extra)
-    os.makedirs(os.path.join(OUT, "video"), exist_ok=True)
-    open(os.path.join(OUT, "video", "index.html"), "w").write(page)
+    page = shell("A bot watched a lecture: Perch's video player", "demo", SUBNAV("video") + body.replace('href="../help/"', 'href="../../help/"'), 2, extra + SUBNAV_CSS)
+    os.makedirs(os.path.join(OUT, "demo", "video"), exist_ok=True)
+    open(os.path.join(OUT, "demo", "video", "index.html"), "w").write(page)
+    os.makedirs(os.path.join(OUT, "video"), exist_ok=True)               # the first address it had: sent on
+    open(os.path.join(OUT, "video", "index.html"), "w").write('<!doctype html><meta charset="utf-8"><title>Moved</title>'
+        '<meta http-equiv="refresh" content="0;url=../demo/video/"><link rel="canonical" href="../demo/video/">'
+        '<p>This page moved to <a href="../demo/video/">the video demo</a>.</p>')
 
 
 def main():
@@ -630,7 +675,9 @@ def main():
     if os.path.exists(os.path.join(WRUN, "shot-1.png")):     # the Windows run's one screenshot shown on the home page
         os.makedirs(os.path.join(OUT, "demo", "win"), exist_ok=True)
         shutil.copy(os.path.join(WRUN, "shot-1.png"), os.path.join(OUT, "demo", "win", "shot-1.png"))
-    open(os.path.join(OUT, "demo", "index.html"), "w").write(build_demo())
+    os.makedirs(os.path.join(OUT, "demo", "screens"), exist_ok=True)
+    open(os.path.join(OUT, "demo", "screens", "index.html"), "w").write(build_demo())
+    open(os.path.join(OUT, "demo", "index.html"), "w").write(demo_hub())
     build_video()
     open(os.path.join(OUT, "robots.txt"), "w").write("User-agent: *\nDisallow: /\n")
     print("built", sum(len(fs) for _, _, fs in os.walk(OUT)), "files in", OUT)
