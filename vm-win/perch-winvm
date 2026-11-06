@@ -5,8 +5,8 @@
 #   make     hands-off install from Microsoft's multi-edition ISO and the host's embedded OEM key
 #            ISOs: put Windows11_26H2_MultiEdition_en-GB_x64.iso and virtio-win-stable.iso in vm/win (or PERCH_ISO_DIR),
 #            or set PERCH_ISO_FETCH to a command run as: $PERCH_ISO_FETCH NAME DEST (local settings: perch.local.env)
-#   start    run with VNC 127.0.0.1:5991 and SPICE 127.0.0.1:5992 (SPICE supports guest clipboard)
-#            remote-viewer spice://127.0.0.1:5992, or xtigervncviewer 127.0.0.1::5991
+#   start    run with VNC 127.0.0.1:43874 and SPICE 127.0.0.1:43875 (SPICE supports guest clipboard)
+#            remote-viewer spice://127.0.0.1:43875, or xtigervncviewer 127.0.0.1::43874
 #   perch    run it under Perch's VM eye
 #   guest    put Perch's Windows helper in (C:\perch, logon task PerchGuest)
 #   stop | ssh [cmd] | status | gone (delete it all)
@@ -28,8 +28,8 @@ NIC="user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$SSHP-:22"; [ "${PERCH_WIN_
 V="ssh -i $T/key -p $SSHP -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 mike@127.0.0.1"
 up() { [ -f $T/vm.pid ] && kill -0 "$(cat $T/vm.pid)" 2>/dev/null; }
 qemu() {   # $@: extra args (install discs)
-    qemu-system-x86_64 -enable-kvm -cpu $CPU $BALLOON -m $MEM -smp $CPUS -name perch-win -vga std -display none -vnc 127.0.0.1:91 \
-        -spice addr=127.0.0.1,port=5992,disable-ticketing=on,disable-agent-file-xfer=on \
+    qemu-system-x86_64 -enable-kvm -cpu $CPU $BALLOON -m $MEM -smp $CPUS -name perch-win -vga std -display none -vnc 127.0.0.1:37974 \
+        -spice addr=127.0.0.1,port=43875,disable-ticketing=on,disable-agent-file-xfer=on \
         -device virtio-serial-pci -chardev spicevmc,id=vdagent,name=vdagent \
         -device virtserialport,chardev=vdagent,name=com.redhat.spice.0 \
         -drive file=$T/disk.qcow2,if=virtio -device qemu-xhci -device usb-tablet -rtc base=localtime \
@@ -93,18 +93,18 @@ PY
     chmod 600 "$T/answer.iso"
     qemu-img create -q -f qcow2 disk.qcow2 $DISK
     qemu -drive file=$T/$WINISO,media=cdrom,index=1 -drive file=$T/answer.iso,media=cdrom,index=2 -boot order=dc || exit 1
-    echo "installing (hands-off; watch on VNC 127.0.0.1:5991 if you like)..."
+    echo "installing (hands-off; watch on VNC 127.0.0.1:43874 if you like)..."
     if wait_ready 900; then
         $V 'Stop-Computer -Force' >/dev/null 2>&1; for i in $(seq 60); do up || break; sleep 2; done
         rm -f -- "$T/$VIRTIO" "$T/answer.iso"
         rm -rf -- "$T/answer"
         echo "made: Windows is installed; OEM key-bearing setup media removed"
     else
-        echo "install did not finish: look on VNC 127.0.0.1:5991 (perch-winvm start) and in C:\\perch-firstlogon.log"; exit 1
+        echo "install did not finish: look on VNC 127.0.0.1:43874 (perch-winvm start) and in C:\\perch-firstlogon.log"; exit 1
     fi ;;
 start)
     up && { echo "already running"; exit 0; }
-    qemu && wait_ready 120 && echo "running: VNC 127.0.0.1:5991; clipboard-enabled SPICE 127.0.0.1:5992; ssh: perch-winvm ssh" ;;
+    qemu && wait_ready 120 && echo "running: VNC 127.0.0.1:43874; clipboard-enabled SPICE 127.0.0.1:43875; ssh: perch-winvm ssh" ;;
 perch)
     up && { echo "it is running with VNC: perch-winvm stop first"; exit 1; }
     PERCH_VM_MEM=$MEM PERCH_VM_CPUS=$CPUS PERCH_VM_CPU="$CPU" PERCH_VM_NIC="$NIC" PERCH_VM_KEYMAP="${PERCH_VM_KEYMAP:-gb}" \
@@ -127,7 +127,7 @@ for m in ({"execute": "qmp_capabilities"}, {"execute": "system_powerdown"}): f.w
        if pgrep -A -f "qemu-system.*$T/disk.qcow2" >/dev/null; then echo "still running (Windows did not shut down in 3 minutes)"; exit 1; fi
        echo stopped ;;
 ssh)   shift; exec $V "$@" ;;
-status) if up; then echo "running (VNC 127.0.0.1:5991; clipboard-enabled SPICE 127.0.0.1:5992; ssh: perch-winvm ssh)"
+status) if up; then echo "running (VNC 127.0.0.1:43874; clipboard-enabled SPICE 127.0.0.1:43875; ssh: perch-winvm ssh)"
         elif pgrep -A -f -- '-name perch-win ' >/dev/null; then echo "running under Perch (look: perch-vmlook win; hands: perch-act win; ssh: perch-winvm ssh)"
         else echo "not running"; fi ;;
 gone)  "$0" stop; rm -rf $T; echo removed ;;
