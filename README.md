@@ -19,6 +19,8 @@ Perch is an open-source tool that lets bots and automated systems see your scree
   nothing is captured. A small helper inside the guest sends the apps' own words: AT-SPI on Linux, UI Automation on Windows.
   Perch's hands type and click through QEMU's own keyboard and mouse.
 - **Web pages:** `perch-web` gives a page as words and numbered actions (`click 15`), then only what changed.
+- **PDFs:** `perch-web NAME go FILE.pdf` (or a PDF's address) reads a PDF the same way: each page's own words where they
+  sit (from the file, never OCR), its links, and each page as drawn as one picture for `pixels N`. Needs `poppler-utils`.
 - **Apps that give no words** (games, canvas drawing, remote desktops, old or custom-drawn programs) are read from their
   pixels on the machine itself (Tesseract: `sudo apt install tesseract-ocr`) and sent as `R` lines: no tokens, and only what
   changed. In a VM (`perch-vmlook`): the parts that changed without words. On a Linux display (`perch-look`): the
@@ -98,7 +100,7 @@ Copy each block into a terminal, one at a time.
 **1. Get it and build it**
 ```bash
 sudo apt install build-essential libx11-dev libxdamage-dev libxext-dev libxfixes-dev libglib2.0-dev \
-     xvfb x11-utils python3-pyatspi gir1.2-atspi-2.0 gir1.2-webkit2-4.1 qemu-system-x86 tesseract-ocr
+     xvfb x11-utils python3-pyatspi gir1.2-atspi-2.0 gir1.2-webkit2-4.1 qemu-system-x86 tesseract-ocr poppler-utils
 git clone https://github.com/mikehebblethwaite-hub/Perch.git
 cd Perch
 make

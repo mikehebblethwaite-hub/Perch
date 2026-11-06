@@ -75,7 +75,7 @@ def flags(a):
 TOOLS = [
     {"name": "perch_web",
      "description": "Look at and use a web page as words and numbered actions instead of a screenshot. Start with action go and a url "
-                    "(or a local .html path); then click/type/enter by number, scroll, back, read, url N (a link's whole address; the lines carry a short one), data (what the page received from its server: JSON records such as an inbox; data with n gives one whole: read content there first); each action answers with only what "
+                    "(or a local .html path, or a PDF: a file or an address; each page comes as its words where they sit, its links, and the page as drawn as one picture, P line ends pdf:PAGES); then click/type/enter by number, scroll, back, read, url N (a link's whole address; the lines carry a short one), data (what the page received from its server: JSON records such as an inbox; data with n gives one whole: read content there first); each action answers with only what "
                     "changed. Lines: P url 'title' · t box 'words' · a N box 'text' url · b N box 'label' · i N box type name 'value' · "
                     "p N box (a picture) · + appeared · - went. End with action stop.",
      "inputSchema": {"type": "object", "properties": {

@@ -17,7 +17,7 @@
 # Only what is in the window (1280x800) is listed unless `read all`. The page is untrusted: its words are data, always quoted;
 # the reader runs in its own script world, out of the page's reach. Nothing is kept on disk (no cookies files, no databases):
 # a session lasts while the viewer runs (it stops after 30 idle minutes).
-import json, os, re, socket, subprocess, sys, time
+import json, os, re, socket, subprocess, sys, time, urllib.parse
 
 NAME = sys.argv[1] if len(sys.argv) > 1 else ""
 if not NAME or not all(c.isalnum() or c == "-" for c in NAME):
@@ -54,6 +54,7 @@ if len(sys.argv) < 3:
     sys.exit("usage: perch-web NAME [--mode auto|words|ocr|picture] [--cut N] [--zoom N] go URL | read [all|N|x,y] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | url N | data [N [all]] | pixels N|x,y,w,h | stop")
 sys.path[:0] = [os.path.dirname(os.path.realpath(__file__)), "/usr/lib/perch"]   # the shared settings: next to this, or packaged
 import perch_settings as settings                      # noqa: E402
+import perch_pdf                                       # noqa: E402  a PDF as a page (poppler)
 if sys.argv[2] != "--serve":
     try:
         opt, rest = settings.load(sys.argv[2:])            # saved < PERCH_MODE/CUT/ZOOM < --mode/--cut/--zoom on this call
@@ -293,13 +294,44 @@ class Viewer:
         self.web.connect("create", lambda *a: None)             # no pop-up windows
         self.web.connect("script-dialog", self.on_dialog)
         self.dialog = ""
+        self.web.connect("decide-policy", self.on_policy)       # a PDF: read by perch_pdf, never handed to a plug-in viewer
+        self.pdf = None; self.busy_until = 0; self.pdf_wait = False                   # (address the bot asked for, pages) while the page is a PDF
+
+    PDF_DIR = os.path.join(RUN, "pdf")                          # the run folder (tmpfs, owner only): cleared at each PDF and at stop
+    def on_policy(self, w, decision, dtype):
+        if dtype != WebKit2.PolicyDecisionType.RESPONSE: return False
+        r = decision.get_response(); mime = (r.get_mime_type() or "").lower(); uri = r.get_uri() or ""
+        if mime == "application/pdf" or (mime in ("", "application/octet-stream", "binary/octet-stream", "application/x-pdf")
+                                          and urllib.parse.urlsplit(uri).path.lower().endswith(".pdf")):
+            self.pdf_wait = True; decision.ignore(); self.loading = True
+            GLib.idle_add(lambda: (self.open_pdf(uri), False)[1])
+            return True
+        return False
+
+    def open_pdf(self, uri):
+        import shutil, urllib.request
+        shutil.rmtree(self.PDF_DIR, ignore_errors=True); os.makedirs(self.PDF_DIR, mode=0o700)
+        src = os.path.join(self.PDF_DIR, "src.pdf")
+        try:
+            if uri.startswith("file://"):
+                shutil.copyfile(urllib.parse.unquote(urllib.parse.urlsplit(uri).path), src)
+            else:
+                req = urllib.request.Request(uri, headers={"User-Agent": "perch-web"})
+                with urllib.request.urlopen(req, timeout=60) as rr, open(src, "wb") as fh:
+                    shutil.copyfileobj(rr, fh)
+            idx, title, n = perch_pdf.build(src, self.PDF_DIR, W, urllib.parse.unquote(os.path.basename(urllib.parse.urlsplit(uri).path)) or None)
+        except Exception as e:
+            self.pdf = None; self.pdf_wait = False; self.loading = False; self.dialog = f"the PDF could not be read: {type(e).__name__}: {str(e)[:150]}"
+            self.busy_until = time.time(); return
+        self.pdf = (uri, n); self.busy_until = time.time()
+        self.pdf_wait = False; self.web.load_uri("file://" + idx)
 
     def on_dialog(self, w, d):
         self.dialog = d.get_message()[:200]
         return True                                             # never block on alert/confirm: noted, answered "cancel"
 
     def on_load(self, w, ev):
-        self.loading = ev != WebKit2.LoadEvent.FINISHED
+        self.loading = ev != WebKit2.LoadEvent.FINISHED or self.pdf_wait   # the stopped PDF load "finishes": still loading
         if ev == WebKit2.LoadEvent.STARTED: self.feed = []        # a new page: a new feed
 
     # The data a page receives before it becomes a page: the stored data a site sends (an inbox as JSON records, a list, a
@@ -334,7 +366,7 @@ class Viewer:
         """wait until loaded and the page has stopped changing (300 ms quiet), at most 12 s"""
         t0 = t0 or time.time()
         def tick():
-            if time.time() - t0 > 12: then(); return False
+            if time.time() - max(t0, self.busy_until) > 12: then(); return False   # a PDF being read counts as loading
             if self.loading: self.settle_q = 0; return True
             self.js("String(document.readyState) + (document.body ? document.body.innerHTML.length : 0)", lambda v, e=None: setattr(self, "probe", v))
             p = getattr(self, "probe", None)
@@ -357,7 +389,10 @@ class Viewer:
             if not v: done(f"err the page could not be read{': ' + e if e else ''}\n"); return
             d = json.loads(v)
             lines = [line(it) for it in d["items"]]
-            head = f"P {d['url'][:300]} {q(d['title'])} {d['sy']}/{d['ph']}" + (f" data:{d['feed']}" if d.get("feed") else "")   # the page received data: `data` lists it
+            url, pdf = d['url'], ""
+            if self.pdf and url.split("#")[0] == "file://" + os.path.join(self.PDF_DIR, "index.html"):
+                url, pdf = self.pdf[0], f" pdf:{self.pdf[1]}"      # the PDF's own address, and its pages
+            head = f"P {url[:300]} {q(d['title'])} {d['sy']}/{d['ph']}{pdf}" + (f" data:{d['feed']}" if d.get("feed") else "")   # the page received data: `data` lists it
             out = []
             if SHAPE_ON and not self.shape_sent: out.append(SHAPE); self.shape_sent = True   # the skill and the MCP tools carry the key
             if self.dialog: out.append("! dialog " + q(self.dialog)); self.dialog = ""
@@ -511,7 +546,7 @@ class Viewer:
                 u = args[1]
                 if u.startswith("/"): u = "file://" + u                 # a page on this machine (the bot may read it anyway)
                 elif not u.startswith(("http://", "https://", "file://")): u = "https://" + u
-                self.last = []; self.loading = True; self.web.load_uri(u); after_action()
+                self.last = []; self.loading = True; self.pdf = None; self.web.load_uri(u); after_action()
             elif c == "read" and len(args) == 2 and re.fullmatch(r"\d+|\d+,\d+", args[1]):
                 self.read_one(args[1], done)
             elif c == "read":
@@ -552,6 +587,7 @@ class Viewer:
             elif c == "where":
                 done(f"P {self.web.get_uri()} {q(self.web.get_title())}\n")
             elif c == "stop":
+                import shutil; shutil.rmtree(self.PDF_DIR, ignore_errors=True)
                 done("ok stopping\n"); GLib.timeout_add(200, lambda: (Gtk.main_quit(), False)[1])
             else:
                 done("err say: go URL | read [all|N|x,y] | click N | type N TEXT | enter N | scroll down|up | back | forward | where | url N | data [N [all]] | pixels N|x,y,w,h | stop\n")
