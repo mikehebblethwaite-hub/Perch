@@ -2,9 +2,15 @@
 # perch_describe: describe still pictures for family archives, on this machine (local vision model via ollama).
 # Output is the media-pack info JSON (the pack tool's build --info), one file per picture, so it can be packed straight away.
 #   python3 perch_describe.py FOLDER OUTDIR [LIMIT]
+#   python3 perch_describe.py teach PICTURE OUTDIR [--is WHAT] [--by MAKER] [--note N] [--from WHO]
 # Rules built in: no names (people are counted, never named); unsure = said as unsure, with a sure score 1-11 (never 0);
 # only what can be seen; the picture's own words go in text_in_media; nothing leaves this machine.
-import base64, io, json, os, re, sys, time, urllib.request
+# Taught: what a person who KNOWS says about a picture (what it is, who made it) is kept in OUTDIR/taught.jsonl, bound to
+# that exact picture by its sha256, and goes in the picture's info as "taught" (how: user). The look never guesses names.
+# No poisoning (as wikis get): a teaching counts only if the machine account that wrote it is a teacher: PERCH_TEACHERS
+# (comma list) or, unset, the owner of taught.jsonl. The account is read from the system, never from what is typed;
+# a teaching applies only to its own exact picture, never spreads to others by itself.
+import base64, hashlib, io, json, os, pwd, re, sys, time, urllib.request
 from PIL import Image
 import perch_tech                                       # a reverse engineer's known rules: codes, packages, LED legs
 
@@ -141,6 +147,66 @@ def describe_one(path):
     return info
 
 
+TAUGHT = "taught.jsonl"
+
+
+def sha256_of(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def taught_for(path, outdir, sha=None):
+    """What people taught about this exact picture (matched by sha256, so a renamed copy still matches), oldest first."""
+    tf = os.path.join(outdir, TAUGHT)
+    if not os.path.exists(tf):
+        return []
+    sha = sha or sha256_of(path)
+    teachers = {t.strip() for t in os.environ.get("PERCH_TEACHERS", "").split(",") if t.strip()} or \
+               {pwd.getpwuid(os.stat(tf).st_uid).pw_name}
+    out = []
+    with open(tf, encoding="utf-8") as f:
+        for line in f:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("sha256") == sha and row.get("account") in teachers:
+                out.append({k: v for k, v in row.items() if k != "sha256"})
+    return out
+
+
+def teach(path, outdir, what=None, maker=None, note=None, who="user"):
+    """Keep what a person who knows says about a picture; add it to the picture's info now if it was already described."""
+    if not (what or maker or note):
+        raise ValueError("nothing to teach: give --is, --by or --note")
+    sha = sha256_of(path)
+    row = {"sha256": sha, "name": os.path.basename(path), "how": "user", "from": who,
+           "account": pwd.getpwuid(os.geteuid()).pw_name,
+           "when": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    if what: row["is"] = what
+    if maker: row["by"] = maker
+    if note: row["note"] = note
+    os.makedirs(outdir, exist_ok=True)
+    tf = os.path.join(outdir, TAUGHT)
+    with open(tf, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    os.chmod(tf, 0o644) if os.stat(tf).st_uid == os.geteuid() else None   # others read it; only its owner writes
+    dst = os.path.join(outdir, os.path.basename(path) + ".info.json")
+    if os.path.exists(dst):                               # already described: add it now (write new, then swap in)
+        with open(dst, encoding="utf-8") as f:
+            info = json.load(f)
+        info["taught"] = taught_for(path, outdir, sha)
+        tmp = dst + ".new"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(info, f, ensure_ascii=False, indent=2)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, dst)
+    return row
+
+
 def describe(folder, outdir, limit=10**9):
     os.makedirs(outdir, exist_ok=True)
     names = sorted(n for n in os.listdir(folder) if n.lower().endswith(EXT))[:limit]
@@ -156,6 +222,8 @@ def describe(folder, outdir, limit=10**9):
         info.update({"version": "1.0", "media_type": "image",
                      "generator": {"tool": "perch_describe", "model": MODEL + " (local)",
                                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}})
+        t = taught_for(os.path.join(folder, n), outdir)
+        if t: info["taught"] = t
         with open(dst, "w", encoding="utf-8") as f:
             json.dump(info, f, ensure_ascii=False, indent=2)
         done += 1
@@ -164,4 +232,12 @@ def describe(folder, outdir, limit=10**9):
 
 
 if __name__ == "__main__":
-    describe(sys.argv[1], sys.argv[2], int(sys.argv[3]) if len(sys.argv) > 3 else 10**9)
+    if len(sys.argv) > 1 and sys.argv[1] == "teach":
+        import argparse
+        ap = argparse.ArgumentParser(prog="perch_describe.py teach")
+        ap.add_argument("picture"); ap.add_argument("outdir")
+        ap.add_argument("--is", dest="what"); ap.add_argument("--by"); ap.add_argument("--note"); ap.add_argument("--from", dest="who", default="user")
+        a = ap.parse_args(sys.argv[2:])
+        print(json.dumps(teach(a.picture, a.outdir, a.what, a.by, a.note, a.who), ensure_ascii=False))
+    else:
+        describe(sys.argv[1], sys.argv[2], int(sys.argv[3]) if len(sys.argv) > 3 else 10**9)
