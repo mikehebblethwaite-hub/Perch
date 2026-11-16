@@ -1,5 +1,7 @@
 CFLAGS ?= -O2 -Wall -Wextra
-all: perch-eye perch-feed perch-tap perch-box perch-chip perch-hen perch-wait perch-crop perch-scene perch-shotbot perch-cam perch-vm libperch-text.so
+all: perch-eye perch-feed perch-tap perch-box perch-chip perch-hen perch-wait perch-crop perch-scene perch-shotbot perch-cam perch-vm libperch-text.so libperch-murmur.so
+libperch-murmur.so: perch-murmur.c
+	$(CC) -O3 -Wall -Wextra -fPIC -shared -o $@ $< -lm
 libperch-text.so: perch-text.c
 	$(CC) $(CFLAGS) -fPIC -shared -o $@ $< -ldl -lpthread
 perch-eye: perch-eye.c perch-box.h perch-core.h
@@ -63,3 +65,4 @@ test:			# real checks on real videos (skipped when the test video is not here)
 	./tests/test_sky.py
 	./tests/test_loop.py
 	./tests/test_where.py
+	./tests/test_murmur.py

@@ -16,7 +16,7 @@
 # much they matter. Kinds with no examiner yet become TWIGS: kept with all a later examiner needs, never dropped (Mike).
 import json, math, os, subprocess, sys, time
 from concurrent.futures import ProcessPoolExecutor
-import numpy as np
+import perch_murmur as mm                    # Perch's own number grids (C), not numpy
 from PIL import Image
 
 LOOK_W = 160                                            # the zoomed-out look: this many pixels across
@@ -98,14 +98,14 @@ def ex_words(p):
 def ex_movement(p):
     """A movement, zoomed in: the crop from the full frame. Its size, its colour at full depth in each layer against what was
     around it (so a green thing moving in green is still told apart), and a whole look at it when it is big enough."""
-    im = np.asarray(Image.open(p["picture"]).convert("RGB"), dtype=np.float32)
+    im = mm.asarray(Image.open(p["picture"]).convert("RGB"), dtype=mm.float32)
     h, w, _ = im.shape
     mean = im.reshape(-1, 3).mean(0)
     found = {"size_px": [w, h], "colour": [round(float(v), 1) for v in mean]}
     if p.get("around"):
         diff = [round(float(a - b), 1) for a, b in zip(mean, p["around"])]
         found["against_around"] = diff
-        if np.argmax(np.abs(diff)) == 1 and p["around"][1] >= max(p["around"][0], p["around"][2]):
+        if mm.argmax(mm.abs(diff)) == 1 and p["around"][1] >= max(p["around"][0], p["around"][2]):
             found["note"] = "it differs from its surroundings most in green: a thing moving in green"
     more = [{"kind": "look", "picture": p["picture"], "why": "a moving thing big enough to look at", "score": 4}] if min(w, h) >= 48 and p.get("look", True) else []
     return [found], more
@@ -126,11 +126,11 @@ def ex_clouds(p):
     blue (clear) against white or grey (cloud); stones, trees and roofs are left out. Measured, not guessed; the cloud's KIND
     (and so the weather and the place) needs a learned eye."""
     import perch_sky
-    a = np.asarray(Image.open(p["picture"]).convert("RGB"), dtype=np.float32)
-    small_a = small(a.astype(np.uint8))
+    a = mm.asarray(Image.open(p["picture"]).convert("RGB"), dtype=mm.float32)
+    small_a = small(a.astype(mm.uint8))
     hz = perch_sky.find_horizon(small_a) or 0.5
     top = small_a[: max(1, int(hz * small_a.shape[0]))].reshape(-1, 3)
-    lum = top @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    lum = top @ mm.array([0.2126, 0.7152, 0.0722], dtype=mm.float32)
     blue = (top[:, 2] - top[:, 0] > 25) & (top[:, 2] > 110)
     cloud = ((top.max(1) - top.min(1)) < 30) & (lum > 130) & ~blue
     seen = int(blue.sum() + cloud.sum())
@@ -172,7 +172,7 @@ def frames_of(src):
     """(t, full frame) pairs. A picture: one frame at t=0. A video: decoded once, FRAME_W wide, at its own frame rate."""
     if src.lower().endswith(PICTURES):
         im = Image.open(src).convert("RGB")
-        yield 0.0, np.asarray(im, dtype=np.uint8)
+        yield 0.0, mm.asarray(im, dtype=mm.uint8)
         return
     pr = json.loads(subprocess.run(["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", "-select_streams", "v:0", src],
                                    capture_output=True, text=True).stdout or "{}")
@@ -188,7 +188,7 @@ def frames_of(src):
     while True:
         raw = p.stdout.read(size)
         if len(raw) < size: break
-        yield n / fps, np.frombuffer(raw, dtype=np.uint8).reshape(h, w, 3)
+        yield n / fps, mm.frombuffer(raw, dtype=mm.uint8).reshape(h, w, 3)
         n += 1
     p.wait()
 
@@ -204,18 +204,18 @@ def has_sound(src):
 
 def small(frame):
     h, w, _ = frame.shape
-    if w <= LOOK_W: return frame.astype(np.float32)
-    return np.asarray(Image.fromarray(frame).resize((LOOK_W, max(1, round(h * LOOK_W / w))), Image.BILINEAR), dtype=np.float32)
+    if w <= LOOK_W: return frame.astype(mm.float32)
+    return mm.asarray(Image.fromarray(frame).resize((LOOK_W, max(1, round(h * LOOK_W / w))), Image.BILINEAR), dtype=mm.float32)
 
 
 def changed_regions(a, b):
     """Where the zoomed-out look changed, in each colour layer separately at full depth (a change only in green still counts).
     Returns (regions as [x0,y0,x1,y1] shares, share of the picture changed)."""
-    d = np.abs(a - b)                                     # per layer
-    med = np.median(d.reshape(-1, 3), axis=0)
+    d = mm.abs(a - b)                                     # per layer
+    med = mm.median(d.reshape(-1, 3), axis=0)
     if float(med.max()) > 8: return [], 1.0               # most pixels changed: the whole picture (a cut, the light), not a movement
     noise = med + 1.0
-    hit = (d > np.maximum(6.0, 4 * noise)).any(axis=2)
+    hit = (d > mm.maximum(6.0, 4 * noise)).any(axis=2)
     share = float(hit.mean())
     import perch_sky
     boxes = []
@@ -305,7 +305,7 @@ class Trunk:
                                   "-f", "image2pipe", "-vcodec", "png", "-"], capture_output=True).stdout
             if not raw: return None
             import io
-            fr = np.asarray(Image.open(io.BytesIO(raw)).convert("RGB"))
+            fr = mm.asarray(Image.open(io.BytesIO(raw)).convert("RGB"))
         h, w, _ = fr.shape
         if where:
             x0, y0, x1, y1 = where
@@ -411,7 +411,7 @@ class Trunk:
                         p = self.mark("movement", t, "something moved", 6, [round(v, 3) for v in r],
                                       picture=self.crop(t, r, f"{self.next_id}-move.png"),
                                       around=[round(float(v), 1) for v in prev.reshape(-1, 3).mean(0)] if around.size == 0 else
-                                             [round(float(v), 1) for v in np.median(prev.reshape(-1, 3), axis=0)], look=self.look)
+                                             [round(float(v), 1) for v in mm.median(prev.reshape(-1, 3), axis=0)], look=self.look)
                         tid = p["id"]
                         self.tracks[tid] = {"where": r, "path": [], "quiet": 0}
                     tr = self.tracks[tid]

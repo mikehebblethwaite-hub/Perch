@@ -9,7 +9,7 @@
 # Every clue says how sure it is (1-11, never 0) and what it rests on. A clue the picture cannot give is said as unknown.
 # Not yet: shadow direction (needs the scene's ground plane), star patterns (north, latitude, time: needs a star list).
 import datetime as dt, json, math, os, sys
-import numpy as np
+import perch_murmur as mm                    # Perch's own number grids (C), not numpy
 from PIL import Image, ImageOps
 
 R = math.radians
@@ -132,62 +132,48 @@ def _load(path, size=800):
     with Image.open(path) as im:
         im = ImageOps.exif_transpose(im).convert("RGB")
         im.thumbnail((size, size))
-        return np.asarray(im, dtype=np.float32)
+        return mm.asarray(im, dtype=mm.float32)
 
 
 def _blobs(mask):
-    """Joined bright patches (4-neighbour), as lists of (y, x). Small pictures only."""
-    h, w = mask.shape
-    seen = np.zeros_like(mask, dtype=bool)
-    out = []
-    ys, xs = np.nonzero(mask)
-    for y0, x0 in zip(ys, xs):
-        if seen[y0, x0]: continue
-        stack, pts = [(y0, x0)], []
-        seen[y0, x0] = True
-        while stack:
-            y, x = stack.pop(); pts.append((y, x))
-            if len(pts) > 20000: break
-            for yy, xx in ((y + 1, x), (y - 1, x), (y, x + 1), (y, x - 1)):
-                if 0 <= yy < h and 0 <= xx < w and mask[yy, xx] and not seen[yy, xx]:
-                    seen[yy, xx] = True; stack.append((yy, xx))
-        out.append(pts)
-    return out
+    """Joined bright patches (4-neighbour), as lists of (y, x), found in reading order. murmur's C does the walk (no cap on size:
+    the old Python walk stopped at 20,000 pixels, a made-up limit)."""
+    return mm.patches(mask)
 
 
 def sky_band(a):
     """The top of the picture, where the sky is when there is one: brightness, colour, how even it is."""
     top = a[: max(4, a.shape[0] // 4)]
-    lum = top @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    lum = top @ mm.array([0.2126, 0.7152, 0.0722], dtype=mm.float32)
     r, g, b = (float(top[..., i].mean()) for i in range(3))
-    gy = np.abs(np.diff(lum, axis=0)).mean() + np.abs(np.diff(lum, axis=1)).mean()
+    gy = mm.abs(mm.diff(lum, axis=0)).mean() + mm.abs(mm.diff(lum, axis=1)).mean()
     out = {"brightness": round(float(lum.mean()), 1), "blue": round((b - r) / 255, 3), "warm": round((r - b) / 255, 3),
            "even": round(float(gy), 2)}
     # the sky's own pixels: the upper half's bright, smooth pixels (stones and trees in the band are left out)
     half = a[: max(4, a.shape[0] // 2)]
-    hl = half @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
-    smooth = np.zeros_like(hl, dtype=bool)
-    smooth[1:-1, 1:-1] = (np.abs(hl[2:, 1:-1] - hl[:-2, 1:-1]) + np.abs(hl[1:-1, 2:] - hl[1:-1, :-2])) < 12
+    hl = half @ mm.array([0.2126, 0.7152, 0.0722], dtype=mm.float32)
+    smooth = mm.zeros_like(hl, dtype=bool)
+    smooth[1:-1, 1:-1] = (mm.abs(hl[2:, 1:-1] - hl[:-2, 1:-1]) + mm.abs(hl[1:-1, 2:] - hl[1:-1, :-2])) < 12
     sky = smooth & (hl > 130)
     out["sky_share"] = round(float(sky.mean()), 3)
     if sky.sum() > 50:
         px = half[sky]
         out["sky_brightness"] = round(float(hl[sky].mean()), 1)
         out["sky_blue"] = round(float((px[:, 2] - px[:, 0]).mean()) / 255, 3)
-        out["sky_grey"] = round(float(np.abs(px - px.mean(1, keepdims=True)).mean()) / 255, 3)
+        out["sky_grey"] = round(float(mm.abs(px - px.mean(1, keepdims=True)).mean()) / 255, 3)
     return out
 
 
 def find_discs(a, night, ev=None):
     """A sun or moon disc: a bright, round, solid patch standing clear of a darker sky. Returns the best, or None."""
-    lum = a @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    lum = a @ mm.array([0.2126, 0.7152, 0.0722], dtype=mm.float32)
     h, w = lum.shape
-    thr = 245 if not night else max(120.0, float(np.percentile(lum, 99.5)))
+    thr = 245 if not night else max(120.0, float(mm.percentile(lum, 99.5)))
     best = None
     for pts in _blobs(lum >= thr):
         n = len(pts)
         if n < 12 or n > h * w * 0.05: continue
-        ys = np.array([p[0] for p in pts]); xs = np.array([p[1] for p in pts])
+        ys = mm.array([p[0] for p in pts]); xs = mm.array([p[1] for p in pts])
         span = max(ys.max() - ys.min(), xs.max() - xs.min()) + 1
         fill = n / (math.pi * (span / 2) ** 2)                  # a full disc fills its circle; a crescent less
         if fill < 0.15 or fill > 1.3: continue
@@ -195,11 +181,11 @@ def find_discs(a, night, ev=None):
         cy = (ys.max() + ys.min()) / 2 if ys.max() - ys.min() + 1 >= span else ys.mean()
         cx = (xs.max() + xs.min()) / 2
         if xs.max() - xs.min() + 1 < span * 0.9:                # narrower than tall: lit on one side; the circle sits on its outer edge
-            inside = lambda c: float(np.mean((xs - c) ** 2 + (ys - cy) ** 2 <= (r * 1.05) ** 2))
+            inside = lambda c: float(mm.mean((xs - c) ** 2 + (ys - cy) ** 2 <= (r * 1.05) ** 2))
             right, left = xs.max() - r, xs.min() + r
             cx = right if inside(right) >= inside(left) else left
         fill = n / (math.pi * r * r)
-        yy, xx = np.ogrid[:h, :w]
+        yy, xx = mm.ogrid[:h, :w]
         ring = ((yy - cy) ** 2 + (xx - cx) ** 2 >= (r * 1.6) ** 2) & ((yy - cy) ** 2 + (xx - cx) ** 2 <= (r * 2.6) ** 2)
         around = float(lum[ring].mean()) if ring.any() else 255.0
         if around > thr * 0.75: continue                         # a white wall or a lamp in a bright room, not a sky disc
@@ -216,12 +202,12 @@ def find_discs(a, night, ev=None):
 def find_stars(a, ev=None):
     """Stars: small sharp points in a dark, even sky. Noise at a high ISO is single pixels, so a star must be a small group
     brighter than the dark around it, and there must be several."""
-    lum = a @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    lum = a @ mm.array([0.2126, 0.7152, 0.0722], dtype=mm.float32)
     top = lum[: lum.shape[0] * 2 // 3]
-    bg = float(np.median(top))
+    bg = float(mm.median(top))
     if bg > 30: return {"count": 0, "why": "sky not dark"}
     if ev is not None and ev > 4: return {"count": 0, "why": f"the camera's light meter says a lit scene (EV {ev})"}
-    if float(np.percentile(top, 75)) > 45: return {"count": 0, "why": "dark but not an even sky"}
+    if float(mm.percentile(top, 75)) > 45: return {"count": 0, "why": "dark but not an even sky"}
     pts = []
     for p in _blobs(top >= bg + 45):
         if 2 <= len(p) <= 40:
@@ -236,15 +222,15 @@ def find_trails(a, ev=None):
     needs the full-size picture: at thumbnail size their pieces agree on a centre no better than random lines do (16 Nov)."""
     from PIL import ImageFilter
     if ev is not None and ev > 4: return 0
-    lum = a @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    lum = a @ mm.array([0.2126, 0.7152, 0.0722], dtype=mm.float32)
     top = lum[: lum.shape[0] * 2 // 3]
-    if float(np.median(top)) > 30: return 0
-    blur = np.asarray(Image.fromarray(np.clip(top, 0, 255).astype(np.uint8)).filter(ImageFilter.BoxBlur(2)), dtype=np.float32)
+    if float(mm.median(top)) > 30: return 0
+    blur = mm.asarray(Image.fromarray(mm.clip(top, 0, 255).astype(mm.uint8, how="trunc")).filter(ImageFilter.BoxBlur(2)), dtype=mm.float32)
     n = 0
     for pts in _blobs((top - blur > 10) & (top > 30)):
         if len(pts) < 4: continue
-        P = np.array(pts, float); Q = P - P.mean(0)
-        ev_, _ = np.linalg.eigh(Q.T @ Q / len(P))
+        P = mm.array(pts, float); Q = P - P.mean(0)
+        ev_, _ = mm.linalg.eigh(Q.T @ Q / len(P))
         if math.sqrt(ev_[1] / max(ev_[0], 0.05)) >= 2.5 and 4 * math.sqrt(ev_[1]) >= 5: n += 1
     return n
 
@@ -253,7 +239,7 @@ def find_horizon(a):
     """Where land meets sky: the row each column turns from sky (bright, not green) to land (green or dark), the median across
     columns (a stone or tree spoils a few columns, not the median). As a share of the height, or None."""
     h, w, _ = a.shape
-    lum = a @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    lum = a @ mm.array([0.2126, 0.7152, 0.0722], dtype=mm.float32)
     land = ((a[..., 1] > a[..., 2] + 4) & (a[..., 1] >= a[..., 0] - 4)) | (lum < 70)
     rows = []
     for x in range(0, w, max(1, w // 120)):
@@ -262,7 +248,7 @@ def find_horizon(a):
             if col[y] and col[y + 1] and col[y + 2] and col[y + 3 if y + 3 < h else y]:
                 rows.append(y); break
     if len(rows) < 10: return None
-    return float(np.median(rows)) / h
+    return float(mm.median(rows)) / h
 
 
 def find_shadows(a, horizon, sun_x=None):
@@ -271,30 +257,30 @@ def find_shadows(a, horizon, sun_x=None):
     opposite point). Returns their pieces and where their lines meet the horizon."""
     h, w, _ = a.shape
     hy = int(horizon * h)
-    lum = a @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    lum = a @ mm.array([0.2126, 0.7152, 0.0722], dtype=mm.float32)
     ground = lum[hy + 2:]
     if ground.size == 0: return None
-    grass = float(np.median(ground))
+    grass = float(mm.median(ground))
     g = a[hy + 2:]
     dark = (ground < grass * 0.55) & (g[..., 1] > g[..., 2] + 2) & (g[..., 1] >= g[..., 0])   # dark GREEN: grass in shade, not a grey stone
     pieces = []
     for pts in _blobs(dark):
         if len(pts) < max(12, h * w // 4000): continue
-        P = np.array(pts, float); P[:, 0] += hy + 2; c = P.mean(0); Q = P - c
-        ev, evec = np.linalg.eigh(Q.T @ Q / len(P))
+        P = mm.array(pts, float); P[:, 0] += hy + 2; c = P.mean(0); Q = P - c
+        ev, evec = mm.linalg.eigh(Q.T @ Q / len(P))
         if ev[1] < 4 * max(ev[0], 0.05): continue           # not long: a dark stone base, a hole, a person
         d = evec[:, 1]                                       # (dy, dx) along the shadow
         if abs(d[0]) < 1e-3: continue                        # level: meets the horizon nowhere
         t = (hy - c[0]) / d[0]
         xh = c[1] + t * d[1]                                 # where its line meets the horizon
-        far = P[np.argmin(P[:, 0])]; near = P[np.argmax(P[:, 0])]
+        far = P[mm.argmin(P[:, 0])]; near = P[mm.argmax(P[:, 0])]
         pieces.append({"x": round(c[1] / w, 3), "y": round(c[0] / h, 3), "pixels": len(pts), "meets_horizon_x": round(xh / w, 3),
                        "length": round(4 * math.sqrt(ev[1]) / h, 3), "towards_camera": bool(near[0] - far[0] > 2)})
     if not pieces: return {"pieces": [], "grass": round(grass, 1)}
-    wts = np.array([p["pixels"] for p in pieces], float)
-    xs = np.array([p["meets_horizon_x"] for p in pieces])
-    meet = float(np.average(xs, weights=wts))
-    spread = float(np.sqrt(np.average((xs - meet) ** 2, weights=wts)))
+    wts = mm.array([p["pixels"] for p in pieces], float)
+    xs = mm.array([p["meets_horizon_x"] for p in pieces])
+    meet = float(mm.average(xs, weights=wts))
+    spread = float(mm.sqrt(mm.average((xs - meet) ** 2, weights=wts)))
     return {"pieces": pieces, "meet_x": round(meet, 3), "spread": round(spread, 3), "grass": round(grass, 1)}
 
 
@@ -305,7 +291,7 @@ def shadow_reading(path, hfov=(60, 110)):
     h, w, _ = a.shape
     hz = find_horizon(a)
     if hz is None: return {"error": "no horizon found"}
-    lum = a @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    lum = a @ mm.array([0.2126, 0.7152, 0.0722], dtype=mm.float32)
     disc = find_discs(a, False)
     sun_xy = (disc["x"], disc["y"]) if disc and disc["y"] < hz else None
     sh = find_shadows(a, hz)
