@@ -129,6 +129,13 @@ try:
     rows = L.Trunk(one, os.path.join(d, "b8"), examiners={"sky": quick, "shadows": quick, "look": look_in}).run()
     check("honest: the look sees indoors: the sky reading is doubted", any(r["type"] == "doubt" and r["kind"] == "sky" for r in rows), True)
     check("...people the look saw are kept for a people examiner ('wait')", any(r["type"] == "wait" and r["kind"] == "people" for r in rows), True)
+    rows = L.Trunk(one, os.path.join(d, "b8b"), examiners={"sky": quick, "shadows": quick, "look": look_in, "movement": look_in}).run()
+    T = L.Trunk(one, os.path.join(d, "b8c"), examiners={"sky": quick, "look": look_in})
+    T.look = True
+    T.mark("look", 0.0, "a second look at the same scene", 4, picture=None)   # two looks, both saying indoors
+    rows = T.run()
+    sky_doubts = [r for r in rows if r["type"] == "doubt" and r["kind"] == "sky"]
+    check("two indoor looks at one scene: the sky is doubted ONCE", len(sky_doubts), 1)
     rows = L.Trunk(one, os.path.join(d, "b9"), examiners={"sky": quick, "shadows": quick, "look": look_out}).run()
     check("trick: an outdoor look puts no doubt on the sky", any(r["type"] == "doubt" for r in rows), False)
     fr = [grass(rng) for _ in range(10)] + [np.clip(grass(rng) * 1.5, 0, 255) for _ in range(10)]

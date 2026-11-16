@@ -228,6 +228,7 @@ class Trunk:
         self.ticks = 0
         self.scene = 0.0                                     # the clock time the current scene began
         self.marked = []                                     # every point marked so far (id, kind, t, scene)
+        self.doubted = set()                                 # points already put in doubt
 
     def mark(self, kind, t, why, score, where=None, parent=None, **extra):
         p = {"id": self.next_id, "kind": kind, "t": round(t, 3), "why": why, "score": score, "where": where, **extra}
@@ -237,7 +238,8 @@ class Trunk:
         self.board.put({"type": "mark", **{k: v for k, v in p.items() if k not in ("picture", "around")}})
         if kind == "indoors":                                # branches inform each other: the look says this scene is indoors,
             for q in self.marked:                            # so its "sky" was a ceiling or a wall and its "shadows" are not the sun's
-                if q["scene"] == p["scene"] and q["kind"] in ("sky", "shadows"):
+                if q["scene"] == p["scene"] and q["kind"] in ("sky", "shadows") and q["id"] not in self.doubted:
+                    self.doubted.add(q["id"])                # once: a second look saying the same adds nothing new
                     self.board.put({"type": "doubt", "t": q["t"], "id": q["id"], "kind": q["kind"], "by": p["id"],
                                     "said": f"the look (#{parent}) sees an indoor scene: this {q['kind']} reading is not of the sky"})
             return p
