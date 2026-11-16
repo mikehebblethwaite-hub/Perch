@@ -3,6 +3,7 @@
 #   ~/.config/perch/settings.json   the person's own choice (perch-settings, the settings page, writes it)
 #   PERCH_MODE / PERCH_CUT / PERCH_ZOOM  for one shell or one bot
 #   --mode X  --cut N  --zoom N          for one call (wins over both)
+#   --scheme light|dark                  which look a page is asked for (its prefers-color-scheme); PERCH_SCHEME too
 # spoilers: the person's own switch for their player (settings page / perch-settings only: no flag, no environment, a bot
 #   never sets it). A video seen before: off (default) = "seen before, about ...", the kept summary only when asked
 #   (perch-video --spoiler, the session's "summary"); on = the kept summary told at the start too.
@@ -15,7 +16,7 @@
 import json, os, re
 
 MODES = ("auto", "words", "ocr", "picture")
-DEFAULTS = {"mode": "auto", "cut": 60, "zoom": 50, "spoilers": "off"}
+DEFAULTS = {"mode": "auto", "cut": 60, "zoom": 50, "spoilers": "off", "scheme": "light"}
 PATH = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "perch", "settings.json")
 
 
@@ -35,7 +36,11 @@ def check(k, v):
         v = str(v).strip().lower()
         if v not in ("off", "on"): raise ValueError("spoilers: off | on")
         return v
-    raise ValueError(f"no setting '{k}' (mode, cut, zoom, spoilers)")
+    if k == "scheme":
+        v = str(v).strip().lower()
+        if v not in ("light", "dark"): raise ValueError("scheme: light | dark")
+        return v
+    raise ValueError(f"no setting '{k}' (mode, cut, zoom, spoilers, scheme)")
 
 
 def saved():
@@ -64,7 +69,7 @@ def save(s):
 def load(args):
     """(settings, args without the flags): saved < environment < --flags. A bad flag raises ValueError (the caller says so)."""
     s = saved()
-    for k in ("mode", "cut", "zoom"):
+    for k in ("mode", "cut", "zoom", "scheme"):
         e = os.environ.get("PERCH_" + k.upper())
         if e:
             try: s[k] = check(k, e)
@@ -72,7 +77,7 @@ def load(args):
     rest, i = [], 0
     while i < len(args):
         a = args[i]
-        m = re.fullmatch(r"--(mode|cut|zoom)(?:=(.*))?", a)
+        m = re.fullmatch(r"--(mode|cut|zoom|scheme)(?:=(.*))?", a)
         if m:
             v = m.group(2)
             if v is None:
