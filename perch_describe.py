@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
 # perch_describe: describe still pictures for family archives, on this machine (local vision model via ollama).
-# Output is the media-pack info JSON (coop-pack build --info), one file per picture, so it can be packed straight away.
+# Output is the media-pack info JSON (the pack tool's build --info), one file per picture, so it can be packed straight away.
 #   python3 perch_describe.py FOLDER OUTDIR [LIMIT]
 # Rules built in: no names (people are counted, never named); unsure = said as unsure, with a sure score 1-11 (never 0);
 # only what can be seen; the picture's own words go in text_in_media; nothing leaves this machine.
