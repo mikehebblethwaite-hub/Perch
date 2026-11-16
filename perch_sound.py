@@ -9,7 +9,7 @@
 # A line repeats nothing: it comes only when the kind, the loudness (by 2 or more) or the bands change.
 import subprocess
 
-import numpy as np
+import perch_murmur as mm                    # Perch's own number grids (C), not numpy
 
 RATE, HOP, WIN = 16000, 0.1, 0.5                 # 16 kHz mono; a look every 0.1 s over the last 0.5 s
 EDGES = [0, 250, 1000, 3000, 6000, 8000]
@@ -24,26 +24,26 @@ def samples(src, start=0.0, end=None):
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"] + (["-ss", str(start)] if start else []) + ["-i", src] + \
           (["-t", str(end - start)] if end else []) + ["-vn", "-ac", "1", "-ar", str(RATE), "-f", "s16le", "-"]
     raw = subprocess.run(cmd, capture_output=True, timeout=1800).stdout
-    return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+    return mm.frombuffer(raw, "<i2").astype(mm.float32) / 32768.0
 
 
 def describe(x, prev_db):
     """one window of samples -> (L, kind, bands, db)"""
-    rms = float(np.sqrt(np.mean(x * x)) + 1e-9); db = 20 * np.log10(rms)
+    rms = float(mm.sqrt(mm.mean(x * x)) + 1e-9); db = 20 * mm.log10(rms)
     L = scale(db, -60, 0)
     if L <= 2: return L, "quiet", None, db
-    spec = np.abs(np.fft.rfft(x * np.hanning(len(x)))) ** 2
-    f = np.fft.rfftfreq(len(x), 1 / RATE)
-    e = np.array([spec[(f >= a) & (f < b)].sum() for a, b in zip(EDGES, EDGES[1:])]) + 1e-12
-    edb = 10 * np.log10(e / e.max())
+    spec = mm.fft.power(x * mm.hanning(len(x)))          # |rfft|^2 in one pass
+    f = mm.fft.rfftfreq(len(x), 1 / RATE)
+    e = mm.array([spec[(f >= a) & (f < b)].sum() for a, b in zip(EDGES, EDGES[1:])]) + 1e-12
+    edb = 10 * mm.log10(e / e.max())
     bands = [scale(v, -40, 0) for v in edb]
-    flat = float(np.exp(np.mean(np.log(spec[1:] + 1e-12))) / (np.mean(spec[1:]) + 1e-12))     # 1 = noise, near 0 = tones
-    peak = float(f[1:][np.argmax(spec[1:])])
+    flat = float(mm.exp(mm.mean(mm.log(spec[1:] + 1e-12))) / (mm.mean(spec[1:]) + 1e-12))     # 1 = noise, near 0 = tones
+    peak = float(f[1:][mm.argmax(spec[1:])])
     # how the loudness moves inside the window: speech rises and falls 3-8 times a second
     seg = x[: len(x) // 400 * 400].reshape(-1, 400)                  # 25 ms pieces
-    env = np.sqrt((seg ** 2).mean(axis=1)) + 1e-9
-    wobble = float(np.std(20 * np.log10(env)))
-    head = float(20 * np.log10(np.sqrt(np.mean(x[: int(RATE * HOP)] ** 2)) + 1e-9))
+    env = mm.sqrt((seg ** 2).mean(axis=1)) + 1e-9
+    wobble = float(mm.std(20 * mm.log10(env)))
+    head = float(20 * mm.log10(mm.sqrt(mm.mean(x[: int(RATE * HOP)] ** 2)) + 1e-9))
     if prev_db is not None and head - prev_db > 15: kind = "bang"
     elif flat > 0.3: kind = "noise"
     elif flat < 0.02 and wobble < 2: kind = f"tone {round(peak, -1):.0f}Hz"
@@ -58,7 +58,7 @@ def lines(src, start=0.0, end=None, ts=None):
     w, h = int(WIN * RATE), int(HOP * RATE)
     n = len(x) // h
     if n < 1: return []
-    hop_db = 20 * np.log10(np.sqrt((x[: n * h].reshape(n, h) ** 2).mean(axis=1)) + 1e-9)   # each 0.1 s slice's loudness
+    hop_db = 20 * mm.log10(mm.sqrt((x[: n * h].reshape(n, h) ** 2).mean(axis=1)) + 1e-9)   # each 0.1 s slice's loudness
     out, last, pending, onset, dated = [], None, None, None, False
     if hop_db[0] > -40: onset = start                                      # sound from the very first moment: it starts here
     for k in range(n):
@@ -76,7 +76,7 @@ def lines(src, start=0.0, end=None, ts=None):
         lo = max(0, (k + 1) * h - w)
         if onset is not None: lo = max(lo, int(round((onset - start) * RATE)))   # judge a new sound on itself, not the silence before
         win = x[lo:(k + 1) * h]
-        if len(win) < w and onset is None: win = np.pad(win, (w - len(win), 0))   # never pad a fresh sound with silence
+        if len(win) < w and onset is None: win = mm.pad(win, (w - len(win), 0))   # never pad a fresh sound with silence
         L, kind, bands, db = describe(x[k * h:(k + 1) * h], None) if hop_db[k] < -48 else describe(win, None)
         if last and last[1] == "bang" and kind != "quiet" and t - last[4] < WIN + HOP: continue   # the bang's own tail
         changed = last is None or kind != last[1] or abs(L - last[2]) >= 2 or \

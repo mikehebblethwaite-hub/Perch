@@ -15,7 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { U8 = 0, BOOL = 1, I64 = 2, F32 = 3, F64 = 4 };
+enum { U8 = 0, BOOL = 1, I64 = 2, F32 = 3, F64 = 4, I16 = 5 };   // (complex grids are float64 pairs to the C)
 #define MAXD 8
 
 typedef struct {
@@ -36,6 +36,7 @@ static void load(const pn_arr *a, const char *p, int64_t n, int64_t st, double *
         return;
     }
     switch (a->dtype) {
+    case I16: for (int64_t i = 0; i < n; i++) out[i] = *(const int16_t *)(p + i * st); break;
     case U8: for (int64_t i = 0; i < n; i++) out[i] = *(const uint8_t *)(p + i * st); break;
     case BOOL: for (int64_t i = 0; i < n; i++) out[i] = *(const uint8_t *)(p + i * st) ? 1.0 : 0.0; break;
     case I64: for (int64_t i = 0; i < n; i++) out[i] = (double)*(const int64_t *)(p + i * st); break;
@@ -57,6 +58,10 @@ static void store(const pn_arr *a, char *p, int64_t n, int64_t st, const double 
             if (!(v >= 0.0 && v <= 255.0) || v != floor(v)) { TBAD++; v = v != v ? 0 : v < 0 ? 0 : v > 255 ? 255 : floor(v); }
             *(uint8_t *)(p + i * st) = (uint8_t)v; } break;
     case BOOL: for (int64_t i = 0; i < n; i++) *(uint8_t *)(p + i * st) = in[i] != 0.0; break;
+    case I16: for (int64_t i = 0; i < n; i++) {
+            double v = in[i];
+            if (!(v >= -32768.0 && v <= 32767.0) || v != floor(v)) { TBAD++; v = v != v ? 0 : v < -32768 ? -32768 : v > 32767 ? 32767 : floor(v); }
+            *(int16_t *)(p + i * st) = (int16_t)v; } break;
     case I64: for (int64_t i = 0; i < n; i++) {
             double v = in[i];
             if (!(v >= -9.2233720368547748e18 && v < 9.2233720368547748e18) || v != floor(v)) { TBAD++; v = v != v ? 0 : floor(v); }
@@ -621,4 +626,278 @@ int pn_reduce_mid(int op, pn_arr *out, pn_arr *a) {          // only SUM, RMAX, 
     mid_ctx c = {op, out, a};
     par_range(a->shape[2], a->shape[0] * a->shape[1] * a->shape[2], mid_cols, &c);
     return 0;
+}
+
+
+// ---- the FFT (Mike, 16 Nov 2026: "do the FFT next"): any length. Powers of two by iterative radix-2; every other length by
+// Bluestein's way (the length-n transform as a power-of-two convolution), so no length is refused. Doubles throughout. A plan
+// (twiddles, Bluestein's chirp and its spectrum) is made once per call and shared read-only by every core; rows split over cores.
+typedef struct { double re, im; } cpx;
+
+// a plan: the length's factors (4, 2, 3, 5, then other primes up to 13) and its twiddles; Bluestein (through a plan for a power
+// of two) only when a prime factor is bigger than 13. Plans are kept per length (made once, shared read-only by every core).
+#define MAXF 64
+typedef struct fft_plan { int64_t n; int nf; int f[MAXF]; cpx *tw; int blue, pow2; int64_t m; struct fft_plan *sub; cpx *chirp, *bspec; cpx *rtw; } fft_plan;
+static cpx *twiddles_full(int64_t n) {
+    cpx *t = malloc(sizeof(cpx) * (n ? n : 1));
+    for (int64_t k = 0; k < n; k++) { double a = -2.0 * M_PI * (double)k / (double)n; t[k] = (cpx){cos(a), sin(a)}; }
+    return t;
+}
+static int factorise(int64_t n, int *f) {
+    int nf = 0;
+    while (n % 4 == 0) { f[nf++] = 4; n /= 4; }
+    while (n % 2 == 0) { f[nf++] = 2; n /= 2; }
+    for (int p = 3; p <= 13; p += 2) while (n % p == 0) { f[nf++] = p; n /= p; }
+    return n == 1 ? nf : -1;                                   // -1: a prime bigger than 13 is left (Bluestein)
+}
+static void fft2(cpx *a, int64_t n, const cpx *tw, int64_t N) {      // in place, n a power of two; tw: the table for length N
+    for (int64_t i = 1, j = 0; i < n; i++) {
+        int64_t bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) { cpx t = a[i]; a[i] = a[j]; a[j] = t; }
+    }
+    for (int64_t len = 2; len <= n; len <<= 1) {
+        int64_t half = len >> 1, step = N / len;
+        for (int64_t i = 0; i < n; i += len)
+            for (int64_t k = 0; k < half; k++) {
+                cpx w = tw[k * step], u = a[i + k], v = a[i + k + half];
+                cpx t = {v.re * w.re - v.im * w.im, v.re * w.im + v.im * w.re};
+                a[i + k] = (cpx){u.re + t.re, u.im + t.im};
+                a[i + k + half] = (cpx){u.re - t.re, u.im - t.im};
+            }
+    }
+}
+static void cfft_rec(const cpx *in, cpx *out, int64_t n, int64_t stride, const int *f, const cpx *tw, int64_t N) {
+    if (n == 1) { out[0] = in[0]; return; }
+    int p = f[0]; int64_t m = n / p, step = N / n;
+    for (int q = 0; q < p; q++) cfft_rec(in + q * stride, out + q * m, m, stride * p, f + 1, tw, N);
+    for (int64_t k = 0; k < m; k++) {
+        cpx x[16];
+        for (int q = 0; q < p; q++) {                          // x_q = out[q m + k] * W_n^(q k)
+            cpx v = out[q * m + k], w = tw[(int64_t)q * k * step];      // q k step < N: no remainder needed
+            x[q] = q ? (cpx){v.re * w.re - v.im * w.im, v.re * w.im + v.im * w.re} : v;
+        }
+        if (p == 2) {
+            out[k] = (cpx){x[0].re + x[1].re, x[0].im + x[1].im};
+            out[k + m] = (cpx){x[0].re - x[1].re, x[0].im - x[1].im};
+        } else if (p == 4) {
+            cpx a = {x[0].re + x[2].re, x[0].im + x[2].im}, b = {x[0].re - x[2].re, x[0].im - x[2].im};
+            cpx c = {x[1].re + x[3].re, x[1].im + x[3].im}, d = {x[1].re - x[3].re, x[1].im - x[3].im};
+            out[k] = (cpx){a.re + c.re, a.im + c.im};
+            out[k + m] = (cpx){b.re + d.im, b.im - d.re};       // b - i d
+            out[k + 2 * m] = (cpx){a.re - c.re, a.im - c.im};
+            out[k + 3 * m] = (cpx){b.re - d.im, b.im + d.re};   // b + i d
+        } else {                                               // any small prime: W_p^(j q) from the table
+            for (int j = 0; j < p; j++) {
+                cpx s = {0, 0};
+                for (int q = 0; q < p; q++) {
+                    cpx w = tw[(((int64_t)j * q) % p) * (N / p)];      // (j q mod p: small numbers)
+                    s.re += x[q].re * w.re - x[q].im * w.im; s.im += x[q].re * w.im + x[q].im * w.re;
+                }
+                out[k + j * m] = s;
+            }
+        }
+    }
+}
+static fft_plan *plan_new(int64_t n) {
+    fft_plan *p = calloc(1, sizeof *p);
+    p->n = n;
+    p->pow2 = (n & (n - 1)) == 0;
+    p->rtw = malloc(sizeof(cpx) * (n + 1));                    // e^(-2 pi i k / 2n): untangles a real row of 2n packed into n
+    for (int64_t k = 0; k <= n; k++) { double a = -M_PI * (double)k / (double)n; p->rtw[k] = (cpx){cos(a), sin(a)}; }
+    p->nf = factorise(n, p->f);
+    if (p->nf >= 0) { p->tw = twiddles_full(n); return p; }
+    p->blue = 1;
+    p->m = 1; while (p->m < 2 * n - 1) p->m <<= 1;
+    p->sub = plan_new(p->m);
+    p->chirp = malloc(sizeof(cpx) * n);                        // w_k = e^(-i pi k^2 / n), k^2 taken mod 2n to stay exact
+    for (int64_t k = 0; k < n; k++) { double a = -M_PI * (double)((k * k) % (2 * n)) / (double)n; p->chirp[k] = (cpx){cos(a), sin(a)}; }
+    cpx *b = calloc(p->m, sizeof(cpx)), *t = malloc(sizeof(cpx) * p->m);
+    for (int64_t k = 0; k < n; k++) { cpx c = {p->chirp[k].re, -p->chirp[k].im}; b[k] = c; if (k) b[p->m - k] = c; }
+    cfft_rec(b, t, p->m, 1, p->sub->f, p->sub->tw, p->m);
+    p->bspec = t; free(b);
+    return p;
+}
+static void plan_free(fft_plan *p) { if (!p) return; free(p->tw); free(p->chirp); free(p->bspec); free(p->rtw); plan_free(p->sub); free(p); }
+// kept plans: one per length asked for, made once (lengths Perch uses are few; past 64 lengths a plan is made and freed per call)
+static fft_plan *KEPT[64]; static int NKEPT; static pthread_mutex_t KEPT_LOCK = PTHREAD_MUTEX_INITIALIZER;
+static fft_plan *plan_get(int64_t n, int *temp) {
+    pthread_mutex_lock(&KEPT_LOCK);
+    for (int i = 0; i < NKEPT; i++) if (KEPT[i]->n == n) { pthread_mutex_unlock(&KEPT_LOCK); *temp = 0; return KEPT[i]; }
+    fft_plan *p = plan_new(n);
+    if (NKEPT < 64) { KEPT[NKEPT++] = p; *temp = 0; } else *temp = 1;
+    pthread_mutex_unlock(&KEPT_LOCK);
+    return p;
+}
+static int64_t plan_work(const fft_plan *p) { return p->blue ? 2 * p->m : p->n; }   // scratch a call needs
+// a: n values in, their transform out (inv: the inverse, not yet divided by n). work: plan_work(p) values of scratch.
+static void fft_any(const fft_plan *p, cpx *a, cpx *work, int inv) {
+    int64_t n = p->n;
+    if (inv) for (int64_t k = 0; k < n; k++) a[k].im = -a[k].im;   // the inverse: conj, forward, conj
+    if (!p->blue && p->pow2) {
+        fft2(a, n, p->tw, n);
+    } else if (!p->blue) {
+        memcpy(work, a, sizeof(cpx) * n);
+        cfft_rec(work, a, n, 1, p->f, p->tw, n);
+    } else {
+        int64_t m = p->m;
+        cpx *u = work;
+        for (int64_t k = 0; k < n; k++) { cpx w = p->chirp[k]; u[k] = (cpx){a[k].re * w.re - a[k].im * w.im, a[k].re * w.im + a[k].im * w.re}; }
+        for (int64_t k = n; k < m; k++) u[k] = (cpx){0, 0};
+        fft2(u, m, p->sub->tw, m);
+        for (int64_t k = 0; k < m; k++) { cpx b = p->bspec[k], x = u[k]; u[k] = (cpx){x.re * b.re - x.im * b.im, -(x.re * b.im + x.im * b.re)}; }
+        fft2(u, m, p->sub->tw, m);                             // inverse of the product by the conj trick: forward of its conj, conj after
+        for (int64_t k = 0; k < n; k++) {
+            cpx x = {u[k].re / (double)m, -u[k].im / (double)m}, w = p->chirp[k];
+            a[k] = (cpx){x.re * w.re - x.im * w.im, x.re * w.im + x.im * w.re};
+        }
+    }
+    if (inv) for (int64_t k = 0; k < n; k++) a[k].im = -a[k].im;
+}
+
+// rfft of every row: in (..., L) any real kind, cut or zero-padded to n; out (..., n/2+1) complex as float64 pairs (..., n/2+1, 2)
+typedef struct { pn_arr *out, *in; int64_t n, L, rows; fft_plan *plan, *half; } rfft_ctx;
+static void rfft_rows(int64_t r0, int64_t r1, void *c_) {
+    rfft_ctx *c = c_;
+    int64_t n = c->n, m2 = n / 2 + 1, L = c->L < n ? c->L : n;
+    cpx *a = malloc(sizeof(cpx) * n), *work = malloc(sizeof(cpx) * plan_work(c->plan));
+    double *x = malloc(sizeof(double) * (L ? L : 1));
+    pn_arr *in = c->in, *out = c->out;
+    int nd = in->ndim;
+    for (int64_t r = r0; r < r1; r++) {
+        const char *p = in->data; char *q = out->data;
+        int64_t rr = r;
+        for (int d = nd - 2; d >= 0; d--) { int64_t i = rr % in->shape[d]; rr /= in->shape[d]; p += i * in->strides[d]; q += i * out->strides[d]; }
+        load(in, p, L, in->strides[nd - 1], x);
+        int64_t so = out->strides[nd - 1];
+        if (c->half) {                                          // even n: z_j = x_2j + i x_2j+1 (n/2 values), one FFT of n/2
+            int64_t h = n / 2;
+            for (int64_t j = 0; j < h; j++) a[j] = (cpx){2 * j < L ? x[2 * j] : 0.0, 2 * j + 1 < L ? x[2 * j + 1] : 0.0};
+            fft_any(c->half, a, work, 0);
+            const cpx *rt = c->half->rtw;                       // e^(-2 pi i k / n)
+            for (int64_t k = 0; k <= h; k++) {
+                cpx zk = a[k % h], zc = a[(h - k) % h]; zc.im = -zc.im;       // Z_k and conj(Z_(h-k))
+                cpx e = {(zk.re + zc.re) / 2, (zk.im + zc.im) / 2};           // the even samples' part
+                cpx d = {(zk.re - zc.re) / 2, (zk.im - zc.im) / 2};           // i times the odd samples' part
+                cpx o = {d.im, -d.re};                                         // d / i
+                cpx w = rt[k];
+                double *out2 = (double *)(q + k * so);
+                out2[0] = e.re + (o.re * w.re - o.im * w.im);
+                out2[1] = e.im + (o.re * w.im + o.im * w.re);
+            }
+            continue;
+        }
+        for (int64_t k = 0; k < n; k++) a[k] = (cpx){k < L ? x[k] : 0.0, 0.0};
+        fft_any(c->plan, a, work, 0);
+        for (int64_t k = 0; k < m2; k++) { double *o = (double *)(q + k * so); o[0] = a[k].re; o[1] = a[k].im; }
+    }
+    free(a); free(work); free(x);
+}
+int pn_rfft(pn_arr *out, pn_arr *in, int64_t n) {
+    int temp, temph = 0;
+    fft_plan *half = n % 2 == 0 && n >= 4 ? plan_get(n / 2, &temph) : NULL;   // real rows: half the work
+    fft_plan *plan = half ? half : plan_get(n, &temp);
+    if (half) temp = 0;
+    int nd = in->ndim; int64_t rows = 1;
+    for (int d = 0; d < nd - 1; d++) rows *= in->shape[d];
+    rfft_ctx c = {out, in, n, in->shape[nd - 1], rows, plan, half};
+    par_range(rows, rows * n * 8, rfft_rows, &c);
+    if (temp) plan_free(plan);
+    if (temph) plan_free(half);
+    return 0;
+}
+
+// irfft of every row: in (..., k) half spectrum as float64 pairs (..., k, 2) (or real (..., k) when cplx = 0); out (..., n) real.
+// As numpy: the first n/2+1 values are used (zeros past the end), the rest come from symmetry; the imaginary parts of the
+// first value (and of the middle one when n is even) are not used.
+typedef struct { pn_arr *out, *in; int cplx; int64_t n, k; fft_plan *plan; } irfft_ctx;
+static void irfft_rows(int64_t r0, int64_t r1, void *c_) {
+    irfft_ctx *c = c_;
+    int64_t n = c->n, m2 = n / 2 + 1;
+    cpx *a = malloc(sizeof(cpx) * n), *work = malloc(sizeof(cpx) * plan_work(c->plan));
+    double *ro = malloc(sizeof(double) * n);
+    pn_arr *in = c->in, *out = c->out;
+    int ndo = out->ndim;
+    for (int64_t r = r0; r < r1; r++) {
+        const char *p = in->data; char *q = out->data;
+        int64_t rr = r;
+        for (int d = ndo - 2; d >= 0; d--) { int64_t i = rr % out->shape[d]; rr /= out->shape[d]; p += i * in->strides[d]; q += i * out->strides[d]; }
+        int64_t si = in->strides[ndo - 1];
+        for (int64_t k = 0; k < m2; k++) {
+            cpx v = {0, 0};
+            if (k < c->k) {
+                if (c->cplx) { const double *d = (const double *)(p + k * si); v = (cpx){d[0], d[1]}; }
+                else { double d; load(in, p + k * si, 1, 0, &d); v = (cpx){d, 0}; }
+            }
+            if (k == 0 || (n % 2 == 0 && k == n / 2)) v.im = 0;
+            a[k] = v;
+            if (k && k < n - k) a[n - k] = (cpx){v.re, -v.im};
+        }
+        fft_any(c->plan, a, work, 1);
+        for (int64_t k = 0; k < n; k++) ro[k] = a[k].re / (double)n;
+        store(out, q, n, out->strides[ndo - 1], ro);
+    }
+    free(a); free(work); free(ro);
+}
+int pn_irfft(pn_arr *out, pn_arr *in, int cplx, int64_t k, int64_t n) {
+    int temp; fft_plan *plan = plan_get(n, &temp);
+    int nd = out->ndim; int64_t rows = 1;
+    for (int d = 0; d < nd - 1; d++) rows *= out->shape[d];
+    irfft_ctx c = {out, in, cplx, n, k, plan};
+    par_range(rows, rows * n * 8, irfft_rows, &c);
+    if (temp) plan_free(plan);
+    return 0;
+}
+
+// complex parts, from float64 pairs (n, 2) side by side: 0 abs, 1 abs squared (power), 2 angle
+typedef struct { pn_arr *out; const double *pr; int mode; } cp_ctx;
+static void cpart_range(int64_t i0, int64_t i1, void *c_) {
+    cp_ctx *c = c_;
+    double buf[BLOCK];
+    for (int64_t b0 = i0; b0 < i1; b0 += BLOCK) {
+        int64_t bl = i1 - b0 < BLOCK ? i1 - b0 : BLOCK;
+        for (int64_t i = 0; i < bl; i++) {
+            double re = c->pr[2 * (b0 + i)], im = c->pr[2 * (b0 + i) + 1];
+            buf[i] = c->mode == 0 ? hypot(re, im) : c->mode == 1 ? re * re + im * im : atan2(im, re);
+        }
+        store(c->out, c->out->data + b0 * c->out->strides[0], bl, c->out->strides[0], buf);
+    }
+}
+int pn_cpart(pn_arr *out, const double *pairs, int64_t n, int mode) {
+    cp_ctx c = {out, pairs, mode};
+    par_range(n, n, cpart_range, &c);
+    return 0;
+}
+
+// ---- a ramp: out[k] = start + k * step (arange, linspace, FFT frequencies, windows' positions), split over the cores
+typedef struct { pn_arr *out; double start, step; } ramp_ctx;
+static void ramp_range(int64_t i0, int64_t i1, void *c_) {
+    ramp_ctx *c = c_;
+    double buf[BLOCK];
+    for (int64_t b0 = i0; b0 < i1; b0 += BLOCK) {
+        int64_t bl = i1 - b0 < BLOCK ? i1 - b0 : BLOCK;
+        for (int64_t i = 0; i < bl; i++) buf[i] = c->start + (double)(b0 + i) * c->step;
+        store(c->out, c->out->data + b0 * c->out->strides[0], bl, c->out->strides[0], buf);
+    }
+}
+int pn_ramp(pn_arr *out, double start, double step) {
+    ramp_ctx c = {out, start, step};
+    par_range(out->shape[0], out->shape[0], ramp_range, &c);
+    return 0;
+}
+
+// ---- a[mask] when the mask has a's own shape: the picked values, in reading order, into a contiguous run. Returns how many.
+int64_t pn_mask_take(pn_arr *out, pn_arr *a, pn_arr *m) {
+    int nd = a->ndim;
+    int64_t total = 1, k = 0;
+    for (int d = 0; d < nd; d++) total *= a->shape[d];
+    int64_t idx[MAXD] = {0};
+    for (int64_t i = 0; i < total; i++) {
+        const char *pa = a->data, *pm = m->data;
+        for (int d = 0; d < nd; d++) { pa += idx[d] * a->strides[d]; pm += idx[d] * m->strides[d]; }
+        if (*(const uint8_t *)pm) { double v; load(a, pa, 1, 0, &v); store(out, out->data + k * out->strides[0], 1, 0, &v); k++; }
+        for (int d = nd - 1; d >= 0; d--) { if (++idx[d] < a->shape[d]) break; idx[d] = 0; }
+    }
+    return k;
 }

@@ -40,10 +40,14 @@ for _n, _args in {"pn_binary": [ctypes.c_int, _P, _P, _P], "pn_unary": [ctypes.c
                   "pn_eigh": [ctypes.c_int, ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double)],
                   "pn_label": [_P, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(ctypes.c_int64)],
                   "pn_where": [_P, _P, _P, _P], "pn_bad": [], "pn_vecdot": [_P, _P, ctypes.POINTER(ctypes.c_double)],
-                  "pn_reduce_mid": [ctypes.c_int, _P, _P]}.items():
+                  "pn_reduce_mid": [ctypes.c_int, _P, _P], "pn_rfft": [_P, _P, ctypes.c_int64],
+                  "pn_irfft": [_P, _P, ctypes.c_int, ctypes.c_int64, ctypes.c_int64],
+                  "pn_cpart": [_P, ctypes.POINTER(ctypes.c_double), ctypes.c_int64, ctypes.c_int],
+                  "pn_ramp": [_P, ctypes.c_double, ctypes.c_double], "pn_mask_take": [_P, _P, _P]}.items():
     getattr(_LIB, _n).argtypes = _args
 _LIB.pn_count.restype = _LIB.pn_nonzero.restype = _LIB.pn_label.restype = _LIB.pn_bad.restype = ctypes.c_int64
 _LIB.pn_alloc.argtypes = [ctypes.c_int64]; _LIB.pn_alloc.restype = ctypes.c_void_p
+_LIB.pn_mask_take.restype = ctypes.c_int64
 _LIB.pn_free.argtypes = [ctypes.c_void_p]; _LIB.pn_free.restype = None
 
 
@@ -73,8 +77,11 @@ bool_ = _DT(1, "bool", 1, "b", "?", "|b1")
 int64 = _DT(2, "int64", 8, "i", "q", "<i8")
 float32 = _DT(3, "float32", 4, "f", "f", "<f4")
 float64 = _DT(4, "float64", 8, "f", "d", "<f8")
+int16 = _DT(5, "int16", 2, "i", "h", "<i2")              # sound as it comes (16-bit samples)
+complex128 = _DT(6, "complex128", 16, "c", "dd", "<c16") # FFT results: to the C, pairs of float64 (re, im)
 _BY_NAME = {"uint8": uint8, "u1": uint8, "bool": bool_, "int64": int64, "int": int64, "float32": float32, "float64": float64,
-            "float": float64, "f4": float32, "f8": float64}
+            "float": float64, "f4": float32, "f8": float64, "int16": int16, "i2": int16, "<i2": int16, "complex128": complex128,
+            "complex": complex128, "<f4": float32, "<f8": float64}
 pi, e, nan, inf = math.pi, math.e, float("nan"), float("inf")
 
 
@@ -83,6 +90,7 @@ def _dt(d):
     if d is bool: return bool_
     if d is int: return int64
     if d is float: return float64
+    if d is complex: return complex128
     if isinstance(d, str) and d in _BY_NAME: return _BY_NAME[d]
     name = getattr(d, "__name__", None) or str(d)
     if name in _BY_NAME: return _BY_NAME[name]
@@ -93,10 +101,11 @@ def _dt(d):
 
 class Grid:
     """A grid of numbers: a block of memory seen with a shape and strides. A slice is a VIEW of the same memory."""
-    __slots__ = ("_owner", "_addr", "shape", "strides", "dtype", "_ro", "_weak")
+    __slots__ = ("_owner", "_addr", "shape", "strides", "dtype", "_ro", "_weak", "_cc")
 
     def __init__(self, owner, addr, shape, strides, dtype, ro=False, weak=False):
         self._owner, self._addr, self.shape, self.strides, self.dtype, self._ro, self._weak = owner, addr, tuple(shape), tuple(strides), dtype, ro, weak
+        self._cc = None                          # its C description, made once (a grid's shape, strides and place never change)
 
     # -- facts
     @property
@@ -111,9 +120,17 @@ class Grid:
     def T(self): return self.transpose()
 
     def _c(self):
+        if self.dtype is complex128:
+            raise MurmurError("a complex grid: murmur does abs, .real, .imag, angle, conj, and the FFT on it; "
+                              "take abs(x) (or x.real) first for other maths")
+        return self._craw()
+
+    def _craw(self):                         # the C view, complex as float64 pairs to the FFT (the C reads them itself)
+        if self._cc is not None: return self._cc
         if self.ndim > _MAXD: raise MurmurError(f"murmur grids have at most {_MAXD} axes; this has {self.ndim}")
-        c = _C(); c.data = self._addr; c.dtype = self.dtype.code; c.ndim = self.ndim
+        c = _C(); c.data = self._addr; c.dtype = 4 if self.dtype is complex128 else self.dtype.code; c.ndim = self.ndim
         for i, (n, s) in enumerate(zip(self.shape, self.strides)): c.shape[i] = n; c.strides[i] = s
+        self._cc = c
         return c
 
     def _contiguous(self):
@@ -128,6 +145,8 @@ class Grid:
     # -- one value out: plain Python numbers
     def _scalar(self):
         raw = ctypes.string_at(self._addr, self.dtype.size)
+        if self.dtype is complex128:
+            re, im = struct.unpack("<dd", raw); return complex(re, im)
         v = struct.unpack("<" + self.dtype.fmt, raw)[0]
         return bool(v) if self.dtype is bool_ else v
 
@@ -187,7 +206,18 @@ class Grid:
         elif len(axes) == 1 and isinstance(axes[0], (tuple, list)): axes = tuple(axes[0])
         return Grid(self._owner, self._addr, [self.shape[a] for a in axes], [self.strides[a] for a in axes], self.dtype, self._ro)
 
+    @property
+    def real(self):
+        return _pairs(self)[..., 0] if self.dtype is complex128 else self
+    @property
+    def imag(self):
+        return _pairs(self)[..., 1] if self.dtype is complex128 else zeros(self.shape, _float_of(self.dtype))
+
     def copy(self):
+        if self.dtype is complex128:
+            out = _new(self.shape, complex128)
+            _assign(_pairs(out), _pairs(self))
+            return out
         out = _new(self.shape, self.dtype)
         _LIB.pn_unary(0, ctypes.byref(out._c()), ctypes.byref(self._c()), 0, 0.0, 0.0)
         _LIB.pn_bad()
@@ -206,7 +236,7 @@ class Grid:
         _LIB.pn_unary(0, ctypes.byref(out._c()), ctypes.byref(src._c()), 0, 0.0, 0.0)
         bad = _LIB.pn_bad()
         if bad:
-            lo, hi = ("0", "255") if d is uint8 else ("-2**63", "2**63")
+            lo, hi = ("0", "255") if d is uint8 else ("-32768", "32767") if d is int16 else ("-2**63", "2**63")
             raise MurmurError(f"{bad} values do not fit {d.name} (whole numbers {lo}..{hi}): clip them first"
                               + ("" if how else ", or say how= 'round', 'floor' or 'trunc' for numbers that are not whole"))
         return out
@@ -264,6 +294,12 @@ class Grid:
         raise MurmurError(f"a grid of {key.dtype.name} cannot pick from a grid: use a yes/no mask or whole-number indices")
 
     def __getitem__(self, key):
+        if isinstance(key, Grid) and key.dtype is bool_ and key.shape == self.shape and self.dtype is not complex128:
+            n = _LIB.pn_count(ctypes.byref(key._c()))   # a mask of the grid's own shape: picked in C
+            out = _new((n,), self.dtype)
+            if n: _LIB.pn_mask_take(ctypes.byref(out._c()), ctypes.byref(self._c()), ctypes.byref(key._c()))
+            out._ro = True
+            return out
         if isinstance(key, Grid) or (isinstance(key, list)):
             pos, shape = self._flat_positions(key if isinstance(key, Grid) else key)
             out = _new(shape, self.dtype)
@@ -387,8 +423,11 @@ def array(x, dtype=None):
         return x.copy() if dtype is None else x.astype(dtype)
     if isinstance(x, (list, tuple)) and x and _b.all(isinstance(v, Grid) for v in x):
         return stack(x).astype(dtype) if dtype else stack(x)
-    shape = _shape_of(x)
-    vals = []; _flat(x, vals)
+    if isinstance(x, (list, tuple)) and not _b.any(isinstance(v, (list, tuple, Grid)) for v in x):
+        shape, vals = (len(x),), list(x)                 # a flat row of numbers: no element-by-element walk
+    else:
+        shape = _shape_of(x)
+        vals = []; _flat(x, vals)
     if dtype is None:
         if vals and _b.all(isinstance(v, bool) for v in vals): d = bool_
         elif _b.all(isinstance(v, (bool, int)) for v in vals): d = int64
@@ -442,15 +481,25 @@ def ones_like(g, dtype=None): return ones(_as(g).shape, dtype or _as(g).dtype)
 def full_like(g, value, dtype=None): return full(_as(g).shape, value, dtype or _as(g).dtype)
 
 
+def _ramp(n, start, step, d):
+    out = _new((n,), d)
+    if n: _LIB.pn_ramp(ctypes.byref(out._c()), float(start), float(step)); _check_fit(d)
+    return out
+
+
 def arange(start, stop=None, step=1, dtype=None):
     if stop is None: start, stop = 0, start
     n = _b.max(0, math.ceil((stop - start) / step))
     d = _dt(dtype) if dtype else (int64 if _b.all(isinstance(v, int) for v in (start, stop, step)) else float64)
-    return array([start + i * step for i in range(n)], d) if n else _new((0,), d)
+    return _ramp(n, start, step, d)
 
 
 def linspace(a, b, n=50):
-    return array([a + (b - a) * i / (n - 1) for i in range(n)] if n > 1 else [float(a)] * n, float64)
+    if n < 1: return _new((0,), float64)
+    if n == 1: return array([float(a)])
+    out = _ramp(n, a, (b - a) / (n - 1), float64)
+    _assign(out[n - 1:], float(b))                    # the end exactly b, as numpy
+    return out
 
 
 class _OGrid:
@@ -488,7 +537,7 @@ def _set_scalar(g, v):
 def _check_fit(d):
     bad = _LIB.pn_bad()
     if bad:
-        lo, hi = ("0", "255") if d is uint8 else ("-2**63", "2**63")
+        lo, hi = ("0", "255") if d is uint8 else ("-32768", "32767") if d is int16 else ("-2**63", "2**63")
         raise MurmurError(f"{bad} values do not fit this {d.name} grid (whole numbers {lo}..{hi}): clip or round them first; "
                           "murmur never wraps (numpy would store 256 as 0)")
 
@@ -564,7 +613,7 @@ def _binary(op, a, b):
     o, x, y = _merged(out, _stretch(a, shape), _stretch(b, shape))
     _LIB.pn_binary(op, ctypes.byref(o._c()), ctypes.byref(x._c()), ctypes.byref(y._c()))
     _check_fit(rd)
-    return out
+    return out._scalar() if not shape else out          # single numbers in, a plain number out
 
 
 def _logic(op, a, b):
@@ -579,10 +628,10 @@ def _unary_raw(g, op, rd, clip=False, lo=0.0, hi=0.0):
     o, x = _merged(out, g)
     _LIB.pn_unary(op, ctypes.byref(o._c()), ctypes.byref(x._c()), 1 if clip else 0, float(lo), float(hi))
     _check_fit(rd)
-    return out
+    return out._scalar() if not g.shape else out
 
 
-def _float_of(d): return d if d.kind == "f" else (float32 if d in (uint8, bool_) else float64)
+def _float_of(d): return d if d.kind == "f" else (float32 if d in (uint8, bool_, int16) else float64)
 
 
 def _assign(view, value):
@@ -596,7 +645,101 @@ def _assign(view, value):
     _check_fit(view.dtype)
 
 
-def abs(x): return _unary_raw(_as(x), 2, _as(x).dtype)
+def _pairs(g):
+    """A complex grid seen as float64 pairs (..., 2): the same memory, a view."""
+    return Grid(g._owner, g._addr, g.shape + (2,), g.strides + (8,), float64, g._ro)
+
+
+def _cpart(g, mode):
+    g = g if g._contiguous() else g.copy()
+    out = _new((g.size,), float64)
+    _LIB.pn_cpart(ctypes.byref(out._c()), ctypes.cast(g._addr, ctypes.POINTER(ctypes.c_double)), g.size, mode)
+    return out.reshape(g.shape)
+
+
+def abs(x):
+    g = _as(x)
+    return _cpart(g, 0) if g.dtype is complex128 else _unary_raw(g, 2, g.dtype)
+
+
+def angle(x):
+    g = _as(x)
+    return _cpart(g, 2) if g.dtype is complex128 else where(g < 0, math.pi, 0.0)
+
+
+def conj(x):
+    g = _as(x)
+    if g.dtype is not complex128: return g
+    out = g.copy(); im = _pairs(out)[..., 1]; _assign(im, -im)
+    return out
+
+
+def real(x): return _as(x).real
+def imag(x): return _as(x).imag
+
+
+_WINDOWS = {}
+
+
+def _window(kind, M, a0, a1):
+    """a0 - a1 cos(2 pi k / (M - 1)), made once per length and kept READ-ONLY (shared: nobody can change it under another)."""
+    key = (kind, int(M))
+    if key not in _WINDOWS:
+        if M < 1: w = _new((0,), float64)
+        elif M == 1: w = array([1.0])
+        else: w = _binary(1, a0, _binary(2, a1, cos(_ramp(int(M), 0.0, 2 * math.pi / (M - 1), float64))))
+        w._ro = True
+        _WINDOWS[key] = w
+    return _WINDOWS[key]
+
+
+def hanning(M): return _window("hann", M, 0.5, 0.5)
+def hamming(M): return _window("hamming", M, 0.54, 0.46)
+
+
+def pad(x, width, value=0):
+    """A row with value added before and after: pad(x, (before, after)) (or pad(x, n): n each side). One row in murmur."""
+    g = _as(x)
+    if g.ndim != 1: raise MurmurError("pad: one row at a time in murmur")
+    before, after = (width, width) if isinstance(width, int) else (int(width[0]), int(width[1]))
+    out = full((before + g.shape[0] + after,), value, g.dtype)
+    if g.shape[0]: _assign(out[before:before + g.shape[0]], g)
+    return out
+
+
+class fft:
+    """The FFT, any length (radix-2 for powers of two, Bluestein for the rest), in doubles, rows over every core."""
+    @staticmethod
+    def rfft(x, n=None, axis=-1):
+        g = _as(x)
+        if g.dtype is complex128: raise MurmurError("rfft takes real numbers; this grid is complex")
+        if axis not in (-1, g.ndim - 1): raise MurmurError("rfft: along the last axis in murmur (transpose first)")
+        n = g.shape[-1] if n is None else int(n)          # 0 is a length (refused), not "not given"
+        if n < 1: raise MurmurError(f"rfft needs a length of 1 or more, not {n}")
+        out = _new(g.shape[:-1] + (n // 2 + 1,), complex128)
+        _LIB.pn_rfft(ctypes.byref(out._craw()), ctypes.byref(g._c()), n)
+        return out
+
+    @staticmethod
+    def irfft(X, n=None, axis=-1):
+        g = _as(X)
+        if axis not in (-1, g.ndim - 1): raise MurmurError("irfft: along the last axis in murmur")
+        k = g.shape[-1]
+        n = 2 * (k - 1) if n is None else int(n)
+        if n < 1: raise MurmurError(f"irfft needs a length of 1 or more, not {n}")
+        out = _new(g.shape[:-1] + (n,), float64)
+        c = g._craw() if g.dtype is complex128 else g._c()
+        _LIB.pn_irfft(ctypes.byref(out._c()), ctypes.byref(c), 1 if g.dtype is complex128 else 0, k, n)
+        return out
+
+    @staticmethod
+    def rfftfreq(n, d=1.0):
+        return _ramp(n // 2 + 1, 0.0, 1.0 / (n * d), float64)
+
+    @staticmethod
+    def power(x, n=None):
+        """|rfft(x)|^2 in one pass (what Perch's sound bands and voice prints use)."""
+        return _cpart(fft.rfft(x, n), 1)
 def sqrt(x): g = _as(x); return _unary_raw(g, 3, _float_of(g.dtype))
 def log(x): g = _as(x); return _unary_raw(g, 4, _float_of(g.dtype))
 def log10(x): g = _as(x); return _unary_raw(g, 5, _float_of(g.dtype))

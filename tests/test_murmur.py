@@ -16,10 +16,18 @@ def check(name, ok, detail=""):
     if not ok: fails.append(name)
 
 def same(name, got, want, tol=1e-5):
+    if isinstance(got, list) and isinstance(want, list) and len(got) == len(want) and \
+            any(isinstance(v, (list, mm.Grid)) for v in got):           # a list of parts of different lengths: each part in turn
+        bad = [i for i, (gv, wv) in enumerate(zip(got, want)) if not _close(gv, wv, tol)]
+        check(name, not bad, f"parts {bad} differ"); return
     g = np.asarray(got.tolist() if isinstance(got, mm.Grid) else got, dtype=float)
     w = np.asarray(want, dtype=float)
     ok = g.shape == w.shape and np.allclose(g, w, rtol=tol, atol=tol * 10, equal_nan=True)
     check(name, ok, f"shape {g.shape} vs {w.shape}" if g.shape != w.shape else f"max diff {np.nanmax(np.abs(g - w)) if g.size else 0}")
+
+def _close(got, want, tol):
+    g = np.asarray(got.tolist() if isinstance(got, mm.Grid) else got, dtype=float); w = np.asarray(want, dtype=float)
+    return g.shape == w.shape and np.allclose(g, w, rtol=tol, atol=tol * 10, equal_nan=True)
 
 def refused(name, fn, words):
     try:
@@ -118,6 +126,32 @@ refused("shapes that do not fit say which axis", lambda: a + mm.zeros((37, 52, 3
 refused("a value that does not fit a slice write", lambda: u.__setitem__((0, 0, 0), 300), "do not fit this uint8")
 check("one value is a plain Python number: json takes it", json.dumps({"mean": a.mean(), "max": u.max(), "any": m.any()}) is not None)
 
+# the FFT, against numpy: any length, batches, padding and cutting, the inverse, the parts
+for L in (1, 2, 3, 8, 400, 512, 800, 997, 8000):
+    x = rng.normal(0, 1, L)
+    X = mm.fft.rfft(mm.asarray(x.tolist())); NX = np.fft.rfft(x)
+    same(f"rfft length {L} (real, imag)", [X.real.tolist(), X.imag.tolist()], [NX.real.tolist(), NX.imag.tolist()], 1e-9)
+    same(f"irfft(rfft) length {L} gives it back", mm.fft.irfft(X, L), x, 1e-9)
+fr = rng.normal(0, 1, (37, 400))
+same("batch of 37 frames, padded to 512, power", mm.fft.power(mm.asarray(fr.tolist()), 512), np.abs(np.fft.rfft(fr, 512)) ** 2, 1e-9)
+same("cut to 256 (n shorter than the row)", mm.abs(mm.fft.rfft(mm.asarray(fr.tolist()), 256)), np.abs(np.fft.rfft(fr, 256)), 1e-9)
+sv = rng.normal(0, 1, 300); w2 = 300
+same("pitch autocorrelation irfft(|rfft(s, 2w)|^2)[:w]", mm.fft.irfft(mm.fft.power(mm.asarray(sv.tolist()), 2 * w2))[:w2],
+     np.fft.irfft(np.abs(np.fft.rfft(sv, 2 * w2)) ** 2)[:w2], 1e-9)
+same("irfft of an odd length", mm.fft.irfft(mm.fft.rfft(mm.asarray(sv[:7].tolist())), 7), sv[:7], 1e-9)
+z = mm.fft.rfft(mm.asarray(sv[:64].tolist())); Z = np.fft.rfft(sv[:64])
+same("angle and conj", [mm.angle(z).tolist(), mm.conj(z).imag.tolist()], [np.angle(Z).tolist(), np.conj(Z).imag.tolist()], 1e-9)
+same("rfftfreq", mm.fft.rfftfreq(800, 1 / 16000), np.fft.rfftfreq(800, 1 / 16000))
+same("hanning and hamming", [mm.hanning(9).tolist(), mm.hamming(9).tolist(), mm.hanning(1).tolist()], [np.hanning(9).tolist(), np.hamming(9).tolist(), np.hanning(1).tolist()])
+same("pad on the left", mm.pad(mm.array([1.0, 2.0]), (3, 0)), np.pad(np.array([1.0, 2.0]), (3, 0)))
+raw = (rng.integers(-32768, 32767, 1000)).astype("<i2").tobytes()
+same("sound bytes as int16", mm.frombuffer(raw, "<i2").astype(mm.float32) / 32768.0, np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0)
+same("FFT of silence is silence", mm.fft.power(mm.zeros(800)), np.zeros(401))
+refused("complex grids refuse what murmur does not do on them", lambda: z * 2, "take abs(x)")
+refused("rfft of a complex grid", lambda: mm.fft.rfft(z), "takes real numbers")
+refused("rfft of length 0", lambda: mm.fft.rfft(mm.zeros(4), 0), "length of 1 or more")
+refused("int16 never wraps: 40000 refused", lambda: mm.array([40000]).astype(mm.int16), "-32768..32767")
+
 # speed on picture-sized grids (the same work through both)
 big = rng.uniform(0, 255, (360, 640, 3)).astype(np.float32); gb = mm.asarray(Image.fromarray(big.astype(np.uint8))).astype(mm.float32)
 def t(f, k=5):
@@ -125,11 +159,15 @@ def t(f, k=5):
     for _ in range(k): f()
     return (time.perf_counter() - t0) / k * 1000
 W3 = np.array([0.2126, 0.7152, 0.0722], np.float32); w3 = mm.array([0.2126, 0.7152, 0.0722], mm.float32)
+SND = rng.normal(0, 1, 8000) * np.hanning(8000); snd = mm.asarray(SND.tolist())
+FR = rng.normal(0, 1, (2000, 400)); frs = mm.asarray(FR.tolist())
 rows = [("luminance (360x640x3 @ 3)", lambda: big @ W3, lambda: gb @ w3),
         ("median of 230,400", lambda: np.median(big[..., 1]), lambda: mm.median(gb[..., 1])),
         ("abs diff + compare", lambda: np.abs(big - big[::-1]) > 20, lambda: mm.abs(gb - gb[::-1]) > 20),
         ("mean by axis", lambda: big.mean(0), lambda: gb.mean(0)),
-        ("patches of a 160x90 mask", lambda: py_patches(M), lambda: mm.patches(m))]
+        ("patches of a 160x90 mask", lambda: py_patches(M), lambda: mm.patches(m)),
+        ("sound band power, 8000 window", lambda: np.abs(np.fft.rfft(SND)) ** 2, lambda: mm.fft.power(snd)),
+        ("voice frames 2000x400 -> 512", lambda: np.abs(np.fft.rfft(FR, 512)) ** 2, lambda: mm.fft.power(frs, 512))]
 print("speed (ms, average of 5)          numpy    murmur")
 for name, f_np, f_mm in rows:
     print(f"  {name:32} {t(f_np):7.2f}  {t(f_mm):7.2f}")
