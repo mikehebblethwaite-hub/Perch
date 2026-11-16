@@ -129,6 +129,30 @@ try:
     r = s.read(save("stars_noon.jpg", a, noon_night))
     check("trick: a starry sky stamped midsummer noon: the clock is called wrong", (r["light"], bool(r["clock_check"])), ("night", True))
 
+    # the shadow layer: grass, a flat horizon, the sun ahead, shadows on the ground drawn in true perspective (their lines meet
+    # on the horizon straight below the sun); then the trick: dark green streaks pointing every which way
+    def scene(name, rays):
+        im = Image.new("RGB", (800, 600), (120, 170, 230)); dr = ImageDraw.Draw(im)
+        dr.rectangle((0, 300, 800, 600), fill=(90, 150, 60))
+        dr.ellipse((380, 60, 420, 100), fill=(255, 255, 255))
+        for (x0, y0, x1, y1) in rays: dr.line((x0, y0, x1, y1), fill=(25, 55, 20), width=9)
+        return save(name, im)
+    vp = (400, 300)
+    rays = []
+    for bx in (200, 330, 470, 600):                          # stone bases on a line 40 px below the horizon; shadows come forward
+        y0 = 340; t0 = (y0 - vp[1]); y1 = 470
+        x0 = vp[0] + (bx - vp[0]) * 1.0; x1 = vp[0] + (bx - vp[0]) * (y1 - vp[1]) / t0
+        rays.append((x0, y0, x1, y1))
+    r = s.shadow_reading(scene("shadows.png", rays))
+    check("honest: perspective shadows towards the camera: sun ahead", r.get("sun_side", "").startswith("ahead"), True)
+    check("honest: their lines meet below the sun", r.get("shadows_meet_below_sun"), True)
+    rays2 = [(150, 330, 300, 470), (500, 340, 380, 500), (650, 330, 700, 500), (300, 360, 120, 420)]
+    r = s.shadow_reading(scene("ragged.png", rays2))
+    check("trick: streaks every which way are not confirmed as the sun's shadows", r.get("shadows_meet_below_sun") is True, False)
+    w = s.times_for_height(dt.date(2018, 8, 8), 51.17889, -1.82622, 30, 40, "Europe/London")
+    check("sun 30-40 deg at Stonehenge, 8 Aug 2018: a morning and an afternoon window", len(w), 2)
+    check("...the morning one holds 09:39 (sun 35 deg then)", w[0]["from"] <= "09:39" <= w[0]["to"], True)
+
     tr = {"light": "night"}
     check("mark: night read at night is right", s.mark({"light": "night"}, tr), "right")
     check("mark: sun high read at night is wrong", s.mark({"light": "sun high"}, tr), "wrong")

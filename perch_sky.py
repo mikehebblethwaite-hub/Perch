@@ -249,6 +249,117 @@ def find_trails(a, ev=None):
     return n
 
 
+def find_horizon(a):
+    """Where land meets sky: the row each column turns from sky (bright, not green) to land (green or dark), the median across
+    columns (a stone or tree spoils a few columns, not the median). As a share of the height, or None."""
+    h, w, _ = a.shape
+    lum = a @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    land = ((a[..., 1] > a[..., 2] + 4) & (a[..., 1] >= a[..., 0] - 4)) | (lum < 70)
+    rows = []
+    for x in range(0, w, max(1, w // 120)):
+        col = land[:, x]
+        for y in range(h // 8, h - 3):
+            if col[y] and col[y + 1] and col[y + 2] and col[y + 3 if y + 3 < h else y]:
+                rows.append(y); break
+    if len(rows) < 10: return None
+    return float(np.median(rows)) / h
+
+
+def find_shadows(a, horizon, sun_x=None):
+    """Shadows on the ground: dark patches below the horizon, much darker than the grass around them, longer than wide. On flat
+    ground they are parallel, so in the picture their lines meet at one point on the horizon: straight below the sun (or its
+    opposite point). Returns their pieces and where their lines meet the horizon."""
+    h, w, _ = a.shape
+    hy = int(horizon * h)
+    lum = a @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    ground = lum[hy + 2:]
+    if ground.size == 0: return None
+    grass = float(np.median(ground))
+    g = a[hy + 2:]
+    dark = (ground < grass * 0.55) & (g[..., 1] > g[..., 2] + 2) & (g[..., 1] >= g[..., 0])   # dark GREEN: grass in shade, not a grey stone
+    pieces = []
+    for pts in _blobs(dark):
+        if len(pts) < max(12, h * w // 4000): continue
+        P = np.array(pts, float); P[:, 0] += hy + 2; c = P.mean(0); Q = P - c
+        ev, evec = np.linalg.eigh(Q.T @ Q / len(P))
+        if ev[1] < 4 * max(ev[0], 0.05): continue           # not long: a dark stone base, a hole, a person
+        d = evec[:, 1]                                       # (dy, dx) along the shadow
+        if abs(d[0]) < 1e-3: continue                        # level: meets the horizon nowhere
+        t = (hy - c[0]) / d[0]
+        xh = c[1] + t * d[1]                                 # where its line meets the horizon
+        far = P[np.argmin(P[:, 0])]; near = P[np.argmax(P[:, 0])]
+        pieces.append({"x": round(c[1] / w, 3), "y": round(c[0] / h, 3), "pixels": len(pts), "meets_horizon_x": round(xh / w, 3),
+                       "length": round(4 * math.sqrt(ev[1]) / h, 3), "towards_camera": bool(near[0] - far[0] > 2)})
+    if not pieces: return {"pieces": [], "grass": round(grass, 1)}
+    wts = np.array([p["pixels"] for p in pieces], float)
+    xs = np.array([p["meets_horizon_x"] for p in pieces])
+    meet = float(np.average(xs, weights=wts))
+    spread = float(np.sqrt(np.average((xs - meet) ** 2, weights=wts)))
+    return {"pieces": pieces, "meet_x": round(meet, 3), "spread": round(spread, 3), "grass": round(grass, 1)}
+
+
+def shadow_reading(path, hfov=(60, 110)):
+    """The shadow layer: is the sun ahead or behind, do the shadows belong to the sun in the picture, and how high the sun is.
+    The height needs the lens's field of view (unknown in a cropped picture; exact in a 360 original), so it is a range."""
+    a = _load(path)
+    h, w, _ = a.shape
+    hz = find_horizon(a)
+    if hz is None: return {"error": "no horizon found"}
+    lum = a @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    disc = find_discs(a, False)
+    sun_xy = (disc["x"], disc["y"]) if disc and disc["y"] < hz else None
+    sh = find_shadows(a, hz)
+    out = {"horizon": round(hz, 3), "sun_in_picture": sun_xy, "shadows": sh}
+    if not sh or not sh["pieces"]:
+        out["said"] = "no shadows on the ground: overcast, or the sun is out of sight"
+        return out
+    toward = sum(p["pixels"] for p in sh["pieces"] if p["towards_camera"]) > sum(p["pixels"] for p in sh["pieces"]) / 2
+    out["sun_side"] = "ahead (shadows come towards the camera)" if toward else "behind (shadows run away from the camera)"
+    lines = [f"shadows {'come towards' if toward else 'run away from'} the camera, so the sun is {'ahead' if toward else 'behind'}"]
+    if sun_xy:
+        if sh["spread"] > 0.1 or len(sh["pieces"]) < 2:      # the lines must agree among themselves before they can confirm anything
+            out["shadows_meet_below_sun"] = None
+            lines.append(f"their lines do not agree on one meeting point (spread {sh['spread']:.2f} of the width): "
+                         "too ragged at this size to check against the sun")
+        else:
+            miss = abs(sh["meet_x"] - sun_xy[0])
+            out["shadows_meet_below_sun"] = miss < 0.08
+            lines.append(f"their lines meet the horizon at {sh['meet_x']:.2f} across, the sun is at {sun_xy[0]:.2f}: "
+                         + ("they are this sun's shadows" if out["shadows_meet_below_sun"] else "they do not fit this sun"))
+        up = (hz - sun_xy[1]) * h
+        rng = []
+        for fov in hfov:
+            f = (w / 2) / math.tan(math.radians(fov / 2))
+            rng.append(math.degrees(math.atan(up / f)))
+        out["sun_height_deg"] = [round(min(rng), 1), round(max(rng), 1)]
+        lines.append(f"the sun stands {out['sun_height_deg'][0]}-{out['sun_height_deg'][1]} deg above the horizon "
+                     f"(a level camera with a {hfov[0]}-{hfov[1]} deg lens; the lens is not known)")
+        off = (sun_xy[0] - 0.5) * hfov[0], (sun_xy[0] - 0.5) * hfov[1]
+        out["sun_off_centre_deg"] = [round(min(off), 1), round(max(off), 1)]
+    else:
+        lines.append(f"their lines meet the horizon at {sh['meet_x']:.2f} across: the sun's bearing (or its opposite) is there")
+    out["said"] = "; ".join(lines)
+    return out
+
+
+def times_for_height(date, lat, lon, lo, hi, tz=None):
+    """When on this date the sun at this place stands between lo and hi degrees: morning and afternoon windows (UTC or local)."""
+    t = dt.datetime(date.year, date.month, date.day, tzinfo=dt.timezone.utc) - dt.timedelta(hours=2)
+    win, cur = [], None
+    for i in range(0, 28 * 60, 2):
+        u = t + dt.timedelta(minutes=i)
+        e = sun(u, lat, lon)
+        inside = lo <= e["elevation"] <= hi
+        if inside and cur is None: cur = [u, u, e["azimuth"], e["azimuth"]]
+        elif inside: cur[1], cur[3] = u, e["azimuth"]
+        elif cur is not None: win.append(cur); cur = None
+    if cur: win.append(cur)
+    if tz:
+        from zoneinfo import ZoneInfo
+        z = ZoneInfo(tz); win = [[a.astimezone(z), b.astimezone(z), c, d] for a, b, c, d in win]
+    return [{"from": a.strftime("%H:%M"), "to": b.strftime("%H:%M"), "sun_bearing": f"{c:.0f}-{d:.0f}"} for a, b, c, d in win]
+
+
 def sun_everywhere(clock):
     """Is the sun up (or down) everywhere people live at this local clock time and date? Our own sun maths over 55 S to 60 N, with
     the local clock allowed to be up to 1.5 hours off the sun's own time (time zones, summer time). "up", "down" or None (it depends)."""
