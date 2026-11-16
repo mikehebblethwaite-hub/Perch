@@ -61,3 +61,4 @@ test:			# real checks on real videos (skipped when the test video is not here)
 	./tests/test_perch_tech.py
 	./tests/test_geo.py
 	./tests/test_sky.py
+	./tests/test_loop.py

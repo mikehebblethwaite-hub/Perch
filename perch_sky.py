@@ -336,6 +336,8 @@ def shadow_reading(path, hfov=(60, 110)):
                      f"(a level camera with a {hfov[0]}-{hfov[1]} deg lens; the lens is not known)")
         off = (sun_xy[0] - 0.5) * hfov[0], (sun_xy[0] - 0.5) * hfov[1]
         out["sun_off_centre_deg"] = [round(min(off), 1), round(max(off), 1)]
+    elif sh["spread"] > 0.1 or len(sh["pieces"]) < 2:
+        lines.append(f"their lines do not agree on one meeting point (spread {sh['spread']:.2f} of the width): no bearing from them")
     else:
         lines.append(f"their lines meet the horizon at {sh['meet_x']:.2f} across: the sun's bearing (or its opposite) is there")
     out["said"] = "; ".join(lines)
