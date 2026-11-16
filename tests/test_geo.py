@@ -77,11 +77,11 @@ try:
     open(os.path.join(pics, "broken.jpg"), "wb").write(b"not a picture")
     check("photo: N/W EXIF read", [round(x, 4) for x in g.image_gps(os.path.join(pics, "stones.jpg"))[:2]], [51.178, -1.832])
     check("photo: S/E EXIF read", round(g.image_gps(os.path.join(pics, "hobart.jpg"))[0], 2), -42.88)
-    ws = g.where_of(os.path.join(pics, "stones.jpg"), pl)
+    ws = g.referee_of(os.path.join(pics, "stones.jpg"), pl)
     check("photo: compass + 5 m error -> sure 11, towards", (ws["sure"], ws["facing"], "towards Stonehenge" in ws["said"]), (11, "NE", True))
-    check("trick: photo with 0,0 has no where", g.where_of(os.path.join(pics, "nofix.jpg"), pl), None)
-    check("photo without GPS has no where", g.where_of(os.path.join(pics, "plain.jpg"), pl), None)
-    check("trick: a broken file does not crash", g.where_of(os.path.join(pics, "broken.jpg"), pl), None)
+    check("trick: photo with 0,0 has no referee", g.referee_of(os.path.join(pics, "nofix.jpg"), pl), None)
+    check("photo without GPS has no referee", g.referee_of(os.path.join(pics, "plain.jpg"), pl), None)
+    check("trick: a broken file does not crash", g.referee_of(os.path.join(pics, "broken.jpg"), pl), None)
     check("trick: zero-denominator EXIF number", g._dms(((51, 1), (0, 0), (1, 1)), "N"), None)
 
     # a real video with the ISO 6709 tag phones write (skipped when ffmpeg is not here)
@@ -90,12 +90,12 @@ try:
         subprocess.run(["ffmpeg", "-v", "quiet", "-f", "lavfi", "-i", "color=c=black:s=16x16:d=0.2", "-metadata",
                         "location=+51.1780-001.8320+080.0/", "-movflags", "use_metadata_tags", v], check=True)
         g._places = pl
-        wv = g.where_of(v)
+        wv = g.referee_of(v)
         check("video: ISO 6709 tag read", (wv["lat"], wv["lon"], wv["altitude_m"]), (51.178, -1.832, 80.0))
         v0 = os.path.join(pics, "zero.mp4")
         subprocess.run(["ffmpeg", "-v", "quiet", "-f", "lavfi", "-i", "color=c=black:s=16x16:d=0.2", "-metadata",
                         "location=+00.0000+000.0000/", "-movflags", "use_metadata_tags", v0], check=True)
-        check("trick: video with 0,0 has no where", g.where_of(v0), None)
+        check("trick: video with 0,0 has no referee", g.referee_of(v0), None)
 
     # fill: adds where to info files already written, keeps the look, leaves the rest alone
     g._places = pl
@@ -103,7 +103,7 @@ try:
     json.dump({"summary": "grey square", "sure": 9}, open(os.path.join(out, "plain.jpg.info.json"), "w"))
     added, none = g.fill(out, [pics])
     s = json.load(open(os.path.join(out, "stones.jpg.info.json")))
-    check("fill: where added, look kept", ("where" in s, s["summary"]), (True, "stones on a plain"))
+    check("fill: gps_referee added, look kept", ("gps_referee" in s, s["summary"]), (True, "stones on a plain"))
     check("fill: no GPS, file untouched", json.load(open(os.path.join(out, "plain.jpg.info.json"))), {"summary": "grey square", "sure": 9})
     check("fill: counts", (added, none), (1, 1))
     g._places = None

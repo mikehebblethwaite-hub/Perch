@@ -1,13 +1,15 @@
 # Copyright (c) 2026 Mike J Hebblethwaite. See LICENSE.md.
-# perch_geo: where a photo or video was taken, read from the file itself (its GPS), named from a world place list kept on
-# this machine. No guessing from the picture and nothing leaves the machine: the coordinates come from the camera, the names
+# perch_geo: the GPS REFEREE: where a photo or video was taken by its own GPS, named from a world place list kept on this
+# machine. Never the answer: Perch reads place and direction from the world itself (sun, moon, shadows, land); the GPS only
+# marks that reading (Mike, 16 Nov 2026: "I do not rely on gps and bots later also should not"). So the info field is
+# "gps_referee", and bots get no GPS at run time. No guessing from the picture and nothing leaves the machine: the coordinates come from the camera, the names
 # from GeoNames (CC BY 4.0, https://www.geonames.org), downloaded once.
 #   python3 perch_geo.py build                    make the index from SRC (GeoNames dump files) into DIR
 #     SRC needs allCountries.zip (or .txt), admin1CodesASCII.txt, admin2Codes.txt, countryInfo.txt, featureCodes_en.txt from
 #     https://download.geonames.org/export/dump/
 #   python3 perch_geo.py at LAT LON [FACING]      what is there
 #   python3 perch_geo.py file PATH...             a photo's or video's own GPS, and what is there
-#   python3 perch_geo.py fill OUTDIR FOLDER...    add "where" to OUTDIR/<name>.info.json files already written for FOLDER's files
+#   python3 perch_geo.py fill OUTDIR FOLDER...    add "gps_referee" to OUTDIR/<name>.info.json files already written for FOLDER's files
 # Data: PERCH_GEO (default ~/.cache/perch-geo): src/ holds the GeoNames files, the built index is places.tsv + cells.bin + kinds.json.
 # Distances in miles (and metres for the camera's own error). The camera stands at the coordinates: what it pointed at may be
 # far away (a zoom, a drone), so a landmark is "near where it was taken", never "in the picture". With a compass heading
@@ -80,7 +82,7 @@ def build(src=SRC, out=DIR):
             pop = int(p[14]) if p[14].isdigit() else 0
             town = role == "P" and (pop >= TOWN_POP or code in ("PPLC", "PPLA", "PPLA2"))
             rows.append((key(lat, lon), f"{lat:.5f}\t{lon:.5f}\t{role}{'T' if town else ''}\t{fc}\t{p[1]}\t{pop}\t"
-                                        f"{admin2.get(f'{cc}.{a1}.{a2}', '')}\t{admin1.get(f'{cc}.{a1}', '')}\t{country.get(cc, cc)}\t{p[0]}\n"))
+                                        f"{admin2.get(f'{cc}.{a1}.{a2}', '')}\t{admin1.get(f'{cc}.{a1}', '')}\t{country.get(cc, cc)}\t{p[0]}\t{p[17] if len(p) > 17 else ''}\n"))
     rows.sort(key=lambda r: r[0])
     tmp = os.path.join(out, "places.tsv.new")
     idx = []
@@ -122,7 +124,7 @@ class Places:
         for line in self.m[off:off + n].decode("utf-8").splitlines():
             p = line.split("\t")
             yield {"lat": float(p[0]), "lon": float(p[1]), "role": p[2], "code": p[3], "name": p[4], "pop": int(p[5]),
-                   "county": p[6], "region": p[7], "country": p[8], "geonameid": int(p[9])}
+                   "county": p[6], "region": p[7], "country": p[8], "geonameid": int(p[9]), "tz": p[10] if len(p) > 10 else ""}
 
     def around(self, lat, lon, miles):
         dlat = miles / 69.0
@@ -172,7 +174,7 @@ def places():
 
 
 def lookup(lat, lon, facing=None, err_m=None, pl=None):
-    """What is at a camera position. Returns the "where" for a file's info, or None for no real fix."""
+    """What is at a camera position. Returns the "gps_referee" for a file's info, or None for no real fix."""
     if not valid(lat, lon): return None
     pl = pl or places()
     near = town = None
@@ -187,7 +189,7 @@ def lookup(lat, lon, facing=None, err_m=None, pl=None):
             marks.append(r)
     marks.sort(key=lambda r: r["miles"])
     sure = 10 if err_m is None else (11 if err_m <= 10 else 10 if err_m <= 50 else 8 if err_m <= 200 else 6 if err_m <= 1000 else 3)
-    out = {"from": "the file's own GPS", "lat": round(lat, 6), "lon": round(lon, 6), "sure": sure}
+    out = {"from": "the file's own GPS", "role": "referee: marks Perch's own reading, never the answer", "lat": round(lat, 6), "lon": round(lon, 6), "sure": sure}
     if err_m is not None: out["gps_error_m"] = round(err_m, 1)
     if facing is not None:
         out["facing_deg"] = round(facing % 360, 1)
@@ -204,6 +206,7 @@ def lookup(lat, lon, facing=None, err_m=None, pl=None):
     ref = near or town
     if ref:
         out["region"] = {"county": ref["county"] or None, "region": ref["region"] or None, "country": ref["country"]}
+        if ref.get("tz"): out["tz"] = ref["tz"]          # the place's time zone (for the camera's local time -> real time)
     if near: out["near"] = place(near)
     if town and town is not near: out["town"] = place(town)
     lm = []
@@ -308,8 +311,8 @@ def video_gps(path):
 VIDEO = (".mp4", ".mov", ".m4v", ".3gp", ".avi", ".mkv")
 
 
-def where_of(path, pl=None):
-    """A file's "where" from its own GPS, or None (no GPS, or the 0,0 of no fix)."""
+def referee_of(path, pl=None):
+    """A file's "gps_referee" from its own GPS, or None (no GPS, or the 0,0 of no fix)."""
     g = video_gps(path) if path.lower().endswith(VIDEO) else image_gps(path)
     if not g: return None
     lat, lon, facing, err, alt = g
@@ -319,19 +322,20 @@ def where_of(path, pl=None):
 
 
 def fill(outdir, folders):
-    """Add "where" to info files already written (the describe job keeps going; each file is rewritten whole, then swapped in)."""
+    """Add "gps_referee" to info files already written (the describe job keeps going; each file is rewritten whole, then swapped in)."""
     added = none = 0
     for folder in folders:
         for n in sorted(os.listdir(folder)):
             dst = os.path.join(outdir, n + ".info.json")
             if not os.path.isfile(dst): continue
-            w = where_of(os.path.join(folder, n))
+            w = referee_of(os.path.join(folder, n))
             if not w:
                 none += 1
                 continue
             with open(dst, encoding="utf-8") as f:
                 info = json.load(f)
-            info["where"] = w
+            info.pop("where", None)                   # the old name (16 Nov, before the rule)
+            info["gps_referee"] = w
             tmp = dst + ".geo-new"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(info, f, ensure_ascii=False, indent=2)
@@ -351,7 +355,7 @@ if __name__ == "__main__":
         print(json.dumps(lookup(float(a[1]), float(a[2]), float(a[3]) if len(a) > 3 else None), ensure_ascii=False, indent=1))
     elif a[:1] == ["file"]:
         for p in a[1:]:
-            w = where_of(p)
+            w = referee_of(p)
             print(p, "->", w["said"] if w else "no GPS in the file")
     elif a[:1] == ["fill"] and len(a) >= 3:
         print("added %d, no GPS %d" % fill(a[1], a[2:]))
