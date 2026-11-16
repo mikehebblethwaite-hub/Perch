@@ -47,7 +47,8 @@ for _n, _args in {"pn_binary": [ctypes.c_int, _P, _P, _P], "pn_unary": [ctypes.c
                   "pn_matmul": [_P, _P, _P], "pn_sort": [_P, _P, ctypes.c_int],
                   "pn_correlate": [ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double), ctypes.c_int64, ctypes.POINTER(ctypes.c_double), ctypes.c_int64],
                   "pn_roots": [ctypes.POINTER(ctypes.c_double), ctypes.c_int, ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double)], "pn_lstsq": [ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double), ctypes.c_int64, ctypes.c_int64, ctypes.POINTER(ctypes.c_double)],
-                  "pn_shift_match": [_P, _P, ctypes.c_int], "pn_take_rows": [_P, _P, ctypes.POINTER(ctypes.c_int64), ctypes.c_int64]}.items():
+                  "pn_shift_match": [_P, _P, ctypes.c_int], "pn_take_rows": [_P, _P, ctypes.POINTER(ctypes.c_int64), ctypes.c_int64],
+                  "pn_cumsum": [_P, _P], "pn_rng_fill": [ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_double), ctypes.c_int64, ctypes.c_int]}.items():
     getattr(_LIB, _n).argtypes = _args
 _LIB.pn_count.restype = _LIB.pn_nonzero.restype = _LIB.pn_label.restype = _LIB.pn_bad.restype = ctypes.c_int64
 _LIB.pn_alloc.argtypes = [ctypes.c_int64]; _LIB.pn_alloc.restype = ctypes.c_void_p
@@ -479,6 +480,7 @@ class Grid:
     def var(self, axis=None, keepdims=False): return var(self, axis, keepdims)
     def std(self, axis=None, keepdims=False): return std(self, axis, keepdims)
     def clip(self, lo, hi): return clip(self, lo, hi)
+    def cumsum(self, axis=None): return cumsum(self, axis)
     def nonzero(self): return nonzero(self)
 
 
@@ -1241,6 +1243,24 @@ def diag(v):
 def trace(m): return sum(diag(m))
 
 
+def cumsum(g, axis=None):
+    """Running totals along an axis (no axis: the whole grid flattened, as numpy). Whole numbers give int64 totals; the sums are
+    done in doubles with Kahan's correction, so a long float32 run does not drift."""
+    g = _as(g)
+    if g.dtype is complex128: raise MurmurError("cumsum of complex numbers: take .real or abs first")
+    if axis is None: g, ax = g.reshape(-1), 0
+    else: ax = axis % g.ndim if g.ndim else 0
+    if not g.ndim: g, ax = g.reshape(1), 0
+    rd = g.dtype if g.dtype.kind == "f" else int64
+    v = _axis_last(g, ax)
+    out = _new(v.shape, rd)
+    if v.size: _LIB.pn_cumsum(ctypes.byref(out._c()), ctypes.byref(v._c())); _check_fit(rd)
+    if ax != g.ndim - 1:
+        axes = list(range(g.ndim - 1)); axes.insert(ax, g.ndim - 1)
+        out = out.transpose(axes).copy()
+    return out
+
+
 def bincount(x, minlength=0):
     vals = [int(v) for v in _as(x).reshape(-1).tolist()]
     if _b.any(v < 0 for v in vals): raise MurmurError("bincount counts whole numbers 0 and up")
@@ -1342,10 +1362,33 @@ class random:
             s[3] = ((s[3] << 45) | (s[3] >> 19)) & M
             return r
 
+        def _fill(self, n, kind):
+            """n numbers from the C side of the same stream (kind 0 uniform, 1 normal); the state comes back, so Python and C
+            draws carry on from each other."""
+            st = (ctypes.c_uint64 * 4)(*self.s)
+            out = _new((n,), float64)
+            if n: _LIB.pn_rng_fill(st, ctypes.cast(out._addr, ctypes.POINTER(ctypes.c_double)), n, kind)
+            self.s = list(st)
+            return out
+
         def random(self, size=None):
             if size is None: return (self._next() >> 11) * (1.0 / 9007199254740992.0)
             n = size if isinstance(size, int) else math.prod(size)
-            return array([(self._next() >> 11) * (1.0 / 9007199254740992.0) for _ in range(n)]).reshape(size)
+            return self._fill(n, 0).reshape(size)
+
+        def normal(self, loc=0.0, scale=1.0, size=None):
+            """Normal (Gaussian) numbers: mean loc, spread scale (Marsaglia's polar method on this generator's stream)."""
+            if not isinstance(loc, (int, float)) or not isinstance(scale, (int, float)):
+                raise MurmurError("normal: loc and scale as plain numbers in murmur (not grids)")
+            if scale < 0: raise MurmurError(f"normal: the spread (scale) cannot be negative, not {scale}")
+            if size is None: return loc + scale * self._fill(1, 1)[0]
+            n = size if isinstance(size, int) else math.prod(size)
+            g = self._fill(n, 1)
+            if scale != 1.0: g = g * float(scale)
+            if loc != 0.0: g = g + float(loc)
+            return g.reshape(size)
+
+        standard_normal = lambda self, size=None: self.normal(0.0, 1.0, size)
 
         def integers(self, low, high=None, size=None):
             if high is None: low, high = 0, low

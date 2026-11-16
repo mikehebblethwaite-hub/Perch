@@ -1084,3 +1084,49 @@ int pn_take_rows(pn_arr *out, pn_arr *a, const int64_t *rows, int64_t n) {
     par_range(n, n * a->shape[1], take_rows_range, &c);
     return 0;
 }
+
+// ---- cumsum along the last axis (perch_murmur moves the asked axis there first): running totals in doubles, rows over cores
+typedef struct { pn_arr *out, *a; int64_t n; } cs_ctx;
+static void cumsum_rows(int64_t r0, int64_t r1, void *c_) {
+    cs_ctx *c = c_;
+    pn_arr *a = c->a, *out = c->out;
+    int nd = a->ndim; int64_t n = c->n;
+    double *x = malloc(sizeof(double) * (n ? n : 1));
+    for (int64_t r = r0; r < r1; r++) {
+        const char *p = a->data; char *q = out->data;
+        int64_t rr = r;
+        for (int d = nd - 2; d >= 0; d--) { int64_t i = rr % a->shape[d]; rr /= a->shape[d]; p += i * a->strides[d]; q += i * out->strides[d]; }
+        load(a, p, n, a->strides[nd - 1], x);
+        double s = 0, comp = 0;
+        for (int64_t i = 0; i < n; i++) { double y = x[i] - comp, t = s + y; comp = (t - s) - y; s = t; x[i] = s; }   // Kahan: long runs stay exact
+        store(out, q, n, out->strides[nd - 1], x);
+    }
+    free(x);
+}
+int pn_cumsum(pn_arr *out, pn_arr *a) {
+    int nd = a->ndim; int64_t n = a->shape[nd - 1], rows = 1;
+    for (int d = 0; d < nd - 1; d++) rows *= a->shape[d];
+    cs_ctx c = {out, a, n};
+    par_range(rows, rows * n, cumsum_rows, &c);
+    return 0;
+}
+
+// ---- murmur's random numbers in C: xoshiro256** (the same stream perch_murmur's Python side makes), state carried in and out.
+// kind 0: uniform in [0, 1) (53 bits); kind 1: normal (mean 0, spread 1) by Marsaglia's polar method (pairs; none wasted).
+static inline uint64_t rotl(uint64_t x, int k) { return (x << k) | (x >> (64 - k)); }
+static inline uint64_t xnext(uint64_t *s) {
+    uint64_t r = rotl(s[1] * 5, 7) * 9, t = s[1] << 17;
+    s[2] ^= s[0]; s[3] ^= s[1]; s[1] ^= s[2]; s[0] ^= s[3]; s[2] ^= t; s[3] = rotl(s[3], 45);
+    return r;
+}
+static inline double xuni(uint64_t *s) { return (double)(xnext(s) >> 11) * (1.0 / 9007199254740992.0); }
+int pn_rng_fill(uint64_t *state, double *out, int64_t n, int kind) {
+    if (kind == 0) { for (int64_t i = 0; i < n; i++) out[i] = xuni(state); return 0; }
+    for (int64_t i = 0; i < n; i += 2) {
+        double u, v, q;
+        do { u = 2 * xuni(state) - 1; v = 2 * xuni(state) - 1; q = u * u + v * v; } while (q >= 1.0 || q == 0.0);
+        double f = sqrt(-2.0 * log(q) / q);
+        out[i] = u * f; if (i + 1 < n) out[i + 1] = v * f;
+    }
+    return 0;
+}

@@ -216,6 +216,31 @@ def np_shifted(a, c, r=3):
 F1 = rng.integers(0, 256, (36, 64)).astype(np.int16); F2 = np.roll(F1, (2, -1), (0, 1)); F2[:5] = 0
 check("shift_match = perch_cuts' numpy rule exactly", mm.shift_match(mm.asarray(F1.tolist(), mm.int16), mm.asarray(F2.tolist(), mm.int16)) == np_shifted(F1, F2))
 
+# cumsum and normal random numbers
+CS = rng.normal(0, 1, (6, 7, 5))
+for ax in (None, 0, 1, 2, -1): same(f"cumsum axis {ax}", mm.cumsum(mm.asarray(CS.tolist()), ax), np.cumsum(CS, ax), 1e-9)
+same("cumsum of uint8 (no wrap: 200+100+...)", mm.cumsum(mm.array([200, 100, 250, 5], mm.uint8)), np.cumsum(np.array([200, 100, 250, 5], np.uint8), dtype=np.int64))
+same("cumsum of yes/no counts them", mm.cumsum(mm.array([True, False, True, True])), np.cumsum([True, False, True, True]))
+same("grid.cumsum(1)", mm.asarray(CS.tolist()).cumsum(1), CS.cumsum(1), 1e-9)
+check("cumsum of an empty row is empty", mm.cumsum(mm.zeros((0,))).shape == (0,))
+L32 = mm.full((2_000_000,), 0.1, mm.float32)
+exact = 2_000_000 * float(np.float32(0.1))
+mine, theirs = float(mm.cumsum(L32)[-1]), float(np.cumsum(np.full(2_000_000, 0.1, np.float32))[-1])
+check(f"long float32 run: murmur's last total {mine:.1f} near exact {exact:.1f} (numpy's float32 drifts to {theirs:.1f})", abs(mine - exact) / exact < 1e-6)
+g1, g2 = mm.random.default_rng(42), mm.random.default_rng(42)
+check("normal: the same seed gives the same numbers", g1.normal(size=50).tolist() == g2.normal(size=50).tolist())
+g3 = mm.random.default_rng(9); Nm = g3.normal(3.0, 2.0, 200_000)
+check("normal: the shape asked for", g3.normal(size=(3, 4)).shape == (3, 4))
+same("normal(3, 2): mean 3, spread 2", [Nm.mean(), Nm.std()], [3.0, 2.0], 5e-3)
+zs = sorted(((v - 3.0) / 2.0) for v in Nm.tolist()); nn = len(zs)
+ks = max(max(abs((i + 1) / nn - 0.5 * (1 + math.erf(z / math.sqrt(2)))), abs(i / nn - 0.5 * (1 + math.erf(z / math.sqrt(2))))) for i, z in enumerate(zs))
+check(f"normal: Kolmogorov-Smirnov against the true bell curve D={ks:.4f} (< 1.63/sqrt(n) = {1.63 / math.sqrt(nn):.4f}, 99%)", ks < 1.63 / math.sqrt(nn))
+tail = sum(1 for z in zs if abs(z) > 3) / nn
+check(f"normal: tails beyond 3 spreads {tail:.5f} (true 0.0027)", abs(tail - 0.0027) < 0.0006)
+refused("normal: a negative spread", lambda: g3.normal(0, -1, 5), "cannot be negative")
+gp, gc = mm.random.default_rng(3), mm.random.default_rng(3)
+check("uniform draws from C and from Python are one stream", gc.random(4).tolist() + [gc.random()] == [gp.random() for _ in range(5)])
+
 # speed on picture-sized grids (the same work through both)
 big = rng.uniform(0, 255, (360, 640, 3)).astype(np.float32); gb = mm.asarray(Image.fromarray(big.astype(np.uint8))).astype(mm.float32)
 def t(f, k=5):
@@ -227,6 +252,8 @@ SND = rng.normal(0, 1, 8000) * np.hanning(8000); snd = mm.asarray(SND.tolist())
 FR = rng.normal(0, 1, (2000, 400)); frs = mm.asarray(FR.tolist())
 FBn = rng.uniform(0, 1, (40, 257)); PWn = rng.uniform(0, 1, (257, 2000)); FBm = mm.asarray(FBn.tolist()); PWm = mm.asarray(PWn.tolist())
 f1m, f2m = mm.asarray(F1.tolist(), mm.int16), mm.asarray(F2.tolist(), mm.int16)
+BIGC = rng.uniform(0, 1, (1080, 5760)).astype(np.float32); bigc = mm.frombuffer(BIGC.tobytes(), mm.float32).reshape(1080, 5760)
+NRNG, MRNG = np.random.default_rng(1), mm.random.default_rng(1)
 rows = [("luminance (360x640x3 @ 3)", lambda: big @ W3, lambda: gb @ w3),
         ("median of 230,400", lambda: np.median(big[..., 1]), lambda: mm.median(gb[..., 1])),
         ("abs diff + compare", lambda: np.abs(big - big[::-1]) > 20, lambda: mm.abs(gb - gb[::-1]) > 20),
@@ -235,7 +262,9 @@ rows = [("luminance (360x640x3 @ 3)", lambda: big @ W3, lambda: gb @ w3),
         ("sound band power, 8000 window", lambda: np.abs(np.fft.rfft(SND)) ** 2, lambda: mm.fft.power(snd)),
         ("voice frames 2000x400 -> 512", lambda: np.abs(np.fft.rfft(FR, 512)) ** 2, lambda: mm.fft.power(frs, 512)),
         ("mel filters (40x257) @ (257x2000)", lambda: FBn @ PWn, lambda: FBm @ PWm),
-        ("cuts: 49-shift match 64x36", lambda: np_shifted(F1, F2), lambda: mm.shift_match(f1m, f2m))]
+        ("cuts: 49-shift match 64x36", lambda: np_shifted(F1, F2), lambda: mm.shift_match(f1m, f2m)),
+        ("cumsum of 6.2 million (rows of 5760)", lambda: np.cumsum(BIGC, 1), lambda: mm.cumsum(bigc, 1)),
+        ("1 million normal numbers", lambda: NRNG.normal(size=1_000_000), lambda: MRNG.normal(size=1_000_000))]
 print("speed (ms, average of 5)          numpy    murmur")
 for name, f_np, f_mm in rows:
     print(f"  {name:32} {t(f_np):7.2f}  {t(f_mm):7.2f}")
