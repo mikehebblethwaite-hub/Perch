@@ -9,7 +9,9 @@
 // Never wraps: a value that does not fit a whole-number grid (out of range, not whole, NaN) is counted in *bad, not stored
 // wrapped; perch_murmur refuses the result in plain words (numpy wraps 255 + 1 to 0 without a word).
 #include <math.h>
+#include <pthread.h>
 #include <stdint.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -42,8 +44,9 @@ static void load(const pn_arr *a, const char *p, int64_t n, int64_t st, double *
     }
 }
 
-static int64_t BAD;                                    // values that would not fit (per call; perch_murmur reads it at once)
-int64_t pn_bad(void) { int64_t b = BAD; BAD = 0; return b; }
+static int64_t BAD;                                    // values that would not fit, added up from every thread
+static __thread int64_t TBAD;                          // ... counted per thread, so threads never trip over one count
+int64_t pn_bad(void) { int64_t b = __atomic_exchange_n(&BAD, 0, __ATOMIC_SEQ_CST) + TBAD; TBAD = 0; return b; }
 static void store(const pn_arr *a, char *p, int64_t n, int64_t st, const double *in) {
     if (a->dtype == F32 && st == 4) { float *f = (float *)p; for (int64_t i = 0; i < n; i++) f[i] = (float)in[i]; return; }
     if (a->dtype == F64 && st == 8) { memcpy(p, in, n * sizeof(double)); return; }
@@ -51,48 +54,133 @@ static void store(const pn_arr *a, char *p, int64_t n, int64_t st, const double 
     switch (a->dtype) {
     case U8: for (int64_t i = 0; i < n; i++) {
             double v = in[i];
-            if (!(v >= 0.0 && v <= 255.0) || v != floor(v)) { BAD++; v = v != v ? 0 : v < 0 ? 0 : v > 255 ? 255 : floor(v); }
+            if (!(v >= 0.0 && v <= 255.0) || v != floor(v)) { TBAD++; v = v != v ? 0 : v < 0 ? 0 : v > 255 ? 255 : floor(v); }
             *(uint8_t *)(p + i * st) = (uint8_t)v; } break;
     case BOOL: for (int64_t i = 0; i < n; i++) *(uint8_t *)(p + i * st) = in[i] != 0.0; break;
     case I64: for (int64_t i = 0; i < n; i++) {
             double v = in[i];
-            if (!(v >= -9.2233720368547748e18 && v < 9.2233720368547748e18) || v != floor(v)) { BAD++; v = v != v ? 0 : floor(v); }
+            if (!(v >= -9.2233720368547748e18 && v < 9.2233720368547748e18) || v != floor(v)) { TBAD++; v = v != v ? 0 : floor(v); }
             *(int64_t *)(p + i * st) = (int64_t)v; } break;
     case F32: for (int64_t i = 0; i < n; i++) *(float *)(p + i * st) = (float)in[i]; break;
     default: for (int64_t i = 0; i < n; i++) *(double *)(p + i * st) = in[i]; break;
     }
 }
 
-// walk every run (all axes but the last) of up to three views of the same shape; call f on each run
-typedef void (*run_fn)(int64_t n, char **p, int64_t *st, void *ctx);
-static void each_run(int k, pn_arr **v, run_fn f, void *ctx) {
+// ---- all the cores (Mike, 16 Nov 2026: "do YOUR murmur all cores"): a range of work items split over every online core, each
+// thread with its own scratch. The only bound is physical: starting a thread costs ~50 us, so work under PAR_MIN numbers runs on
+// one core (splitting it would make it slower); everything bigger gets every core there is. No setting to turn it down.
+#define PAR_MIN 65536
+#define BLOCK 2048                                     // numbers worked at a time: 3 x 16 KB of doubles fit a core's L1/L2
+int pn_cores(void) { static int n = 0; if (!n) { long c = sysconf(_SC_NPROCESSORS_ONLN); n = c > 0 ? (int)c : 1; } return n; }
+typedef void (*range_fn)(int64_t i0, int64_t i1, void *ctx);
+typedef struct { range_fn f; void *ctx; int64_t i0, i1; } rjob;
+static void *rjob_run(void *a) {
+    rjob *j = a;
+    j->f(j->i0, j->i1, j->ctx);
+    if (TBAD) { __atomic_add_fetch(&BAD, TBAD, __ATOMIC_SEQ_CST); TBAD = 0; }
+    return NULL;
+}
+static void par_range(int64_t items, int64_t work, range_fn f, void *ctx) {
+    int64_t T = pn_cores();
+    if (work < PAR_MIN) T = 1;
+    if (T > items) T = items;
+    if (T <= 1) { if (items > 0) f(0, items, ctx); return; }
+    pthread_t th[T]; rjob jb[T];
+    int started[T];
+    for (int64_t t = 0; t < T; t++) {
+        jb[t] = (rjob){f, ctx, items * t / T, items * (t + 1) / T};
+        started[t] = pthread_create(&th[t], NULL, rjob_run, &jb[t]) == 0;
+        if (!started[t]) rjob_run(&jb[t]);            // no thread to be had: do that share here
+    }
+    for (int64_t t = 0; t < T; t++) if (started[t]) pthread_join(th[t], NULL);
+}
+
+// walk every run (all axes but the last) of up to four views of the same shape; call f on each run (or piece of a run: a long
+// single run is cut so every core gets some). f gets scratch buffers of its own thread.
+typedef void (*run_fn)(int64_t n, char **p, int64_t *st, void *ctx, double **s);
+typedef struct { int k, nbuf; pn_arr **v; run_fn f; void *ctx; int64_t n, outer, piece, pieces; } runs_ctx;
+static void runs_range(int64_t i0, int64_t i1, void *c_) {
+    runs_ctx *c = c_;
+    pn_arr *o = c->v[0];
+    int nd = o->ndim;
+    double *s[3] = {0, 0, 0};
+    for (int b = 0; b < c->nbuf; b++) s[b] = malloc(sizeof(double) * BLOCK);   // small: stays in the core's own cache
+    int64_t st[4] = {0, 0, 0, 0};
+    for (int j = 0; j < c->k; j++) st[j] = nd ? c->v[j]->strides[nd - 1] : 0;
+    for (int64_t it = i0; it < i1; it++) {
+        int64_t r = it / c->pieces, c0 = (it % c->pieces) * c->piece;
+        int64_t len = c->n - c0 < c->piece ? c->n - c0 : c->piece;
+        if (len <= 0) continue;
+        char *p[4];
+        for (int j = 0; j < c->k; j++) {
+            p[j] = c->v[j]->data + c0 * st[j];
+            int64_t rr = r;
+            for (int d = nd - 2; d >= 0; d--) { p[j] += (rr % o->shape[d]) * c->v[j]->strides[d]; rr /= o->shape[d]; }
+        }
+        for (int64_t b0 = 0; b0 < len; b0 += BLOCK) {           // in blocks: load, work and store while it is all in cache
+            int64_t bl = len - b0 < BLOCK ? len - b0 : BLOCK;
+            char *q[4];
+            for (int j = 0; j < c->k; j++) q[j] = p[j] + b0 * st[j];
+            c->f(bl, q, st, c->ctx, s);
+        }
+    }
+    for (int b = 0; b < c->nbuf; b++) free(s[b]);
+}
+static void each_run(int k, pn_arr **v, run_fn f, void *ctx, int nbuf) {
     pn_arr *o = v[0];
     int nd = o->ndim;
-    int64_t n = nd ? o->shape[nd - 1] : 1;
-    int64_t st[4] = {0, 0, 0, 0};
-    for (int j = 0; j < k; j++) st[j] = nd ? v[j]->strides[nd - 1] : 0;
-    int64_t idx[MAXD] = {0};
-    int64_t outer = 1;
+    int64_t n = nd ? o->shape[nd - 1] : 1, outer = 1;
     for (int d = 0; d < nd - 1; d++) outer *= o->shape[d];
-    if (n == 0) return;
-    for (int64_t r = 0; r < outer; r++) {
-        char *p[4];
-        for (int j = 0; j < k; j++) {
-            p[j] = v[j]->data;
-            for (int d = 0; d < nd - 1; d++) p[j] += idx[d] * v[j]->strides[d];
-        }
-        f(n, p, st, ctx);
-        for (int d = nd - 2; d >= 0; d--) { if (++idx[d] < o->shape[d]) break; idx[d] = 0; }
-    }
+    if (n == 0 || outer == 0) return;
+    int64_t T = pn_cores(), pieces = 1;
+    if (n * outer >= PAR_MIN && outer < T) pieces = (T + outer - 1) / outer;
+    int64_t piece = (n + pieces - 1) / pieces;
+    pieces = (n + piece - 1) / piece;
+    runs_ctx c = {k, nbuf, v, f, ctx, n, outer, piece, pieces};
+    par_range(outer * pieces, n * outer, runs_range, &c);
 }
 
 // ---- elementwise: out = a OP b ----
 enum { ADD, SUB, MUL, DIV, POW, MAX2, MIN2, LT, LE, GT, GE, EQ, NE, AND, OR, XOR, FLOORDIV, MOD, ATAN2 };
-typedef struct { int op; pn_arr *v[3]; double *x, *y; } bin_ctx;
+typedef struct { int op; pn_arr *v[3]; } bin_ctx;
 
-static void bin_run(int64_t n, char **p, int64_t *st, void *c_) {
+// the picture case, straight: float32 (or float64) in and out, side by side or one value spread (stride 0); no conversion
+#define FAST_BIN(T, OPS) do { \
+    T *o = (T *)p[0]; const T *A = (const T *)p[1], *B = (const T *)p[2]; (void)o; \
+    int sa = st[1] != 0, sb = st[2] != 0; \
+    switch (c->op) { OPS } } while (0)
+#define FB(OP, EXPR) case OP: \
+    if (sa && sb) for (int64_t i = 0; i < n; i++) { T x = A[i], y = B[i]; o[i] = (EXPR); } \
+    else if (sa) { T y = B[0]; for (int64_t i = 0; i < n; i++) { T x = A[i]; o[i] = (EXPR); } } \
+    else if (sb) { T x = A[0]; for (int64_t i = 0; i < n; i++) { T y = B[i]; o[i] = (EXPR); } } \
+    else { T x = A[0], y = B[0]; for (int64_t i = 0; i < n; i++) o[i] = (EXPR); } return;
+#define FB_CMP(OP, EXPR) case OP: { uint8_t *ob = (uint8_t *)p[0]; \
+    if (sa && sb) for (int64_t i = 0; i < n; i++) { T x = A[i], y = B[i]; ob[i] = (EXPR); } \
+    else if (sa) { T y = B[0]; for (int64_t i = 0; i < n; i++) { T x = A[i]; ob[i] = (EXPR); } } \
+    else if (sb) { T x = A[0]; for (int64_t i = 0; i < n; i++) { T y = B[i]; ob[i] = (EXPR); } } \
+    else { T x = A[0], y = B[0]; for (int64_t i = 0; i < n; i++) ob[i] = (EXPR); } return; }
+static int fast_ok(pn_arr *v, int64_t st, int code, int64_t size) { return v->dtype == code && (st == size || st == 0); }
+
+static void bin_run(int64_t n, char **p, int64_t *st, void *c_, double **s) {
     bin_ctx *c = c_;
-    double *x = c->x, *y = c->y;
+    int op = c->op;
+    for (int fl = 0; fl < 2; fl++) {
+        int code = fl ? F64 : F32; int64_t sz = fl ? 8 : 4;
+        if (!fast_ok(c->v[1], st[1], code, sz) || !fast_ok(c->v[2], st[2], code, sz)) continue;
+        if (op <= MIN2 && op != POW && c->v[0]->dtype == code && st[0] == sz) {
+            if (fl) { typedef double T; (void)sizeof(T); FAST_BIN(double, FB(ADD, x + y) FB(SUB, x - y) FB(MUL, x * y) FB(DIV, x / y)
+                      FB(MAX2, (x != x || x >= y) ? x : y) FB(MIN2, (x != x || x <= y) ? x : y) default: break;); }
+            else { typedef float T; (void)sizeof(T); FAST_BIN(float, FB(ADD, x + y) FB(SUB, x - y) FB(MUL, x * y) FB(DIV, x / y)
+                      FB(MAX2, (x != x || x >= y) ? x : y) FB(MIN2, (x != x || x <= y) ? x : y) default: break;); }
+        }
+        if (op >= LT && op <= NE && c->v[0]->dtype == BOOL && st[0] == 1) {
+            if (fl) { typedef double T; (void)sizeof(T); FAST_BIN(double, FB_CMP(LT, x < y) FB_CMP(LE, x <= y) FB_CMP(GT, x > y)
+                      FB_CMP(GE, x >= y) FB_CMP(EQ, x == y) FB_CMP(NE, x != y) default: break;); }
+            else { typedef float T; (void)sizeof(T); FAST_BIN(float, FB_CMP(LT, x < y) FB_CMP(LE, x <= y) FB_CMP(GT, x > y)
+                      FB_CMP(GE, x >= y) FB_CMP(EQ, x == y) FB_CMP(NE, x != y) default: break;); }
+        }
+    }
+    double *x = s[0], *y = s[1];
     load(c->v[1], p[1], n, st[1], x);
     load(c->v[2], p[2], n, st[2], y);
     switch (c->op) {
@@ -120,21 +208,29 @@ static void bin_run(int64_t n, char **p, int64_t *st, void *c_) {
 }
 
 int pn_binary(int op, pn_arr *out, pn_arr *a, pn_arr *b) {
-    int64_t n = out->ndim ? out->shape[out->ndim - 1] : 1;
-    bin_ctx c = {op, {out, a, b}, malloc(sizeof(double) * (n ? n : 1)), malloc(sizeof(double) * (n ? n : 1))};
-    if (!c.x || !c.y) { free(c.x); free(c.y); return -1; }
-    each_run(3, c.v, bin_run, &c);
-    free(c.x); free(c.y);
+    bin_ctx c = {op, {out, a, b}};
+    each_run(3, c.v, bin_run, &c, 2);
     return 0;
 }
 
 // ---- elementwise: out = f(a); also the copy that makes astype, contiguous copies and slice assignment ----
 enum { COPY, NEG, ABS, SQRT, LOG, LOG10, EXP, SIN, COS, TAN, FLOOR, CEIL, ROUND, NOT, ISNAN, SIGN, ATAN, LOG2, TRUNC };
-typedef struct { int op; double lo, hi; int clip; pn_arr *v[2]; double *x; } un_ctx;
+typedef struct { int op; double lo, hi; int clip; pn_arr *v[2]; } un_ctx;
 
-static void un_run(int64_t n, char **p, int64_t *st, void *c_) {
+#define FAST_UN(T, SQ, AB) do { T *o = (T *)p[0]; const T *A = (const T *)p[1]; \
+    switch (c->op) { \
+    case COPY: for (int64_t i = 0; i < n; i++) o[i] = A[i]; return; \
+    case NEG: for (int64_t i = 0; i < n; i++) o[i] = -A[i]; return; \
+    case ABS: for (int64_t i = 0; i < n; i++) o[i] = AB(A[i]); return; \
+    case SQRT: for (int64_t i = 0; i < n; i++) o[i] = SQ(A[i]); return; \
+    default: break; } } while (0)
+static void un_run(int64_t n, char **p, int64_t *st, void *c_, double **s) {
     un_ctx *c = c_;
-    double *x = c->x;
+    if (!c->clip && c->v[0]->dtype == c->v[1]->dtype && st[0] == st[1]) {
+        if (c->v[0]->dtype == F32 && st[0] == 4) FAST_UN(float, sqrtf, fabsf);
+        if (c->v[0]->dtype == F64 && st[0] == 8) FAST_UN(double, sqrt, fabs);
+    }
+    double *x = s[0];
     load(c->v[1], p[1], n, st[1], x);
     switch (c->op) {
     case COPY: break;
@@ -162,44 +258,106 @@ static void un_run(int64_t n, char **p, int64_t *st, void *c_) {
 }
 
 int pn_unary(int op, pn_arr *out, pn_arr *a, int clip, double lo, double hi) {
-    int64_t n = out->ndim ? out->shape[out->ndim - 1] : 1;
-    un_ctx c = {op, lo, hi, clip, {out, a}, malloc(sizeof(double) * (n ? n : 1))};
-    if (!c.x) return -1;
-    each_run(2, c.v, un_run, &c);
-    free(c.x);
+    un_ctx c = {op, lo, hi, clip, {out, a}};
+    each_run(2, c.v, un_run, &c, 1);
     return 0;
 }
 
 // ---- reductions along the LAST axis (perch_num moves the asked axis there first): out has the shape without it ----
 enum { SUM, PROD, RMAX, RMIN, ARGMAX, ARGMIN, ANY, ALL, SUMSQ };
-int pn_reduce(int op, pn_arr *out, pn_arr *a) {
-    int nd = a->ndim;
-    int64_t n = nd ? a->shape[nd - 1] : 1, st = nd ? a->strides[nd - 1] : 0;
-    int64_t outer = 1;
-    for (int d = 0; d < nd - 1; d++) outer *= a->shape[d];
-    double *x = malloc(sizeof(double) * (n ? n : 1));
-    if (!x) return -1;
-    int64_t idx[MAXD] = {0};
-    for (int64_t r = 0; r < outer; r++) {
-        const char *p = a->data; char *q = out->data;
-        for (int d = 0; d < nd - 1; d++) { p += idx[d] * a->strides[d]; q += idx[d] * out->strides[d]; }
-        load(a, p, n, st, x);
-        double v = 0; int64_t k = 0;
-        switch (op) {
-        case SUM: { double s = 0, c = 0; for (int64_t i = 0; i < n; i++) { double y = x[i] - c, t = s + y; c = (t - s) - y; s = t; } v = s; break; }  // Kahan: long rows stay exact
-        case SUMSQ: { double s = 0; for (int64_t i = 0; i < n; i++) s += x[i] * x[i]; v = s; break; }
-        case PROD: v = 1; for (int64_t i = 0; i < n; i++) v *= x[i]; break;
-        case RMAX: v = n ? x[0] : NAN; for (int64_t i = 1; i < n; i++) if (x[i] > v || x[i] != x[i]) { v = x[i]; if (v != v) break; } break;
-        case RMIN: v = n ? x[0] : NAN; for (int64_t i = 1; i < n; i++) if (x[i] < v || x[i] != x[i]) { v = x[i]; if (v != v) break; } break;
-        case ARGMAX: for (int64_t i = 1; i < n; i++) if (x[i] > x[k]) k = i; v = (double)k; break;
-        case ARGMIN: for (int64_t i = 1; i < n; i++) if (x[i] < x[k]) k = i; v = (double)k; break;
-        case ANY: v = 0; for (int64_t i = 0; i < n; i++) if (x[i] != 0) { v = 1; break; } break;
-        case ALL: v = 1; for (int64_t i = 0; i < n; i++) if (x[i] == 0) { v = 0; break; } break;
+typedef struct { double v, c; int64_t k; } part;            // a piece's answer: value, Kahan carry, index (arg*)
+static part reduce_piece(int op, const double *x, int64_t n, int64_t base) {
+    part r = {0, 0, base};
+    switch (op) {
+    case SUM: {                       // 8 running totals the CPU adds side by side, then Kahan between groups of 8: near-exact and wide
+        double s = 0, c = 0; int64_t i = 0;
+        for (; i + 64 <= n; i += 64) {
+            double t8[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+            for (int64_t j = 0; j < 64; j += 8) for (int k = 0; k < 8; k++) t8[k] += x[i + j + k];
+            double g = ((t8[0] + t8[1]) + (t8[2] + t8[3])) + ((t8[4] + t8[5]) + (t8[6] + t8[7]));
+            double y = g - c, t = s + y; c = (t - s) - y; s = t;
         }
+        for (; i < n; i++) { double y = x[i] - c, t = s + y; c = (t - s) - y; s = t; }
+        r.v = s; r.c = c; break; }
+    case SUMSQ: { double s = 0; for (int64_t i = 0; i < n; i++) s += x[i] * x[i]; r.v = s; break; }
+    case PROD: r.v = 1; for (int64_t i = 0; i < n; i++) r.v *= x[i]; break;
+    case RMAX: r.v = n ? x[0] : NAN; for (int64_t i = 1; i < n; i++) if (x[i] > r.v || x[i] != x[i]) { r.v = x[i]; if (r.v != r.v) break; } break;
+    case RMIN: r.v = n ? x[0] : NAN; for (int64_t i = 1; i < n; i++) if (x[i] < r.v || x[i] != x[i]) { r.v = x[i]; if (r.v != r.v) break; } break;
+    case ARGMAX: { int64_t k = 0; for (int64_t i = 1; i < n; i++) if (x[i] > x[k]) k = i; r.v = n ? x[k] : NAN; r.k = base + k; break; }
+    case ARGMIN: { int64_t k = 0; for (int64_t i = 1; i < n; i++) if (x[i] < x[k]) k = i; r.v = n ? x[k] : NAN; r.k = base + k; break; }
+    case ANY: r.v = 0; for (int64_t i = 0; i < n; i++) if (x[i] != 0) { r.v = 1; break; } break;
+    case ALL: r.v = 1; for (int64_t i = 0; i < n; i++) if (x[i] == 0) { r.v = 0; break; } break;
+    }
+    return r;
+}
+static part combine(int op, part a, part b) {                // pieces in order: a before b (ties keep the first, as numpy)
+    switch (op) {
+    case SUM: { double y = b.v - a.c - b.c, t = a.v + y; a.c = (t - a.v) - y; a.v = t; return a; }
+    case SUMSQ: a.v += b.v; return a;
+    case PROD: a.v *= b.v; return a;
+    case RMAX: if (a.v != a.v) return a; if (b.v != b.v || b.v > a.v) return b; return a;
+    case RMIN: if (a.v != a.v) return a; if (b.v != b.v || b.v < a.v) return b; return a;
+    case ARGMAX: return b.v > a.v ? b : a;
+    case ARGMIN: return b.v < a.v ? b : a;
+    case ANY: a.v = a.v != 0 || b.v != 0; return a;
+    case ALL: a.v = a.v != 0 && b.v != 0; return a;
+    }
+    return a;
+}
+static double answer(int op, part r) { return (op == ARGMAX || op == ARGMIN) ? (double)r.k : r.v; }
+
+typedef struct { int op; pn_arr *out, *a; int64_t n, st; } red_ctx;
+static void reduce_rows(int64_t r0, int64_t r1, void *c_) {
+    red_ctx *c = c_;
+    pn_arr *a = c->a, *out = c->out;
+    int nd = a->ndim;
+    double *x = malloc(sizeof(double) * (c->n ? c->n : 1));
+    for (int64_t r = r0; r < r1; r++) {
+        const char *p = a->data; char *q = out->data;
+        int64_t rr = r;
+        for (int d = nd - 2; d >= 0; d--) { int64_t i = rr % a->shape[d]; rr /= a->shape[d]; p += i * a->strides[d]; q += i * out->strides[d]; }
+        load(a, p, c->n, c->st, x);
+        double v = answer(c->op, reduce_piece(c->op, x, c->n, 0));
         store(out, q, 1, 0, &v);
-        for (int d = nd - 2; d >= 0; d--) { if (++idx[d] < a->shape[d]) break; idx[d] = 0; }
     }
     free(x);
+}
+typedef struct { int op; pn_arr *a; int64_t n, st, pieces; part *parts; } one_ctx;
+static void reduce_pieces(int64_t i0, int64_t i1, void *c_) {
+    one_ctx *c = c_;
+    double *x = malloc(sizeof(double) * BLOCK);              // in cache-sized blocks, each block's answer combined in order
+    for (int64_t i = i0; i < i1; i++) {
+        int64_t lo = c->n * i / c->pieces, hi = c->n * (i + 1) / c->pieces;
+        part r = {0, 0, lo}; int first = 1;
+        for (int64_t b0 = lo; b0 < hi; b0 += BLOCK) {
+            int64_t bl = hi - b0 < BLOCK ? hi - b0 : BLOCK;
+            load(c->a, c->a->data + b0 * c->st, bl, c->st, x);
+            part pb = reduce_piece(c->op, x, bl, b0);
+            r = first ? pb : combine(c->op, r, pb); first = 0;
+        }
+        c->parts[i] = r;
+    }
+    free(x);
+}
+// reductions along the LAST axis (perch_murmur moves the asked axis there first): out has the shape without it
+int pn_reduce(int op, pn_arr *out, pn_arr *a) {
+    int nd = a->ndim;
+    int64_t n = nd ? a->shape[nd - 1] : 1, st = nd ? a->strides[nd - 1] : 0, outer = 1;
+    for (int d = 0; d < nd - 1; d++) outer *= a->shape[d];
+    if (outer == 1 && n >= PAR_MIN && pn_cores() > 1) {      // one long row: in pieces over the cores, then combined in order
+        int64_t pieces = pn_cores();
+        part *parts = malloc(sizeof(part) * pieces);
+        one_ctx c = {op, a, n, st, pieces, parts};
+        par_range(pieces, n, reduce_pieces, &c);
+        part r = parts[0];
+        for (int64_t i = 1; i < pieces; i++) r = combine(op, r, parts[i]);
+        double v = answer(op, r);
+        store(out, out->data, 1, 0, &v);
+        free(parts);
+        return 0;
+    }
+    red_ctx c = {op, out, a, n, st};
+    par_range(outer, n * outer, reduce_rows, &c);
     return 0;
 }
 
@@ -219,23 +377,23 @@ static double select_k(double *x, int64_t n, int64_t k) {   // quickselect: the 
     return x[k];
 }
 
-int pn_percentile(pn_arr *out, pn_arr *a, double q) {
+typedef struct { pn_arr *out, *a; int64_t n, st; double q; } pct_ctx;
+static void pct_rows(int64_t r0, int64_t r1, void *c_) {
+    pct_ctx *c = c_;
+    pn_arr *a = c->a, *out = c->out;
     int nd = a->ndim;
-    int64_t n = nd ? a->shape[nd - 1] : 1, st = nd ? a->strides[nd - 1] : 0;
-    int64_t outer = 1;
-    for (int d = 0; d < nd - 1; d++) outer *= a->shape[d];
+    int64_t n = c->n;
     double *x = malloc(sizeof(double) * (n ? n : 1));
-    if (!x) return -1;
-    int64_t idx[MAXD] = {0};
-    for (int64_t r = 0; r < outer; r++) {
+    for (int64_t r = r0; r < r1; r++) {
         const char *p = a->data; char *o = out->data;
-        for (int d = 0; d < nd - 1; d++) { p += idx[d] * a->strides[d]; o += idx[d] * out->strides[d]; }
-        load(a, p, n, st, x);
+        int64_t rr = r;
+        for (int d = nd - 2; d >= 0; d--) { int64_t i = rr % a->shape[d]; rr /= a->shape[d]; p += i * a->strides[d]; o += i * out->strides[d]; }
+        load(a, p, n, c->st, x);
         double v = NAN;
         int nan = 0;
         for (int64_t i = 0; i < n; i++) if (x[i] != x[i]) { nan = 1; break; }
         if (n && !nan) {
-            double pos = (n - 1) * q / 100.0;
+            double pos = (n - 1) * c->q / 100.0;
             int64_t lo = (int64_t)floor(pos);
             double frac = pos - lo;
             double a0 = select_k(x, n, lo);
@@ -246,9 +404,15 @@ int pn_percentile(pn_arr *out, pn_arr *a, double q) {
             } else v = a0;
         }
         store(out, o, 1, 0, &v);
-        for (int d = nd - 2; d >= 0; d--) { if (++idx[d] < a->shape[d]) break; idx[d] = 0; }
     }
     free(x);
+}
+int pn_percentile(pn_arr *out, pn_arr *a, double q) {
+    int nd = a->ndim;
+    int64_t n = nd ? a->shape[nd - 1] : 1, st = nd ? a->strides[nd - 1] : 0, outer = 1;
+    for (int d = 0; d < nd - 1; d++) outer *= a->shape[d];
+    pct_ctx c = {out, a, n, st, q};
+    par_range(outer, n * outer, pct_rows, &c);
     return 0;
 }
 
@@ -371,38 +535,90 @@ int64_t pn_label(pn_arr *m, int64_t *labels, int64_t *stack) {
 }
 
 // ---- where: out = c ? x : y (all four the same shape; perch_murmur broadcasts first) ----
-typedef struct { pn_arr *v[4]; double *c, *x, *y; } wh_ctx;
-static void wh_run(int64_t n, char **p, int64_t *st, void *c_) {
+typedef struct { pn_arr *v[4]; } wh_ctx;
+static void wh_run(int64_t n, char **p, int64_t *st, void *c_, double **s) {
     wh_ctx *w = c_;
-    load(w->v[1], p[1], n, st[1], w->c); load(w->v[2], p[2], n, st[2], w->x); load(w->v[3], p[3], n, st[3], w->y);
-    for (int64_t i = 0; i < n; i++) w->x[i] = w->c[i] != 0 ? w->x[i] : w->y[i];
-    store(w->v[0], p[0], n, st[0], w->x);
+    double *c = s[0], *x = s[1], *y = s[2];
+    load(w->v[1], p[1], n, st[1], c); load(w->v[2], p[2], n, st[2], x); load(w->v[3], p[3], n, st[3], y);
+    for (int64_t i = 0; i < n; i++) x[i] = c[i] != 0 ? x[i] : y[i];
+    store(w->v[0], p[0], n, st[0], x);
 }
 int pn_where(pn_arr *out, pn_arr *c, pn_arr *x, pn_arr *y) {
-    int64_t n = out->ndim ? out->shape[out->ndim - 1] : 1; if (!n) n = 1;
-    wh_ctx w = {{out, c, x, y}, malloc(sizeof(double) * n), malloc(sizeof(double) * n), malloc(sizeof(double) * n)};
-    if (!w.c || !w.x || !w.y) { free(w.c); free(w.x); free(w.y); return -1; }
-    each_run(4, w.v, wh_run, &w);
-    free(w.c); free(w.x); free(w.y);
+    wh_ctx w = {{out, c, x, y}};
+    each_run(4, w.v, wh_run, &w, 3);
     return 0;
 }
 
 // ---- the last axis against a short row of weights (a picture's colours @ (r, g, b) weights): out = sum_k a[..., k] * w[k] ----
+typedef struct { pn_arr *out, *a; const double *w; int64_t n, st; } vd_ctx;
+static void vd_rows(int64_t r0, int64_t r1, void *c_) {
+    vd_ctx *c = c_;
+    pn_arr *a = c->a, *out = c->out;
+    int nd = a->ndim;
+    double *x = malloc(sizeof(double) * (c->n ? c->n : 1));
+    for (int64_t r = r0; r < r1; r++) {
+        const char *p = a->data; char *q = out->data;
+        int64_t rr = r;
+        for (int d = nd - 2; d >= 0; d--) { int64_t i = rr % a->shape[d]; rr /= a->shape[d]; p += i * a->strides[d]; q += i * out->strides[d]; }
+        double s = 0;
+        if (a->dtype == F32 && c->st == 4) { const float *f = (const float *)p; for (int64_t k = 0; k < c->n; k++) s += f[k] * c->w[k]; }
+        else { load(a, p, c->n, c->st, x); for (int64_t k = 0; k < c->n; k++) s += x[k] * c->w[k]; }
+        if (out->dtype == F32) *(float *)q = (float)s; else store(out, q, 1, 0, &s);
+    }
+    free(x);
+}
 int pn_vecdot(pn_arr *out, pn_arr *a, const double *w) {
     int nd = a->ndim;
     int64_t n = a->shape[nd - 1], st = a->strides[nd - 1], outer = 1;
     for (int d = 0; d < nd - 1; d++) outer *= a->shape[d];
-    double *x = malloc(sizeof(double) * (n ? n : 1));
-    if (!x) return -1;
-    int64_t idx[MAXD] = {0};
-    for (int64_t r = 0; r < outer; r++) {
-        const char *p = a->data; char *q = out->data;
-        for (int d = 0; d < nd - 1; d++) { p += idx[d] * a->strides[d]; q += idx[d] * out->strides[d]; }
-        load(a, p, n, st, x);
-        double s = 0; for (int64_t k = 0; k < n; k++) s += x[k] * w[k];
-        store(out, q, 1, 0, &s);
-        for (int d = nd - 2; d >= 0; d--) { if (++idx[d] < a->shape[d]) break; idx[d] = 0; }
+    vd_ctx c = {out, a, w, n, st};
+    par_range(outer, n * outer, vd_rows, &c);
+    return 0;
+}
+
+// ---- memory for grids: big ones on 2 MB huge pages (one page fault per 2 MB, not per 4 KB: a 25 MB picture grid was ~6,000
+// faults), never zeroed first (every murmur grid is filled at once), first touched by the threads that fill it.
+#include <sys/mman.h>
+#define HUGE_FROM (4 << 20)
+void *pn_alloc(int64_t nbytes) {
+    if (nbytes < 1) nbytes = 1;
+    if (nbytes >= HUGE_FROM) {
+        void *p = NULL;
+        size_t sz = ((size_t)nbytes + (2u << 20) - 1) & ~((size_t)(2u << 20) - 1);
+        if (posix_memalign(&p, 2u << 20, sz) == 0) { madvise(p, sz, MADV_HUGEPAGE); return p; }
     }
-    free(x);
+    return malloc((size_t)nbytes);
+}
+void pn_free(void *p) { free(p); }
+
+// ---- reduce over a MIDDLE axis row onto row (memory side by side): a is (pre, m, post), out (pre, post). Columns of post split
+// over the cores; each keeps double running values for its columns (sum, max, min, any, all).
+typedef struct { int op; pn_arr *out, *a; } mid_ctx;
+static void mid_cols(int64_t c0, int64_t c1, void *c_) {
+    mid_ctx *c = c_;
+    pn_arr *a = c->a, *out = c->out;
+    int64_t pre = a->shape[0], m = a->shape[1], post = a->shape[2];
+    (void)post;
+    int64_t w = c1 - c0;
+    double *acc = malloc(sizeof(double) * (w ? w : 1)), *row = malloc(sizeof(double) * (w ? w : 1));
+    for (int64_t q = 0; q < pre; q++) {
+        for (int64_t i = 0; i < m; i++) {
+            load(a, a->data + q * a->strides[0] + i * a->strides[1] + c0 * a->strides[2], w, a->strides[2], row);
+            if (i == 0) { memcpy(acc, row, sizeof(double) * w); if (c->op == ANY || c->op == ALL) for (int64_t j = 0; j < w; j++) acc[j] = acc[j] != 0; continue; }
+            switch (c->op) {
+            case SUM: for (int64_t j = 0; j < w; j++) acc[j] += row[j]; break;
+            case RMAX: for (int64_t j = 0; j < w; j++) if (row[j] > acc[j] || row[j] != row[j]) acc[j] = acc[j] != acc[j] ? acc[j] : row[j]; break;
+            case RMIN: for (int64_t j = 0; j < w; j++) if (row[j] < acc[j] || row[j] != row[j]) acc[j] = acc[j] != acc[j] ? acc[j] : row[j]; break;
+            case ANY: for (int64_t j = 0; j < w; j++) acc[j] = acc[j] != 0 || row[j] != 0; break;
+            case ALL: for (int64_t j = 0; j < w; j++) acc[j] = acc[j] != 0 && row[j] != 0; break;
+            }
+        }
+        store(out, out->data + q * out->strides[0] + c0 * out->strides[1], w, out->strides[1], acc);
+    }
+    free(acc); free(row);
+}
+int pn_reduce_mid(int op, pn_arr *out, pn_arr *a) {          // only SUM, RMAX, RMIN, ANY, ALL (perch_murmur asks only these)
+    mid_ctx c = {op, out, a};
+    par_range(a->shape[2], a->shape[0] * a->shape[1] * a->shape[2], mid_cols, &c);
     return 0;
 }

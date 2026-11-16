@@ -39,9 +39,23 @@ for _n, _args in {"pn_binary": [ctypes.c_int, _P, _P, _P], "pn_unary": [ctypes.c
                   "pn_put": [_P, _P, ctypes.POINTER(ctypes.c_int64), ctypes.c_int64],
                   "pn_eigh": [ctypes.c_int, ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double)],
                   "pn_label": [_P, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(ctypes.c_int64)],
-                  "pn_where": [_P, _P, _P, _P], "pn_bad": [], "pn_vecdot": [_P, _P, ctypes.POINTER(ctypes.c_double)]}.items():
+                  "pn_where": [_P, _P, _P, _P], "pn_bad": [], "pn_vecdot": [_P, _P, ctypes.POINTER(ctypes.c_double)],
+                  "pn_reduce_mid": [ctypes.c_int, _P, _P]}.items():
     getattr(_LIB, _n).argtypes = _args
 _LIB.pn_count.restype = _LIB.pn_nonzero.restype = _LIB.pn_label.restype = _LIB.pn_bad.restype = ctypes.c_int64
+_LIB.pn_alloc.argtypes = [ctypes.c_int64]; _LIB.pn_alloc.restype = ctypes.c_void_p
+_LIB.pn_free.argtypes = [ctypes.c_void_p]; _LIB.pn_free.restype = None
+
+
+class _Mem:
+    """A grid's memory from murmur's own allocator (huge pages for big grids, not zeroed: every grid is filled at once);
+    given back when the last grid (or view) using it is gone."""
+    __slots__ = ("ptr",)
+    def __init__(self, nbytes):
+        self.ptr = _LIB.pn_alloc(nbytes)
+        if not self.ptr: raise MemoryError(f"murmur could not get {nbytes} bytes")
+    def __del__(self, _free=_LIB.pn_free):
+        if self.ptr: _free(self.ptr); self.ptr = None
 
 
 class _DT:
@@ -253,7 +267,6 @@ class Grid:
         if isinstance(key, Grid) or (isinstance(key, list)):
             pos, shape = self._flat_positions(key if isinstance(key, Grid) else key)
             out = _new(shape, self.dtype)
-            flat = _new((len(pos),), self.dtype) if False else out
             arr = (ctypes.c_int64 * _b.max(1, len(pos)))(*pos)
             o = out.reshape(-1)
             _LIB.pn_take(ctypes.byref(o._c()), ctypes.byref(self._c()), arr, len(pos))
@@ -345,11 +358,10 @@ def _new(shape, dtype):
     shape = tuple(int(s) for s in shape)
     if _b.any(s < 0 for s in shape): raise MurmurError(f"a shape cannot have a negative length: {shape}")
     dtype = _dt(dtype)
-    nb = _b.max(1, math.prod(shape) * dtype.size)
-    buf = (ctypes.c_char * nb)()
+    mem = _Mem(_b.max(1, math.prod(shape) * dtype.size))
     st, acc = [], dtype.size
     for n in reversed(shape): st.append(acc); acc *= n
-    return Grid(buf, ctypes.addressof(buf), shape, tuple(reversed(st)), dtype)
+    return Grid(mem, mem.ptr, shape, tuple(reversed(st)), dtype)
 
 
 def _shape_of(x):
@@ -677,6 +689,18 @@ def _reduce(g, how, axis, keepdims):
     ax = axis % g.ndim if g.ndim else 0
     if g.shape[ax] == 0 and how not in ("sum", "any", "all", "prod"):
         raise MurmurError(f"the {how} of nothing: the grid is empty along axis {ax}")
+    if how in ("sum", "max", "min", "any", "all") and ax < g.ndim - 1 and g.shape[ax] > 1:
+        # not the last axis: add row onto row with the memory side by side (seen as (pre, m, post)), not column by column
+        pre, post = math.prod(g.shape[:ax]), math.prod(g.shape[ax + 1:])
+        src = g if g._contiguous() else g.copy()
+        v3 = src.reshape(pre, g.shape[ax], post)
+        rd = _rdtype(g.dtype, how)
+        out = _new((pre, post), rd if rd.kind == "f" or how in ("any", "all", "max", "min") else float64)
+        _LIB.pn_reduce_mid({"sum": 0, "max": 2, "min": 3, "any": 6, "all": 7}[how], ctypes.byref(out._c()), ctypes.byref(v3._c()))
+        _LIB.pn_bad()
+        if out.dtype is not rd: out = out.astype(rd)
+        out = out.reshape(g.shape[:ax] + ((1,) if keepdims else ()) + g.shape[ax + 1:])
+        return out._scalar() if not out.ndim else out
     v = _axis_last(g, ax)
     if how == "mean":
         s = _reduce(g, "sum", ax, keepdims)
