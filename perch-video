@@ -325,9 +325,9 @@ try:
 except ImportError:
     reader = None
 try:
-    import numpy as np, perch_cuts
-except ImportError:
-    np = perch_cuts = None                                      # no numpy here: the simple cut rule, frames fetched after
+    import perch_murmur as mm, perch_cuts                      # Perch's own number grids (murmur, C), not numpy
+except (ImportError, OSError):
+    mm = perch_cuts = None                                      # murmur not built here: the simple cut rule, frames fetched after
 from concurrent.futures import ThreadPoolExecutor
 import threading, queue
 os.environ.setdefault("OMP_THREAD_LIMIT", "1")                 # tesseract one core each: several frames are read side by side
@@ -365,7 +365,7 @@ rot = 0
 for sd in v.get("side_data_list") or []:
     if "rotation" in sd: rot = abs(int(float(sd["rotation"])))
 if abs(int(float((v.get("tags") or {}).get("rotate", rot) or 0))) % 180 == 90 or rot % 180 == 90: W_, H_ = H_, W_   # turned phone video
-merged = bool(np and os.path.isfile(src) and W_ and H_)        # one decode for both, or the grey pass now and frames fetched after
+merged = bool(mm and os.path.isfile(src) and W_ and H_)        # one decode for both, or the grey pass now and frames fetched after
 span = (["-ss", str(opt["from"])] if opt["from"] else []) + (["-t", str(opt["to"] - opt["from"])] if opt["to"] else []) + ["-i", src]   # -t before -i: both outputs stop
 if merged:
     rg, wg = os.pipe(); rf, wf = os.pipe()
@@ -424,13 +424,13 @@ def end_seg(t):
     seg = None
 CELLS = [(slice(cy * GH // 3, (cy + 1) * GH // 3), slice(cx * GW // 3, (cx + 1) * GW // 3)) for cy in range(3) for cx in range(3)]
 def g16(i):
-    return np.frombuffer(FR[i], np.uint8).reshape(GH, GW).astype(np.int16)
+    return mm.frombuffer(FR[i], mm.uint8).reshape(GH, GW).astype(mm.int16)
 def decided(j, is_cut):                                         # frame j, now that it is known whether a new scene starts there
     global seg, last_read
     t = opt["from"] + j / opt["fps"]
-    fr = g16(j) if np else FR[j]
+    fr = g16(j) if mm else FR[j]
     if j:
-        pv = g16(j - 1) if np else FR[j - 1]
+        pv = g16(j - 1) if mm else FR[j - 1]
         if is_cut is None:                                      # no numpy: the simple rule
             d_ = [abs(a - b) for a, b in zip(fr, pv)]; whole = sum(d_) / size
             ha = [0] * 16; hb = [0] * 16
@@ -439,7 +439,7 @@ def decided(j, is_cut):                                         # frame j, now t
             cells = [i for i in range(9) if sum(1 for y in range(GH)[CELLS[i][0]] for x in range(GW)[CELLS[i][1]] if d_[y * GW + x] > 18) >
                      (CELLS[i][0].stop - CELLS[i][0].start) * (CELLS[i][1].stop - CELLS[i][1].start) * 0.04]
         else:
-            d_ = np.abs(fr - pv)
+            d_ = mm.abs(fr - pv)
             cells = [i for i, (ys, xs) in enumerate(CELLS) if (d_[ys, xs] > 18).mean() > 0.04]
         if is_cut:
             end_seg(t); cuts.append(t); lines.append((t, 2, f"cut {ts(t)} {len(cuts) + 1}"))
@@ -448,7 +448,7 @@ def decided(j, is_cut):                                         # frame j, now t
             if seg is None: seg = [t, c, c, t]
             else: seg[2] = c; seg[3] = t
         elif seg and t - seg[3] > 0.6: end_seg(seg[3] + 1 / opt["fps"])    # still for a moment: that movement is over
-    changed = last_read is None or (float(np.abs(fr - last_read).mean()) if np else sum(abs(a_ - b_) for a_, b_ in zip(fr, last_read)) / size) > 6
+    changed = last_read is None or (float(mm.abs(fr - last_read).mean()) if mm else sum(abs(a_ - b_) for a_, b_ in zip(fr, last_read)) / size) > 6
     zooming = opt.get("focus") is not None and abs(t - opt["focus"]) <= 5.01
     read = (t >= (reads[-1] if reads else -9) + (1.0 if zooming else 2.0) and (changed or zooming)) or j == 0 or bool(is_cut)
     if read:
@@ -458,17 +458,17 @@ def decided(j, is_cut):                                         # frame j, now t
             if b:
                 from PIL import Image
                 box = None
-                if zooming and j and np and cells and len(cells) < 9:   # the cells where something moved, as a box on the full frame
+                if zooming and j and mm and cells and len(cells) < 9:   # the cells where something moved, as a box on the full frame
                     cx = [i % 3 for i in cells]; cy = [i // 3 for i in cells]
                     box = (max(0, (min(cx) * W_) // 3 - W_ // 12), max(0, (min(cy) * H_) // 3 - H_ // 12),
                            min(W_, ((max(cx) + 1) * W_) // 3 + W_ // 12), min(H_, ((max(cy) + 1) * H_) // 3 + H_ // 12))
-                take(t, Image.frombytes("RGB", (W_, H_), b), bool(is_cut) or j == 0 or zooming, fr if np else None, box)
+                take(t, Image.frombytes("RGB", (W_, H_), b), bool(is_cut) or j == 0 or zooming, fr if mm else None, box)
     for old in [k_ for k_ in RING if k_ < j]: del RING[old]
 for g, b in frames():
     FR.append(g)
     if b is not None: RING[len(FR) - 1] = b
     if stream and len(FR) == 2: decided(0, False)              # the first frame (the cut rule starts at the second)
-    for j, is_cut in (stream.push(np.frombuffer(g, np.uint8).reshape(GH, GW).astype(np.int16)) if stream else [(len(FR) - 1, None)]):
+    for j, is_cut in (stream.push(mm.frombuffer(g, mm.uint8).reshape(GH, GW).astype(mm.int16)) if stream else [(len(FR) - 1, None)]):
         decided(j, is_cut)
 for j, is_cut in (stream.flush() if stream else []):
     decided(j, is_cut)
@@ -591,11 +591,11 @@ voice_model = None
 says = sorted((secs(re.match(r"say (\S+)", l).group(1)), l) for t_, _, l in lines if l.startswith("say "))
 if len(says) >= 6 and not opt.get("novoices"):
     try:
-        import numpy as np_, perch_voices
+        import perch_murmur as mm, perch_voices              # murmur: the sound file and the learned prints read without numpy
         pcm = os.path.join(RUN, f"voice-{os.getpid()}.pcm")
         subprocess.run(FF + (["-ss", str(opt["from"])] if opt["from"] else []) + (["-t", str(opt["to"] - opt["from"])] if opt["to"] else []) +
                        ["-i", src, "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "-y", pcm], capture_output=True, timeout=3600)
-        wav = np_.memmap(pcm, dtype=np_.int16, mode="r")
+        wav = mm.memmap(pcm, dtype=mm.int16, mode="r")
         segs = [(a - opt["from"], min(says[i + 1][0] if i + 1 < len(says) else a + 8, a + 15) - opt["from"]) for i, (a, _) in enumerate(says)]
         W_ = 1.5 if opt.get("focus") is not None else 3.0; wins = []
         for s0, s1 in segs:                                     # 3 s windows inside the speech, half overlapping: a line can hold two voices
@@ -610,7 +610,7 @@ if len(says) >= 6 and not opt.get("novoices"):
             out_ = pcm + ".npy"                                 # learned voice prints (an open speaker model, run here)
             r_ = subprocess.run([TAGPY, helper, SPK, pcm, out_], input="".join(f"{a:.2f} {b:.2f}\n" for a, b in wins),
                                 capture_output=True, text=True, timeout=7200)
-            if r_.returncode == 0 and os.path.isfile(out_): E_ = np_.load(out_); os.remove(out_)
+            if r_.returncode == 0 and os.path.isfile(out_): E_ = mm.load(out_); os.remove(out_)
         if E_ is not None:
             if known: got = perch_voices.match_learned(E_, known); k_ = len(known["centres"]); voice_model = known
             else: got, k_, voice_model = perch_voices.voices_learned(E_)
@@ -633,7 +633,7 @@ if len(says) >= 6 and not opt.get("novoices"):
                 lines.append((a, 0, f"voice {ts(a)} {v} sure {sure}")); last = v
         if k_: lines.append((opt["from"], 0, f"! voices: {k_} heard (voice 1, 2 ... in the order they first speak; within this video only)"))
         os.remove(pcm)
-    except ImportError:
+    except (ImportError, OSError):                              # murmur not built here: no voices, the rest goes on
         pass
 stage("who is speaking (voices)")
 # ---------- at each scene: the words on the screen (read here) and, if asked, one line from the local model ----------

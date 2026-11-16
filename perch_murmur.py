@@ -43,11 +43,16 @@ for _n, _args in {"pn_binary": [ctypes.c_int, _P, _P, _P], "pn_unary": [ctypes.c
                   "pn_reduce_mid": [ctypes.c_int, _P, _P], "pn_rfft": [_P, _P, ctypes.c_int64],
                   "pn_irfft": [_P, _P, ctypes.c_int, ctypes.c_int64, ctypes.c_int64],
                   "pn_cpart": [_P, ctypes.POINTER(ctypes.c_double), ctypes.c_int64, ctypes.c_int],
-                  "pn_ramp": [_P, ctypes.c_double, ctypes.c_double], "pn_mask_take": [_P, _P, _P]}.items():
+                  "pn_ramp": [_P, ctypes.c_double, ctypes.c_double], "pn_mask_take": [_P, _P, _P],
+                  "pn_matmul": [_P, _P, _P], "pn_sort": [_P, _P, ctypes.c_int],
+                  "pn_correlate": [ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double), ctypes.c_int64, ctypes.POINTER(ctypes.c_double), ctypes.c_int64],
+                  "pn_roots": [ctypes.POINTER(ctypes.c_double), ctypes.c_int, ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double)], "pn_lstsq": [ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double), ctypes.c_int64, ctypes.c_int64, ctypes.POINTER(ctypes.c_double)],
+                  "pn_shift_match": [_P, _P, ctypes.c_int], "pn_take_rows": [_P, _P, ctypes.POINTER(ctypes.c_int64), ctypes.c_int64]}.items():
     getattr(_LIB, _n).argtypes = _args
 _LIB.pn_count.restype = _LIB.pn_nonzero.restype = _LIB.pn_label.restype = _LIB.pn_bad.restype = ctypes.c_int64
 _LIB.pn_alloc.argtypes = [ctypes.c_int64]; _LIB.pn_alloc.restype = ctypes.c_void_p
 _LIB.pn_mask_take.restype = ctypes.c_int64
+_LIB.pn_roots.restype = ctypes.c_int; _LIB.pn_shift_match.restype = ctypes.c_double
 _LIB.pn_free.argtypes = [ctypes.c_void_p]; _LIB.pn_free.restype = None
 
 
@@ -168,11 +173,25 @@ class Grid:
         if not self.ndim: raise MurmurError("a single number has no length")
         return self.shape[0]
     def __iter__(self):
-        for i in range(len(self)): yield self[i]
+        if self.ndim == 1:
+            yield from self.tolist()                  # a row: plain numbers, read in one go
+        else:
+            for i in range(len(self)): yield self._basic(i)
 
     def tolist(self):
+        """All the numbers as (nested) Python lists, read in one go (not one at a time)."""
         if not self.ndim: return self._scalar()
-        return [self[i].tolist() if self.ndim > 1 else self[i] for i in range(self.shape[0])]
+        g = self if self._contiguous() else self.copy()
+        n = g.size
+        raw = ctypes.string_at(g._addr, n * g.dtype.size)
+        if g.dtype is complex128:
+            f = struct.unpack(f"<{2 * n}d", raw); flat = [complex(f[2 * i], f[2 * i + 1]) for i in range(n)]
+        else:
+            flat = list(struct.unpack(f"<{n}{g.dtype.fmt}", raw))
+            if g.dtype is bool_: flat = [bool(v) for v in flat]
+        for d in reversed(g.shape[1:]):              # back into rows
+            flat = [flat[i:i + d] for i in range(0, len(flat), d)]
+        return flat
 
     def tobytes(self):
         g = self if self._contiguous() else self.copy()
@@ -298,23 +317,98 @@ class Grid:
             n = _LIB.pn_count(ctypes.byref(key._c()))   # a mask of the grid's own shape: picked in C
             out = _new((n,), self.dtype)
             if n: _LIB.pn_mask_take(ctypes.byref(out._c()), ctypes.byref(self._c()), ctypes.byref(key._c()))
-            out._ro = True
+            out._ro = "copy"
             return out
+        if isinstance(key, tuple) and _b.any(isinstance(k, (Grid, list)) for k in key):
+            return self._fancy(key)
+        rows = self._row_pick(key)
+        if rows is not None: return rows
         if isinstance(key, Grid) or (isinstance(key, list)):
             pos, shape = self._flat_positions(key if isinstance(key, Grid) else key)
             out = _new(shape, self.dtype)
             arr = (ctypes.c_int64 * _b.max(1, len(pos)))(*pos)
             o = out.reshape(-1)
             _LIB.pn_take(ctypes.byref(o._c()), ctypes.byref(self._c()), arr, len(pos))
-            out._ro = True                       # a copy: writing to it would change nothing in self, so it is closed
+            out._ro = "copy"                       # a copy: writing to it would change nothing in self, so it is closed
             return out
+        if type(key) is int and self.ndim == 1:      # one number from a row: read straight from memory, no view made
+            n = self.shape[0]
+            if key < -n or key >= n: raise MurmurError(f"index {key} is outside axis 0, which runs 0..{n - 1}")
+            addr = self._addr + (key % n) * self.strides[0]
+            if self.dtype is complex128:
+                re, im = struct.unpack("<dd", ctypes.string_at(addr, 16)); return complex(re, im)
+            v = struct.unpack("<" + self.dtype.fmt, ctypes.string_at(addr, self.dtype.size))[0]
+            return bool(v) if self.dtype is bool_ else v
         g = self._basic(key)
         return g._scalar() if not g.ndim else g
 
+    def _row_pick(self, key):
+        """Whole rows by a mask over the leading axes, or by an index list on the first axis: rows handed over in C, not
+        number by number. None when the key is not one of these."""
+        if isinstance(key, list):
+            if not key or not _b.all(isinstance(v, int) and not isinstance(v, bool) for v in key): return None
+            idx = key
+        elif isinstance(key, Grid) and key.dtype.kind in "ui" and key.ndim == 1:
+            idx = key.tolist()
+        elif isinstance(key, Grid) and key.dtype is bool_ and 0 < key.ndim < self.ndim and key.shape == self.shape[:key.ndim]:
+            n = _LIB.pn_count(ctypes.byref(key._c()))
+            buf = (ctypes.c_int64 * _b.max(1, n))()
+            _LIB.pn_nonzero(ctypes.byref(key._c()), buf)
+            lead = math.prod(self.shape[:key.ndim]); rest_shape = self.shape[key.ndim:]
+            return self._take_rows(buf, n, lead, rest_shape)
+        else:
+            return None
+        if self.ndim < 1 or self.dtype is complex128: return None
+        n0 = self.shape[0]
+        for v in idx:
+            if v < -n0 or v >= n0: raise MurmurError(f"index {v} is outside axis 0, which runs 0..{n0 - 1}")
+        buf = (ctypes.c_int64 * _b.max(1, len(idx)))(*[v % n0 for v in idx])
+        return self._take_rows(buf, len(idx), n0, self.shape[1:])
+
+    def _take_rows(self, buf, n, lead, rest_shape):
+        """Rows numbered over the first len(shape) - len(rest_shape) axes, each with the numbers of rest_shape."""
+        if self.dtype is complex128: return None
+        k = self.ndim - len(rest_shape)                  # how many leading axes the row numbers run over
+        rest = math.prod(rest_shape)
+        if k == 1 and len(rest_shape) <= 1:              # one leading axis, rows of one axis: any steps work as they are
+            a2 = Grid(self._owner, self._addr, (lead, rest), (self.strides[0], self.strides[1] if rest_shape else self.dtype.size), self.dtype)
+        else:                                            # several axes joined: needs the memory side by side first
+            src = self if self._contiguous() else self.copy()
+            a2 = Grid(src._owner, src._addr, (lead, rest), (rest * src.dtype.size, src.dtype.size), src.dtype)
+        out = _new((n, rest), self.dtype)
+        if n: _LIB.pn_take_rows(ctypes.byref(out._c()), ctypes.byref(a2._c()), buf, n)
+        out = out.reshape((n,) + tuple(rest_shape))
+        out._ro = "copy"
+        return out
+
+    def _fancy(self, key):
+        """d[rows, cols] (index lists side by side: element by element) or D[i, mask] (whole-number indices first, then one mask
+        or index list): picked as a read-only copy. Other mixes are refused in plain words."""
+        arrs = [isinstance(k, (Grid, list)) for k in key]
+        if _b.all(arrs) or _b.all(a_ or isinstance(k, int) for a_, k in zip(arrs, key)) and _b.sum(arrs) >= 2:
+            idx = [(_as(k).reshape(-1).tolist() if isinstance(k, (Grid, list)) else [int(k)]) for k in key]
+            L = _b.max(len(i) for i in idx)
+            if _b.any(len(i) not in (1, L) for i in idx): raise MurmurError("index lists side by side must be of one length")
+            idx = [i * L if len(i) == 1 else i for i in idx]
+            k = len(key); rest = math.prod(self.shape[k:]); pos = []
+            for n in range(L):
+                f = 0
+                for ax in range(k):
+                    v = idx[ax][n]; size = self.shape[ax]
+                    if v < -size or v >= size: raise MurmurError(f"index {v} is outside axis {ax}, which runs 0..{size - 1}")
+                    f = f * size + (v % size)
+                pos.extend(f * rest + j for j in range(rest))
+            out = _new((L,) + self.shape[k:], self.dtype)
+            arr = (ctypes.c_int64 * _b.max(1, len(pos)))(*pos)
+            _LIB.pn_take(ctypes.byref(out.reshape(-1)._c()), ctypes.byref(self._c()), arr, len(pos))
+            out._ro = "copy"
+            return out
+        if arrs[-1] and not _b.any(arrs[:-1]) and _b.all(isinstance(k, int) for k in key[:-1]):
+            return self._basic(tuple(key[:-1]))[key[-1]]
+        raise MurmurError("this mix of index lists and slices is not in murmur: pick in two steps (grid[a][b])")
+
     def __setitem__(self, key, value):
-        if self._ro:
-            raise MurmurError("this grid is a COPY (made by a mask or an index list): writing to it would change nothing; "
-                              "write through the original: grid[mask] = value")
+        if self._ro: raise MurmurError(_READ_ONLY.get(self._ro, _READ_ONLY["copy"]))
         if isinstance(key, Grid) or isinstance(key, list):
             pos, shape = self._flat_positions(key)
             v = _as(value)
@@ -425,6 +519,11 @@ def array(x, dtype=None):
         return stack(x).astype(dtype) if dtype else stack(x)
     if isinstance(x, (list, tuple)) and not _b.any(isinstance(v, (list, tuple, Grid)) for v in x):
         shape, vals = (len(x),), list(x)                 # a flat row of numbers: no element-by-element walk
+        if _b.any(isinstance(v, complex) for v in vals):  # complex numbers: kept as pairs
+            out = _new(shape, complex128)
+            flat = [f for v in vals for f in (complex(v).real, complex(v).imag)]
+            if flat: ctypes.memmove(out._addr, struct.pack(f"<{len(flat)}d", *flat), len(flat) * 8)
+            return out
     else:
         shape = _shape_of(x)
         vals = []; _flat(x, vals)
@@ -522,6 +621,7 @@ def _as(x):
     if isinstance(x, bool): g = _new((), bool_); _set_scalar(g, x); g._weak = True; return g
     if isinstance(x, int): g = _new((), int64); _set_scalar(g, x); g._weak = True; return g
     if isinstance(x, float): g = _new((), float64); _set_scalar(g, x); g._weak = True; return g
+    if isinstance(x, complex): return array([x]).reshape(())
     if isinstance(x, (list, tuple)): return array(x)
     if hasattr(x, "tobytes") and hasattr(x, "mode"): return asarray(x)
     try:
@@ -634,8 +734,17 @@ def _unary_raw(g, op, rd, clip=False, lo=0.0, hi=0.0):
 def _float_of(d): return d if d.kind == "f" else (float32 if d in (uint8, bool_, int16) else float64)
 
 
+_READ_ONLY = {   # why a grid cannot be written, in plain words
+    "copy": "this grid is a read-only COPY (made by a mask or an index list): writing to it would change nothing; write through "
+            "the original: grid[mask] = value",
+    "shared": "this grid is shared and read-only (a window kept for every caller): copy it first (g.copy()) to change it",
+    "overlap": "this view is read-only: its numbers overlap (as_strided frames), so one write would change several places; "
+               "copy it first (g.copy())",
+    "file": "this grid is a file seen in memory (memmap), read-only: the file itself is never changed; copy it first (g.copy())"}
+
+
 def _assign(view, value):
-    if view._ro: raise MurmurError("this grid is a read-only COPY: write through the original")
+    if view._ro: raise MurmurError(_READ_ONLY.get(view._ro, _READ_ONLY["copy"]))
     v = _as(value)
     if v.shape != view.shape:
         if v.ndim > view.ndim: raise MurmurError(f"a {v.shape} grid cannot be put into a {view.shape} place")
@@ -688,7 +797,7 @@ def _window(kind, M, a0, a1):
         if M < 1: w = _new((0,), float64)
         elif M == 1: w = array([1.0])
         else: w = _binary(1, a0, _binary(2, a1, cos(_ramp(int(M), 0.0, 2 * math.pi / (M - 1), float64))))
-        w._ro = True
+        w._ro = "shared"
         _WINDOWS[key] = w
     return _WINDOWS[key]
 
@@ -791,10 +900,14 @@ def matmul(a, b):
         return out
     if a.ndim == 1 and b.ndim == 2:
         if a.shape[0] != b.shape[0]: raise MurmurError(f"@: {a.shape} against {b.shape}")
-        return _reduce(_binary(2, a.reshape(-1, 1), b), "sum", 0, False)
+        return matmul(a.reshape(1, -1), b).reshape(-1)
     if a.ndim == 2 and b.ndim == 2:
         if a.shape[1] != b.shape[0]: raise MurmurError(f"@: {a.shape} against {b.shape}: inner lengths differ")
-        return _reduce(_binary(2, a._basic((slice(None), slice(None), None)), b._basic((None,))), "sum", 1, False)
+        if a.dtype is complex128 or b.dtype is complex128: raise MurmurError("@ of complex grids is not in murmur")
+        out = _new((a.shape[0], b.shape[1]), _result(2, a, b))
+        _LIB.pn_matmul(ctypes.byref(out._c()), ctypes.byref(a._c()), ctypes.byref(b._c()))
+        _check_fit(out.dtype)
+        return out
     raise MurmurError(f"@ of {a.shape} and {b.shape} is not one murmur knows yet")
 
 
@@ -893,6 +1006,10 @@ def std(g, axis=None, keepdims=False):
 
 
 def percentile(g, q, axis=None):
+    if isinstance(q, (list, tuple, Grid)):
+        qs = q.tolist() if isinstance(q, Grid) else list(q)
+        parts = [percentile(g, v, axis) for v in qs]
+        return array(parts) if not isinstance(parts[0], Grid) else stack(parts)
     g = _as(g)
     if axis is None:
         g = g.reshape(-1); ax = 0
@@ -960,17 +1077,29 @@ def stack(gs, axis=0):
     return concatenate([g._basic(tuple([slice(None)] * axis + [None])) for g in gs], axis)
 
 
-def sort(g):
+def _sort(g, axis, args):
     g = _as(g)
-    if g.ndim != 1: raise MurmurError("sort: one row at a time in murmur")
-    return array(sorted(g.tolist()), g.dtype)
+    if g.dtype is complex128: raise MurmurError("sorting complex numbers: sort abs(x) or x.real")
+    if not g.ndim: return g
+    ax = axis % g.ndim
+    v = _axis_last(g, ax)
+    out = _new(v.shape, int64 if args else g.dtype)
+    _LIB.pn_sort(ctypes.byref(out._c()), ctypes.byref(v._c()), 1 if args else 0)
+    _LIB.pn_bad()
+    if ax != g.ndim - 1:                                  # back to the asked axis
+        axes = list(range(g.ndim - 1)); axes.insert(ax, g.ndim - 1)
+        out = out.transpose(axes).copy()
+    return out
 
 
-def argsort(g):
-    g = _as(g)
-    if g.ndim != 1: raise MurmurError("argsort: one row at a time in murmur")
-    vals = g.tolist()
-    return array(sorted(range(len(vals)), key=vals.__getitem__), int64)
+def sort(g, axis=-1):
+    """Along an axis (the last by default): NaN last, ties keep their order."""
+    return _sort(g, axis, False)
+
+
+def argsort(g, axis=-1):
+    """The order that sorts it (stable: ties keep their order)."""
+    return _sort(g, axis, True)
 
 
 def label(mask):
@@ -1015,3 +1144,245 @@ class linalg:
         s = sum(_binary(2, g, g), axis)
         return math.sqrt(s) if not isinstance(s, Grid) else sqrt(s)
 
+
+
+# ======== stage 3: voices and cuts ========
+
+def _dbl(g):
+    """A grid's numbers as a contiguous ctypes double array (a copy)."""
+    g = _as(g)
+    flat = g.astype(float64).reshape(-1) if g.dtype is not float64 else (g if g._contiguous() else g.copy()).reshape(-1)
+    return ctypes.cast(flat._addr, ctypes.POINTER(ctypes.c_double)), flat
+
+
+def correlate(a, v, mode="valid"):
+    """numpy's correlate of two rows: 'full' (every overlap), 'same' (a's length) or 'valid' (full overlaps only)."""
+    a, v = _as(a).reshape(-1), _as(v).reshape(-1)
+    na, nv = a.shape[0], v.shape[0]
+    if not na or not nv: raise MurmurError("correlate of an empty row")
+    pa, ka = _dbl(a); pv, kv = _dbl(v)
+    full = _new((na + nv - 1,), float64)
+    _LIB.pn_correlate(ctypes.cast(full._addr, ctypes.POINTER(ctypes.c_double)), pa, na, pv, nv)
+    if mode == "full": return full
+    if mode == "same":
+        n = _b.max(na, nv); st = (na + nv - 1 - n) // 2
+        return full[st:st + n].copy()
+    if mode == "valid":
+        n = _b.max(na, nv) - _b.min(na, nv) + 1; st = _b.min(na, nv) - 1
+        return full[st:st + n].copy()
+    raise MurmurError(f"correlate: mode is 'full', 'same' or 'valid', not {mode!r}")
+
+
+def roots(p):
+    """The roots of a polynomial (coefficients highest first), as a complex grid; trailing zeros give roots at 0 (as numpy)."""
+    c = [float(v) for v in _as(p).reshape(-1).tolist()]
+    if len(c) > 257: raise MurmurError("roots: murmur takes polynomials up to degree 256")
+    arr = (ctypes.c_double * _b.max(1, len(c)))(*c)
+    re, im = (ctypes.c_double * 256)(), (ctypes.c_double * 256)()
+    n = _LIB.pn_roots(arr, len(c), re, im)
+    return array([complex(re[i], im[i]) for i in range(n)]) if n else _new((0,), complex128)
+
+
+class _Lin:
+    pass
+
+
+def _lstsq(A, b):
+    A, b = _as(A), _as(b).reshape(-1)
+    if A.ndim != 2 or A.shape[0] != b.shape[0]: raise MurmurError(f"lstsq: A {A.shape} and b {b.shape} do not fit")
+    m, n = A.shape
+    if m < n: raise MurmurError(f"lstsq: {m} equations for {n} unknowns: murmur needs at least as many equations")
+    pa, ka = _dbl(A.copy()); pb, kb = _dbl(b.copy())
+    x = _new((n,), float64)
+    _LIB.pn_lstsq(pa, pb, m, n, ctypes.cast(x._addr, ctypes.POINTER(ctypes.c_double)))
+    return x
+
+
+linalg.lstsq = staticmethod(_lstsq)
+
+
+def polyfit(x, y, deg):
+    """The least-squares polynomial through (x, y), coefficients highest first (as numpy)."""
+    x, y = _as(x).reshape(-1).astype(float64), _as(y).reshape(-1)
+    cols = [x ** (deg - j) if deg - j else full(x.shape, 1.0) for j in range(deg + 1)]
+    return _lstsq(stack(cols, axis=1), y)
+
+
+def cov(m, rowvar=True):
+    """Covariance: rows are the variables (as numpy), divided by n - 1."""
+    X = _as(m).astype(float64)
+    if X.ndim == 1: X = X.reshape(1, -1)
+    if not rowvar: X = X.T
+    n = X.shape[1]
+    if n < 2: raise MurmurError("cov needs at least two observations")
+    Xc = X - X.mean(1, keepdims=True)
+    C = matmul(Xc, Xc.T) / (n - 1)
+    return C if C.shape != (1, 1) else C[0, 0]
+
+
+def eye(n, dtype=float64):
+    out = zeros((n, n), dtype)
+    if n: _assign(Grid(out._owner, out._addr, (n,), ((n + 1) * out.dtype.size,), out.dtype), 1)
+    return out
+
+
+def diag(v):
+    g = _as(v)
+    if g.ndim == 1:
+        n = g.shape[0]; out = zeros((n, n), g.dtype)
+        if n: _assign(Grid(out._owner, out._addr, (n,), ((n + 1) * out.dtype.size,), out.dtype), g)
+        return out
+    if g.ndim == 2:
+        n = _b.min(g.shape)
+        return Grid(g._owner, g._addr, (n,), (g.strides[0] + g.strides[1],), g.dtype, g._ro).copy()
+    raise MurmurError("diag: a row (to make a square) or a square (to take its diagonal)")
+
+
+def trace(m): return sum(diag(m))
+
+
+def bincount(x, minlength=0):
+    vals = [int(v) for v in _as(x).reshape(-1).tolist()]
+    if _b.any(v < 0 for v in vals): raise MurmurError("bincount counts whole numbers 0 and up")
+    n = _b.max([minlength] + [v + 1 for v in vals])
+    counts = [0] * n
+    for v in vals: counts[v] += 1
+    return array(counts, int64)
+
+
+def allclose(a, b, rtol=1e-05, atol=1e-08):
+    a, b = _as(a), _as(b)
+    return bool(all(abs(a - b) <= atol + rtol * abs(b)))
+
+
+def subtract(a, b): return _binary(1, a, b)
+
+
+def append(a, b):
+    return concatenate([_as(a).reshape(-1), _as(b).reshape(-1)])
+
+
+def as_strided(x, shape, strides):
+    """A view of x with the shape and byte steps given (frames of a sound overlapping, as numpy's as_strided). READ-ONLY (its
+    numbers overlap) and refused if it would reach outside x's own memory."""
+    g = _as(x)
+    if not g._contiguous(): g = g.copy()
+    span = _b.sum((n - 1) * st for n, st in zip(shape, strides) if n > 0) + g.dtype.size if _b.all(n > 0 for n in shape) else 0
+    if _b.any(st < 0 for st in strides) or span > g.nbytes:
+        raise MurmurError(f"as_strided: shape {tuple(shape)} with steps {tuple(strides)} would reach outside the grid's own memory")
+    return Grid(g._owner, g._addr, shape, strides, g.dtype, "overlap")
+
+
+def shift_match(a, b, r=3):
+    """The smallest mean difference between two 2-D grids over small shifts (-r..r each way): a pan is not a change."""
+    a, b = _as(a), _as(b)
+    if a.ndim != 2 or a.shape != b.shape: raise MurmurError(f"shift_match: two 2-D grids of one shape, not {a.shape} and {b.shape}")
+    return _LIB.pn_shift_match(ctypes.byref(a._c()), ctypes.byref(b._c()), int(r))
+
+
+def memmap(path, dtype=uint8, mode="r"):
+    """A file's numbers without reading it all in (the system pages it in as it is read). Read-only."""
+    import mmap
+    if mode != "r": raise MurmurError("murmur's memmap reads only (mode='r')")
+    d = _dt(dtype)
+    f = open(path, "rb")
+    size = os.fstat(f.fileno()).st_size
+    if size % d.size: raise MurmurError(f"{path}: {size} bytes are not whole {d.name} values")
+    if size == 0: f.close(); return _new((0,), d)
+    mm_ = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_COPY)      # copy-on-write: the file itself can never be changed
+    f.close()
+    buf = (ctypes.c_char * size).from_buffer(mm_)
+    return Grid((mm_, buf), ctypes.addressof(buf), (size // d.size,), (d.size,), d, "file")
+
+
+_NPY = {"<f4": float32, "<f8": float64, "|u1": uint8, "<i8": int64, "<i2": int16, "|b1": bool_, "<c16": complex128}
+
+
+def load(path):
+    """A .npy file (numpy's own format, versions 1-3), without numpy."""
+    import ast
+    with open(path, "rb") as f:
+        if f.read(6) != b"\x93NUMPY": raise MurmurError(f"{path} is not a .npy file")
+        major = f.read(1)[0]; f.read(1)
+        hl = struct.unpack("<H", f.read(2))[0] if major == 1 else struct.unpack("<I", f.read(4))[0]
+        head = ast.literal_eval(f.read(hl).decode("latin1"))
+        if head.get("fortran_order"): raise MurmurError(f"{path}: column-first (Fortran) order is not read by murmur")
+        d = _NPY.get(head["descr"])
+        if d is None: raise MurmurError(f"{path}: numbers of kind {head['descr']} are not one murmur keeps")
+        shape = tuple(head["shape"])
+        data = f.read(math.prod(shape) * d.size)
+    g = frombuffer(data, d) if d is not complex128 else _from_complex_bytes(data)
+    return g.reshape(shape) if shape else g.reshape(())
+
+
+def _from_complex_bytes(data):
+    out = _new((len(data) // 16,), complex128)
+    ctypes.memmove(out._addr, data, len(data))
+    return out
+
+
+class random:
+    """Seeded random numbers: xoshiro256** seeded through splitmix64 (well-tested generators). NOT numpy's stream: the same seed
+    gives different numbers than numpy would (results that rest on a random start may differ; murmur's own are repeatable)."""
+    class default_rng:
+        def __init__(self, seed=None):
+            if seed is None: seed = int.from_bytes(os.urandom(8), "little")
+            x = int(seed) & 0xFFFFFFFFFFFFFFFF; st = []
+            for _ in range(4):
+                x = (x + 0x9E3779B97F4A7C15) & 0xFFFFFFFFFFFFFFFF
+                z = x; z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
+                z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF; st.append(z ^ (z >> 31))
+            self.s = st
+
+        def _next(self):
+            s = self.s; M = 0xFFFFFFFFFFFFFFFF
+            r = ((((s[1] * 5) & M) << 7 | ((s[1] * 5) & M) >> 57) & M) * 9 & M
+            t = (s[1] << 17) & M
+            s[2] ^= s[0]; s[3] ^= s[1]; s[1] ^= s[2]; s[0] ^= s[3]; s[2] ^= t
+            s[3] = ((s[3] << 45) | (s[3] >> 19)) & M
+            return r
+
+        def random(self, size=None):
+            if size is None: return (self._next() >> 11) * (1.0 / 9007199254740992.0)
+            n = size if isinstance(size, int) else math.prod(size)
+            return array([(self._next() >> 11) * (1.0 / 9007199254740992.0) for _ in range(n)]).reshape(size)
+
+        def integers(self, low, high=None, size=None):
+            if high is None: low, high = 0, low
+            span = high - low
+            if span <= 0: raise MurmurError(f"integers: nothing between {low} and {high}")
+            def one():                                   # no bias: draws that would favour small numbers are thrown back
+                lim = (1 << 64) - ((1 << 64) % span)
+                while True:
+                    v = self._next()
+                    if v < lim: return low + v % span
+            if size is None: return one()
+            n = size if isinstance(size, int) else math.prod(size)
+            return array([one() for _ in range(n)], int64).reshape(size)
+
+        def choice(self, a, size=None, replace=True, p=None):
+            pool = list(range(a)) if isinstance(a, int) else list(_as(a).tolist())
+            n = len(pool)
+            if p is not None:
+                w = [float(v) for v in (_as(p).tolist() if not isinstance(p, list) else p)]
+                tot = _b.sum(w)
+                if len(w) != n or tot <= 0 or _b.any(v < 0 for v in w): raise MurmurError("choice: p must be one weight (0 or more) per item, not all 0")
+                cdf, acc = [], 0.0
+                for v in w: acc += v / tot; cdf.append(acc)
+                def pick():
+                    u = self.random(); lo, hi = 0, n - 1
+                    while lo < hi:
+                        mid = (lo + hi) // 2
+                        if cdf[mid] < u: lo = mid + 1
+                        else: hi = mid
+                    return pool[lo]
+                if size is None: return pick()
+                if not replace: raise MurmurError("choice with p and without replacement is not in murmur")
+                return array([pick() for _ in range(size)])
+            if size is None: return pool[self.integers(n)]
+            if replace: return array([pool[self.integers(n)] for _ in range(size)])
+            if size > n: raise MurmurError(f"choice: {size} different items from {n}")
+            idx = list(range(n))                          # partial Fisher-Yates: the first size places
+            for i in range(size):
+                j = i + self.integers(n - i); idx[i], idx[j] = idx[j], idx[i]
+            return array([pool[i] for i in idx[:size]])

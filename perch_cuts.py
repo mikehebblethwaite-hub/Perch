@@ -4,18 +4,12 @@
 # cartoon changes a lot every frame, a lecture hardly at all). The change is taken after the best small shift, so a pan or a
 # character walking does not count. A big movement inside one shot is told from a cut by what comes next: after a cut the new
 # picture holds, or the frames after it go with the new picture and the frames before it with the old one.
-import numpy as np
+import perch_murmur as mm                    # Perch's own number grids (C), not numpy
 
 
 def shifted(a, c, r=3):
-    """the change between two frames after the best small shift"""
-    H, W = a.shape
-    best = np.inf
-    for dy in range(-r, r + 1):
-        for dx in range(-r, r + 1):
-            best = min(best, float(np.abs(a[max(0, dy):H + min(0, dy), max(0, dx):W + min(0, dx)] -
-                                          c[max(0, -dy):H + min(0, -dy), max(0, -dx):W + min(0, -dx)]).mean()))
-    return best
+    """the change between two frames after the best small shift (murmur's C: all 49 shifts in one call)"""
+    return mm.shift_match(a, c, r)
 
 
 class Stream:
@@ -47,7 +41,7 @@ class Stream:
     def _decide(self, i):
         A, D, N = self.A, self.D, self.n
         nb = D[max(1, i - self.near):i] + D[i + 2:i + 2 + self.near]
-        base = float(np.median(nb)) if nb else 0.0
+        base = float(mm.median(nb)) if nb else 0.0
         nxt = D[i + 1] if i + 1 < N else 0.0
         cut = False
         if D[i] > max(22.0, 2.0 * base) and D[i] >= D[i - 1] and D[i] >= nxt and not (self.cuts and i - self.cuts[-1] <= self.gap):

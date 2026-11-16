@@ -901,3 +901,186 @@ int64_t pn_mask_take(pn_arr *out, pn_arr *a, pn_arr *m) {
     }
     return k;
 }
+
+// ======== stage 3 (Mike, 16 Nov 2026: "do the next murmur stage for voices and cuts") ========
+
+// ---- matrix multiply: out (m, n) = a (m, k) @ b (k, n), any kinds and strides. b is read once into doubles, shared read-only;
+// rows of a over the cores; inner loop along b's rows (side by side: wide instructions).
+typedef struct { pn_arr *out, *a; const double *B; int64_t m, k, n; } mm_ctx;
+static void mm_rows(int64_t i0, int64_t i1, void *c_) {
+    mm_ctx *c = c_;
+    int64_t k = c->k, n = c->n;
+    double *ar = malloc(sizeof(double) * (k ? k : 1)), *acc = malloc(sizeof(double) * (n ? n : 1));
+    for (int64_t i = i0; i < i1; i++) {
+        load(c->a, c->a->data + i * c->a->strides[0], k, c->a->strides[1], ar);
+        memset(acc, 0, sizeof(double) * n);
+        for (int64_t l = 0; l < k; l++) {
+            double v = ar[l]; const double *br = c->B + l * n;
+            if (v != 0.0) for (int64_t j = 0; j < n; j++) acc[j] += v * br[j];
+            else for (int64_t j = 0; j < n; j++) acc[j] += 0.0 * br[j];     // keeps NaN/inf in b as numpy does
+        }
+        store(c->out, c->out->data + i * c->out->strides[0], n, c->out->strides[1], acc);
+    }
+    free(ar); free(acc);
+}
+int pn_matmul(pn_arr *out, pn_arr *a, pn_arr *b) {
+    int64_t m = a->shape[0], k = a->shape[1], n = b->shape[1];
+    double *B = malloc(sizeof(double) * (k * n > 0 ? k * n : 1));
+    if (!B) return -1;
+    for (int64_t l = 0; l < k; l++) load(b, b->data + l * b->strides[0], n, b->strides[1], B + l * n);
+    mm_ctx c = {out, a, B, m, k, n};
+    par_range(m, m * k * n, mm_rows, &c);
+    free(B);
+    return 0;
+}
+
+// ---- sort along the last axis (values, or the order as indices): NaN last; ties keep their order (stable), rows over the cores
+typedef struct { double v; int64_t i; } vi;
+static int vi_cmp(const void *x, const void *y) {
+    const vi *a = x, *b = y;
+    int an = a->v != a->v, bn = b->v != b->v;
+    if (an || bn) { if (an && bn) return a->i < b->i ? -1 : 1; return an ? 1 : -1; }
+    if (a->v < b->v) return -1;
+    if (a->v > b->v) return 1;
+    return a->i < b->i ? -1 : a->i > b->i;
+}
+typedef struct { pn_arr *out, *a; int args; int64_t n; } sort_ctx;
+static void sort_rows(int64_t r0, int64_t r1, void *c_) {
+    sort_ctx *c = c_;
+    pn_arr *a = c->a, *out = c->out;
+    int nd = a->ndim; int64_t n = c->n;
+    double *x = malloc(sizeof(double) * (n ? n : 1)); vi *p = malloc(sizeof(vi) * (n ? n : 1));
+    for (int64_t r = r0; r < r1; r++) {
+        const char *pa = a->data; char *q = out->data;
+        int64_t rr = r;
+        for (int d = nd - 2; d >= 0; d--) { int64_t i = rr % a->shape[d]; rr /= a->shape[d]; pa += i * a->strides[d]; q += i * out->strides[d]; }
+        load(a, pa, n, a->strides[nd - 1], x);
+        for (int64_t i = 0; i < n; i++) p[i] = (vi){x[i], i};
+        qsort(p, n, sizeof(vi), vi_cmp);
+        for (int64_t i = 0; i < n; i++) x[i] = c->args ? (double)p[i].i : p[i].v;
+        store(out, q, n, out->strides[nd - 1], x);
+    }
+    free(x); free(p);
+}
+int pn_sort(pn_arr *out, pn_arr *a, int args) {
+    int nd = a->ndim; int64_t n = a->shape[nd - 1], rows = 1;
+    for (int d = 0; d < nd - 1; d++) rows *= a->shape[d];
+    sort_ctx c = {out, a, args, n};
+    par_range(rows, rows * n * 8, sort_rows, &c);
+    return 0;
+}
+
+// ---- correlate, numpy's "full": out[k] = sum_i a[i] * v[i - k + nv - 1], k = 0 .. na + nv - 2
+int pn_correlate(double *out, const double *a, int64_t na, const double *v, int64_t nv) {
+    for (int64_t k = 0; k < na + nv - 1; k++) {
+        double s = 0;
+        int64_t lo = k - (nv - 1) > 0 ? k - (nv - 1) : 0, hi = k < na - 1 ? k : na - 1;
+        for (int64_t i = lo; i <= hi; i++) s += a[i] * v[i - k + nv - 1];
+        out[k] = s;
+    }
+    return 0;
+}
+
+// ---- polynomial roots (coefficients highest first): Aberth's way (all roots at once, each pushed away from the others), then
+// Newton's polish. Leading zeros dropped; trailing zeros are roots at 0 (as numpy). Returns how many roots, into re/im.
+#include <complex.h>
+static double complex horner(const double *c, int n, double complex z, double complex *dz) {   // p(z), and p'(z)
+    double complex p = c[0], d = 0;
+    for (int i = 1; i <= n; i++) { d = d * z + p; p = p * z + c[i]; }
+    *dz = d; return p;
+}
+int pn_roots(const double *coef, int len, double *re, double *im) {
+    int s = 0; while (s < len && coef[s] == 0.0) s++;              // leading zeros: not part of the polynomial
+    int e = len - 1, zeros = 0; while (e > s && coef[e] == 0.0) { e--; zeros++; }   // trailing zeros: roots at 0
+    int n = e - s;                                                   // degree left
+    const double *c = coef + s;
+    int out = 0;
+    if (n >= 1) {
+        double complex z[256]; if (n > 256) return -1;
+        double r = 0;                                                // start on a circle of the roots' typical size
+        for (int i = 1; i <= n; i++) { double t = pow(fabs(c[i] / c[0]), 1.0 / i); if (t > r) r = t; }
+        if (r == 0) r = 1;
+        for (int i = 0; i < n; i++) z[i] = r * cexp(I * (2 * M_PI * i / n + 0.4));
+        for (int it = 0; it < 500; it++) {
+            double moved = 0;
+            for (int i = 0; i < n; i++) {
+                double complex d, p = horner(c, n, z[i], &d);
+                if (cabs(p) == 0) continue;
+                double complex ratio = p / d, sum = 0;
+                for (int j = 0; j < n; j++) if (j != i) sum += 1.0 / (z[i] - z[j]);
+                double complex w = ratio / (1.0 - ratio * sum);
+                z[i] -= w; moved = fmax(moved, cabs(w) / fmax(1.0, cabs(z[i])));
+            }
+            if (moved < 1e-15) break;
+        }
+        for (int i = 0; i < n; i++) for (int k = 0; k < 3; k++) {    // Newton's polish
+            double complex d, p = horner(c, n, z[i], &d);
+            if (cabs(d) > 0) z[i] -= p / d;
+        }
+        for (int i = 0; i < n; i++) { re[out] = creal(z[i]); im[out] = cimag(z[i]); out++; }
+    }
+    for (int i = 0; i < zeros; i++) { re[out] = 0; im[out] = 0; out++; }
+    return out;
+}
+
+// ---- least squares: x minimising |A x - b| for A (m, n), m >= n, by Householder QR (doubles; A and b are overwritten)
+int pn_lstsq(double *A, double *b, int64_t m, int64_t n, double *x) {
+    for (int64_t j = 0; j < n; j++) {
+        double norm = 0; for (int64_t i = j; i < m; i++) norm += A[i * n + j] * A[i * n + j];
+        norm = sqrt(norm);
+        if (norm == 0) continue;
+        double alpha = A[j * n + j] > 0 ? -norm : norm;
+        double v0 = A[j * n + j] - alpha;
+        double vn = v0 * v0; for (int64_t i = j + 1; i < m; i++) vn += A[i * n + j] * A[i * n + j];
+        if (vn == 0) continue;
+        for (int64_t k = j; k < n; k++) {                            // apply H = I - 2 v v^T / (v^T v) to A's columns
+            double s = v0 * A[j * n + k]; for (int64_t i = j + 1; i < m; i++) s += A[i * n + j] * A[i * n + k];
+            s = 2 * s / vn;
+            A[j * n + k] -= s * v0; for (int64_t i = j + 1; i < m; i++) if (k != j) A[i * n + k] -= s * A[i * n + j];
+        }
+        double s = v0 * b[j]; for (int64_t i = j + 1; i < m; i++) s += A[i * n + j] * b[i];
+        s = 2 * s / vn; b[j] -= s * v0; for (int64_t i = j + 1; i < m; i++) b[i] -= s * A[i * n + j];
+        A[j * n + j] = alpha;
+    }
+    for (int64_t j = n - 1; j >= 0; j--) {                           // back substitution on R
+        double s = b[j]; for (int64_t k = j + 1; k < n; k++) s -= A[j * n + k] * x[k];
+        x[j] = A[j * n + j] != 0 ? s / A[j * n + j] : 0;
+    }
+    return 0;
+}
+
+// ---- the smallest mean difference between two 2-D grids over small shifts (dy, dx in -r..r): a pan or a walk does not count as
+// change (perch_cuts' rule, in one call instead of 49 small ones per frame pair)
+double pn_shift_match(pn_arr *a, pn_arr *c, int r) {
+    int64_t H = a->shape[0], W = a->shape[1];
+    double *A = malloc(sizeof(double) * H * W), *C = malloc(sizeof(double) * H * W);
+    for (int64_t y = 0; y < H; y++) { load(a, a->data + y * a->strides[0], W, a->strides[1], A + y * W); load(c, c->data + y * c->strides[0], W, c->strides[1], C + y * W); }
+    double best = INFINITY;
+    for (int dy = -r; dy <= r; dy++) for (int dx = -r; dx <= r; dx++) {
+        int64_t y0 = dy > 0 ? dy : 0, y1 = H + (dy < 0 ? dy : 0), x0 = dx > 0 ? dx : 0, x1 = W + (dx < 0 ? dx : 0);
+        double s = 0; int64_t cnt = 0;
+        for (int64_t y = y0; y < y1; y++) for (int64_t x = x0; x < x1; x++) { s += fabs(A[y * W + x] - C[(y - dy) * W + (x - dx)]); cnt++; }
+        if (cnt) { double m = s / (double)cnt; if (m < best) best = m; }
+    }
+    free(A); free(C);
+    return best;
+}
+
+// ---- whole rows picked: a seen as (rows, rest); rows[] lists which (from a mask over the leading axes, or an index list);
+// each picked row copied whole into out (count, rest). The rows split over the cores.
+typedef struct { pn_arr *out, *a; const int64_t *rows; } tr_ctx;
+static void take_rows_range(int64_t i0, int64_t i1, void *c_) {
+    tr_ctx *c = c_;
+    int64_t rest = c->a->shape[1];
+    double *buf = malloc(sizeof(double) * (rest ? rest : 1));
+    for (int64_t i = i0; i < i1; i++) {
+        load(c->a, c->a->data + c->rows[i] * c->a->strides[0], rest, c->a->strides[1], buf);
+        store(c->out, c->out->data + i * c->out->strides[0], rest, c->out->strides[1], buf);
+    }
+    free(buf);
+}
+int pn_take_rows(pn_arr *out, pn_arr *a, const int64_t *rows, int64_t n) {
+    tr_ctx c = {out, a, rows};
+    par_range(n, n * a->shape[1], take_rows_range, &c);
+    return 0;
+}

@@ -86,6 +86,10 @@ c[2:5, 1:4] = 9.0; C[2:5, 1:4] = 9.0; same("slice write", c, C)
 c[:, 0] += 1.5; C[:, 0] += 1.5; same("slice += (view writes through)", c, C)
 ys, xs = mm.nonzero(m); Ys, Xs = np.nonzero(M); same("nonzero", [ys.tolist(), xs.tolist()], [Ys.tolist(), Xs.tolist()])
 same("index list", b[mm.array([3, 0, -1])], B[np.array([3, 0, -1])])
+same("rows by a mask (as pw[voiced])", a.reshape(-1, 3)[mm.asarray((A.reshape(-1, 3)[:, 0] > 128).tolist())], A.reshape(-1, 3)[A.reshape(-1, 3)[:, 0] > 128])
+At = A.transpose(1, 0, 2); at = a.transpose(1, 0, 2); Mt = M.T; mt = m.T
+same("trick: a mask over TWO leading axes of a transposed (non-side-by-side) grid", at[mt], At[Mt])
+same("rows by an index list of a strided view", a[::3, 1:][[2, 0, 5]], A[::3, 1:][[2, 0, 5]])
 def py_patches(mask):
     h, w = mask.shape; seen = np.zeros_like(mask); out = []
     for y in range(h):
@@ -152,6 +156,66 @@ refused("rfft of a complex grid", lambda: mm.fft.rfft(z), "takes real numbers")
 refused("rfft of length 0", lambda: mm.fft.rfft(mm.zeros(4), 0), "length of 1 or more")
 refused("int16 never wraps: 40000 refused", lambda: mm.array([40000]).astype(mm.int16), "-32768..32767")
 
+# stage 3 (voices and cuts), against numpy
+A2 = rng.normal(0, 1, (40, 257)); B2 = rng.normal(0, 1, (257, 300))
+same("matmul (40x257) @ (257x300)", mm.asarray(A2.tolist()) @ mm.asarray(B2.tolist()), A2 @ B2, 1e-9)
+same("matmul with a transposed view", mm.asarray(B2.tolist()).T @ mm.asarray(A2.T.tolist()), B2.T @ A2.T, 1e-9)
+same("1-D @ 2-D", mm.asarray(B2[:, 0].tolist()) @ mm.asarray(B2.tolist()), B2[:, 0] @ B2, 1e-9)
+S3 = rng.normal(0, 1, (7, 9)); S3[2, 3] = np.nan; S3[4, :3] = 1.5
+same("sort along rows (NaN last, ties)", mm.sort(mm.asarray(S3.tolist()), 1), np.sort(S3, 1))
+same("sort along columns", mm.sort(mm.asarray(S3.tolist()), 0), np.sort(S3, 0))
+same("argsort stable on ties", mm.argsort(mm.asarray([3.0, 1.0, 3.0, 1.0, 2.0])), np.argsort(np.array([3.0, 1.0, 3.0, 1.0, 2.0]), kind="stable"))
+fa, fv = rng.normal(0, 1, 40), rng.normal(0, 1, 7)
+for md in ("full", "same", "valid"):
+    same(f"correlate {md}", mm.correlate(mm.asarray(fa.tolist()), mm.asarray(fv.tolist()), md), np.correlate(fa, fv, md), 1e-9)
+def rsort(z): return sorted([complex(v) for v in z], key=lambda c: (round(c.real, 6), round(c.imag, 6)))
+for deg in (1, 2, 5, 12):
+    P = rng.normal(0, 1, deg + 1)
+    got, want = rsort(mm.roots(mm.asarray(P.tolist())).tolist()), rsort(np.roots(P))
+    check(f"roots degree {deg} (complex pairs too)", len(got) == len(want) and all(abs(g - w) < 1e-7 * max(1, abs(w)) for g, w in zip(got, want)), f"{got} vs {want}")
+_g, _w = rsort(mm.roots(mm.array([0.0, 1.0, -3.0, 2.0, 0.0])).tolist()), rsort(np.roots([0.0, 1.0, -3.0, 2.0, 0.0]))
+check("roots: leading zeros dropped, trailing zeros are roots at 0", len(_g) == len(_w) == 3 and all(abs(a - b) < 1e-9 for a, b in zip(_g, _w)), f"{_g} vs {_w}")
+xs_ = rng.normal(0, 1, 60); ys_ = 2 * xs_ ** 3 - xs_ + 0.5 + rng.normal(0, 0.05, 60)
+for deg in (1, 2, 3): same(f"polyfit degree {deg}", mm.polyfit(mm.asarray(xs_.tolist()), mm.asarray(ys_.tolist()), deg), np.polyfit(xs_, ys_, deg), 1e-7)
+CV = rng.normal(0, 1, (5, 80))
+same("cov (rows are variables)", mm.cov(mm.asarray(CV.tolist())), np.cov(CV), 1e-9)
+same("eye, diag, trace", [mm.eye(4).tolist(), mm.diag(mm.array([1.0, 2.0, 3.0])).tolist(), mm.diag(mm.asarray(CV[:, :5].tolist())).tolist(), [mm.trace(mm.asarray(CV[:, :5].tolist()))]],
+     [np.eye(4).tolist(), np.diag([1.0, 2.0, 3.0]).tolist(), np.diag(CV[:, :5]).tolist(), [np.trace(CV[:, :5])]])
+same("bincount with minlength", mm.bincount(mm.array([0, 2, 2, 5]), minlength=8), np.bincount([0, 2, 2, 5], minlength=8))
+check("allclose", (mm.allclose(mm.array([1.0, 2.0]), mm.array([1.0, 2.0 + 1e-9])), mm.allclose(mm.array([1.0]), mm.array([1.1]))) == (True, False))
+same("append", mm.append(1.5, mm.array([2.0, 3.0])), np.append(1.5, [2.0, 3.0]))
+same("percentiles of a list", mm.percentile(mm.array([1.0, 5, 2, 8, 3]), [75, 25]), np.percentile([1.0, 5, 2, 8, 3], [75, 25]))
+snd_ = rng.normal(0, 1, 3000).astype(np.float32); g_ = mm.asarray(snd_.tolist(), mm.float32)
+nfr = 1 + (3000 - 400) // 160
+same("as_strided frames (overlapping, as voice prints take them)", mm.as_strided(g_, (nfr, 400), (4 * 160, 4)),
+     np.lib.stride_tricks.as_strided(snd_, (nfr, 400), (4 * 160, 4)))
+refused("as_strided reaching outside the grid is refused", lambda: mm.as_strided(g_, (nfr + 5, 400), (4 * 160, 4)), "outside the grid")
+refused("...and the frames are read-only, said why (they overlap)", lambda: mm.as_strided(g_, (2, 4), (16, 4)).__setitem__((0, 0), 1.0), "numbers overlap")
+import tempfile
+tmp = tempfile.mkdtemp()
+np.save(os.path.join(tmp, "e.npy"), rng.normal(0, 1, (6, 192)).astype(np.float32))
+same(".npy read without numpy", mm.load(os.path.join(tmp, "e.npy")), np.load(os.path.join(tmp, "e.npy")))
+pcm_ = rng.integers(-30000, 30000, 4000).astype(np.int16); pcm_.tofile(os.path.join(tmp, "s.pcm"))
+wm = mm.memmap(os.path.join(tmp, "s.pcm"), mm.int16)
+same("memmap of a sound file, sliced", wm[1000:1500], np.memmap(os.path.join(tmp, "s.pcm"), dtype=np.int16, mode="r")[1000:1500])
+refused("memmap is read-only, said why (the file is never changed)", lambda: wm.__setitem__(0, 5), "file itself is never changed")
+refused("a kept window is shared: changing it is refused, said why", lambda: mm.hanning(16).__setitem__(0, 9.0), "shared and read-only")
+r1, r2 = mm.random.default_rng(7), mm.random.default_rng(7)
+check("random: the same seed gives the same numbers", [r1.integers(1000) for _ in range(20)] == [r2.integers(1000) for _ in range(20)])
+r3 = mm.random.default_rng(3); us = r3.random(20000).tolist()
+check("random: uniform 0..1, mean near 0.5", 0 <= min(us) and max(us) < 1 and abs(sum(us) / len(us) - 0.5) < 0.01)
+ch = r3.choice(50, 20, replace=False).tolist(); check("choice without replacement: all different", len(set(ch)) == 20 and all(0 <= v < 50 for v in ch))
+wp = [r3.choice(3, p=[0.1, 0.2, 0.7]) for _ in range(20000)]
+check("choice with weights 0.1/0.2/0.7 comes out near them", all(abs(wp.count(i) / 20000 - q) < 0.015 for i, q in enumerate([0.1, 0.2, 0.7])))
+def np_shifted(a, c, r=3):
+    H, W = a.shape; best = np.inf
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            best = min(best, float(np.abs(a[max(0, dy):H + min(0, dy), max(0, dx):W + min(0, dx)] - c[max(0, -dy):H + min(0, -dy), max(0, -dx):W + min(0, -dx)]).mean()))
+    return best
+F1 = rng.integers(0, 256, (36, 64)).astype(np.int16); F2 = np.roll(F1, (2, -1), (0, 1)); F2[:5] = 0
+check("shift_match = perch_cuts' numpy rule exactly", mm.shift_match(mm.asarray(F1.tolist(), mm.int16), mm.asarray(F2.tolist(), mm.int16)) == np_shifted(F1, F2))
+
 # speed on picture-sized grids (the same work through both)
 big = rng.uniform(0, 255, (360, 640, 3)).astype(np.float32); gb = mm.asarray(Image.fromarray(big.astype(np.uint8))).astype(mm.float32)
 def t(f, k=5):
@@ -161,13 +225,17 @@ def t(f, k=5):
 W3 = np.array([0.2126, 0.7152, 0.0722], np.float32); w3 = mm.array([0.2126, 0.7152, 0.0722], mm.float32)
 SND = rng.normal(0, 1, 8000) * np.hanning(8000); snd = mm.asarray(SND.tolist())
 FR = rng.normal(0, 1, (2000, 400)); frs = mm.asarray(FR.tolist())
+FBn = rng.uniform(0, 1, (40, 257)); PWn = rng.uniform(0, 1, (257, 2000)); FBm = mm.asarray(FBn.tolist()); PWm = mm.asarray(PWn.tolist())
+f1m, f2m = mm.asarray(F1.tolist(), mm.int16), mm.asarray(F2.tolist(), mm.int16)
 rows = [("luminance (360x640x3 @ 3)", lambda: big @ W3, lambda: gb @ w3),
         ("median of 230,400", lambda: np.median(big[..., 1]), lambda: mm.median(gb[..., 1])),
         ("abs diff + compare", lambda: np.abs(big - big[::-1]) > 20, lambda: mm.abs(gb - gb[::-1]) > 20),
         ("mean by axis", lambda: big.mean(0), lambda: gb.mean(0)),
         ("patches of a 160x90 mask", lambda: py_patches(M), lambda: mm.patches(m)),
         ("sound band power, 8000 window", lambda: np.abs(np.fft.rfft(SND)) ** 2, lambda: mm.fft.power(snd)),
-        ("voice frames 2000x400 -> 512", lambda: np.abs(np.fft.rfft(FR, 512)) ** 2, lambda: mm.fft.power(frs, 512))]
+        ("voice frames 2000x400 -> 512", lambda: np.abs(np.fft.rfft(FR, 512)) ** 2, lambda: mm.fft.power(frs, 512)),
+        ("mel filters (40x257) @ (257x2000)", lambda: FBn @ PWn, lambda: FBm @ PWm),
+        ("cuts: 49-shift match 64x36", lambda: np_shifted(F1, F2), lambda: mm.shift_match(f1m, f2m))]
 print("speed (ms, average of 5)          numpy    murmur")
 for name, f_np, f_mm in rows:
     print(f"  {name:32} {t(f_np):7.2f}  {t(f_mm):7.2f}")
