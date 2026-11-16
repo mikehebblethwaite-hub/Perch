@@ -6,7 +6,7 @@
 # always holds the whole scene and every branch's findings at once.
 #   python3 perch_loop.py SOURCE [--board DIR] [--no-look]    SOURCE: a picture, a video, or a folder of pictures
 #   python3 perch_loop.py watch DIR                           follow a board live
-# The board: DIR/board.jsonl, one JSON line per event: tick / mark / branch / found / drop / error / wait / end, each with
+# The board: DIR/board.jsonl, one JSON line per event: tick / mark / branch / found / drop / doubt / error / wait / end, each with
 #   t     the scene's clock (a video's own time; 0 for a still picture)
 #   wall  the machine's clock (so a branch running beside the trunk shows on the same line of time)
 # Zoom: the trunk keeps the last seconds of full frames in memory; a branch gets its crop from there (no second decode).
@@ -67,13 +67,22 @@ def ex_look(p):
     examination next: words to read, people, a technical second look (already done inside describe_one)."""
     import perch_describe
     info = perch_describe.describe_one(p["picture"])
-    found = [{k: info.get(k) for k in ("summary", "people_count", "setting", "sure", "technical") if info.get(k) is not None}]
+    people = (info.get("people") or {}).get("count", 0)
+    setting = str((info.get("scene") or {}).get("setting", "unknown"))
+    found = [{"summary": info.get("summary"), "people": people, "setting": setting, "sure": info.get("sure")}]
     if info.get("kind"): found[0]["picture_kind"] = info["kind"]          # never "kind": that is the branch's own kind on the board
+    if info.get("technical"): found[0]["technical"] = info["technical"]
     more = []
     if info.get("text_in_media"): more.append({"kind": "words", "where": p.get("where"), "why": "the look saw writing", "score": 5})
-    if (info.get("people_count") or 0) > 0:
-        more.append({"kind": "people", "where": p.get("where"), "why": f"the look saw {info['people_count']} people", "score": 6})
+    if people > 0:
+        more.append({"kind": "people", "where": p.get("where"), "why": f"the look saw {people} people", "score": 6})
+    if INDOORS.search(setting + " " + (info.get("summary") or "")):
+        more.append({"kind": "indoors", "why": f"the look sees an indoor scene ({setting})", "score": 9})
     return found, more
+
+
+import re
+INDOORS = re.compile(r"\b(indoors?|inside|room|living room|kitchen|bedroom|office|hall|corridor|ceiling|bathroom|classroom|shop|restaurant|pub|church interior)\b", re.I)
 
 
 def ex_words(p):
@@ -217,12 +226,22 @@ class Trunk:
         self.tracks = {}                                     # movement id -> {"where", "path": [(t, cx, cy)], "quiet": ticks}
         self.memory = []                                     # (t, full frame): the last KEEP_S seconds, for zooming in
         self.ticks = 0
+        self.scene = 0.0                                     # the clock time the current scene began
+        self.marked = []                                     # every point marked so far (id, kind, t, scene)
 
     def mark(self, kind, t, why, score, where=None, parent=None, **extra):
         p = {"id": self.next_id, "kind": kind, "t": round(t, 3), "why": why, "score": score, "where": where, **extra}
+        p.setdefault("scene", self.scene)
         if parent: p["parent"] = parent
         self.next_id += 1
         self.board.put({"type": "mark", **{k: v for k, v in p.items() if k not in ("picture", "around")}})
+        if kind == "indoors":                                # branches inform each other: the look says this scene is indoors,
+            for q in self.marked:                            # so its "sky" was a ceiling or a wall and its "shadows" are not the sun's
+                if q["scene"] == p["scene"] and q["kind"] in ("sky", "shadows"):
+                    self.board.put({"type": "doubt", "t": q["t"], "id": q["id"], "kind": q["kind"], "by": p["id"],
+                                    "said": f"the look (#{parent}) sees an indoor scene: this {q['kind']} reading is not of the sky"})
+            return p
+        self.marked.append({"id": p["id"], "kind": kind, "t": p["t"], "scene": p["scene"]})
         if kind not in self.ex and not (kind == "moment" and "look" in self.ex):   # a moment is looked at, zoomed into its time
             self.board.put({"type": "wait", "t": p["t"], "id": p["id"], "kind": kind, "said": f"seen, no examiner for {kind} yet"})
             return p
@@ -263,6 +282,7 @@ class Trunk:
                     t = q.get("t", p["t"])
                     if "picture" not in extra and q["kind"] in self.ex and q["kind"] != "moment":
                         extra["picture"] = p.get("picture")
+                    extra.setdefault("scene", p.get("scene", self.scene))
                     self.mark(q["kind"], t, q.get("why", ""), q.get("score", 3), q.get("where"), parent=p["id"], **extra)
             except Exception as e:
                 self.board.put({"type": "error", "t": p["t"], "id": p["id"], "kind": p["kind"], "error": f"{type(e).__name__}: {e}"})
@@ -276,6 +296,7 @@ class Trunk:
 
     def scene_marks(self, t, frame):
         """A new scene (the first frame, or a cut): the whole-scene points."""
+        self.scene = round(t, 3)
         path = self.crop(t, None, f"scene-{t:.2f}.png")
         self.mark("sky", t, "a new scene: read the sky", 5, picture=path)
         import perch_sky

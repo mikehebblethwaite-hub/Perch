@@ -19,6 +19,8 @@ def check(name, got, want):
     if not ok: fails.append(name)
 
 # test examiners (module level, so branch processes can run them)
+def look_in(p): return [{"summary": "people in a living room"}], [{"kind": "indoors", "why": "indoor", "score": 9}, {"kind": "people", "why": "3 people", "score": 6}]
+def look_out(p): return [{"summary": "a field under a blue sky"}], []
 def slow3(p): time.sleep(3); return [{"said": "slow done"}], []
 def slow2(p): time.sleep(2); return [{"said": "two seconds"}], []
 def fan(p): return [{"said": "fanned"}], [{"kind": "slow2", "why": f"sub {i}", "score": 3} for i in range(6)]
@@ -122,6 +124,22 @@ try:
     mom = [r for r in rows if r["type"] == "mark" and r["kind"] == "moment"]
     check("honest: a bang in the sound marks a moment, from the sound branch", len(mom) == 1 and abs(mom[0]["t"] - 2.5) < 0.2, True)
     check("...the moment is zoomed into and looked at", any(r["type"] == "found" and r["kind"] == "look" and r["id"] == mom[0]["id"] for r in rows) if mom else False, True)
+
+    # branches inform each other: an indoor look puts doubt on that scene's sky and shadows, never another scene's
+    rows = L.Trunk(one, os.path.join(d, "b8"), examiners={"sky": quick, "shadows": quick, "look": look_in}).run()
+    check("honest: the look sees indoors: the sky reading is doubted", any(r["type"] == "doubt" and r["kind"] == "sky" for r in rows), True)
+    check("...people the look saw are kept for a people examiner ('wait')", any(r["type"] == "wait" and r["kind"] == "people" for r in rows), True)
+    rows = L.Trunk(one, os.path.join(d, "b9"), examiners={"sky": quick, "shadows": quick, "look": look_out}).run()
+    check("trick: an outdoor look puts no doubt on the sky", any(r["type"] == "doubt" for r in rows), False)
+    fr = [grass(rng) for _ in range(10)] + [np.clip(grass(rng) * 1.5, 0, 255) for _ in range(10)]
+    T = L.Trunk(video(os.path.join(d, "cut.mkv"), fr), os.path.join(d, "b10"), examiners={"sky": quick, "shadows": quick, "look": look_in})
+    rows = T.run()
+    doubted = {r["id"] for r in rows if r["type"] == "doubt"}
+    skies = [r for r in rows if r["type"] == "mark" and r["kind"] == "sky"]
+    check("each scene's own look doubts only its own sky (2 scenes, 2 skies, each doubted once)",
+          (len(skies), sorted(doubted & {s_["id"] for s_ in skies}) == sorted(s_["id"] for s_ in skies)), (2, True))
+    check("the indoor words: 'living room' yes, 'outdoors' and 'mushroom field' no",
+          (bool(L.INDOORS.search("a living room")), bool(L.INDOORS.search("outdoors in a park")), bool(L.INDOORS.search("a mushroom field"))), (True, False, False))
 
     # a crashing branch does not stop the trunk; a kind with no examiner waits on the board
     rows = L.Trunk(one, os.path.join(d, "b6"), examiners={"sky": boom, "shadows": quick}, look=True).run()
