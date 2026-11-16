@@ -66,3 +66,4 @@ test:			# real checks on real videos (skipped when the test video is not here)
 	./tests/test_loop.py
 	./tests/test_where.py
 	./tests/test_murmur.py
+	./tests/test_sounds.py
