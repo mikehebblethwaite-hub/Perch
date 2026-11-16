@@ -107,9 +107,12 @@ ADDR_OUT = {"dout", "do", "data out", "data_out", "sdo"}
 COLOUR_PINS = {"r": "red", "red": "red", "g": "green", "green": "green", "b": "blue", "blue": "blue"}
 
 
-def led_rules(labels):
-    """From the pin labels as written: an RGB LED with a shared pin, or an addressable LED, or nothing. A list of facts."""
+def led_rules(labels, words=()):
+    """From the pin labels as written: an RGB LED with a shared pin, or an addressable LED, or nothing. A list of facts.
+    Short marks (A, K, +, -, R, G, B, COM) count only as PIN labels: a loose letter on a drawing is usually a dimension
+    (A, B, C), so loose words count only when they say anode / cathode in full."""
     low = [str(x).strip().lower() for x in labels if x is not None and str(x).strip()]
+    loose = " ".join(str(w).lower() for w in words if w is not None)
     facts = []
     if any(l in ADDR_IN for l in low) and any(l in ADDR_OUT for l in low):
         facts.append(fact("an addressable LED: it has a data-in and a data-out pin, so LEDs chain one to the next and each is "
@@ -120,10 +123,16 @@ def led_rules(labels):
     if colours == {"red", "green", "blue"} and common:
         kind = ("common anode (the shared pin goes to +)" if any("anode" in c or c in ("+", "a") for c in common) else
                 "common cathode (the shared pin goes to ground)" if any("cathode" in c or c in ("-", "k") for c in common) else None)
+        how = "the common pin is labelled so"
+        if not kind:
+            an, ca = "anode" in loose, "cathode" in loose
+            if an != ca:
+                kind = "common anode (the shared pin goes to +)" if an else "common cathode (the shared pin goes to ground)"
+                how = "the drawing's text says " + ("anode" if an else "cathode") + " (not on the pin itself)"
         facts.append(fact("a plain RGB LED: one leg each for red, green and blue and one shared leg; NOT addressable (no data pins), "
                           "so each colour is driven on its own leg", "pins labelled red, green, blue and a common pin", 10))
         if kind:
-            facts.append(fact(kind, "the common pin is labelled so", 10))
+            facts.append(fact(kind, how, 10 if how.startswith("the common pin") else 8))
         else:
             facts.append(fact("common anode or common cathode is not shown: on a real part the shared leg is the longest; test with "
                               "a resistor and a low voltage before wiring", "no anode/cathode mark in the reading", 6))
@@ -140,8 +149,8 @@ def derive(tech, words=()):
     words = every word read off the picture. Returns a list of facts (fact, how, sure)."""
     if not isinstance(tech, dict) or "error" in tech: return []
     facts = []
-    labels = [p.get("label") for p in tech.get("pins", []) if isinstance(p, dict)] + list(words)
-    facts += led_rules(labels)
+    labels = [p.get("label") for p in tech.get("pins", []) if isinstance(p, dict)]
+    facts += led_rules(labels, words)
     seen_text = " ".join([tech.get("what", ""), tech.get("notes", ""), *tech.get("part_numbers", []), *map(str, words)])
     pk = package(seen_text)
     if pk:

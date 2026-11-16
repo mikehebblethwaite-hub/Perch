@@ -46,6 +46,14 @@ check("common anode labelled: said so", t.led_rules(["Common anode", "R", "G", "
 check("DIN/DOUT/VDD/GND: addressable", t.led_rules(["VDD", "DOUT", "GND", "DIN"])[0]["fact"].startswith("an addressable LED"), True)
 check("honest: a regulator's pins are not an LED", t.led_rules(["VIN", "GND", "VOUT"]), [])
 check("trick: only some colours is not an RGB LED", t.led_rules(["Common", "Red", "Green"]), [])
+# Mike's own LED drawing (0J7217.560.png): pins Common/Red/Green/Blue, dimension letters A, B, C loose on the drawing
+mike = {"pins": [{"pin": str(i + 1), "label": l} for i, l in enumerate(["Common", "Red", "Green", "Blue"])]}
+said = lambda words: [f["fact"] for f in t.derive(mike, words)]
+check("trick: a loose dimension letter A does not make it common anode", any("common anode (" in f for f in said(["A", "B", "C"])), False)
+check("...it says anode/cathode is not shown", any(f.startswith("common anode or common cathode is not shown") for f in said(["A", "B", "C"])), True)
+check("trick: loose R G B text alone is not an RGB LED", t.led_rules(["Common", "1", "2", "3"], ["R", "G", "B"]), [])
+check("honest: 'common cathode' written on the drawing is used, less sure", [(f["fact"][:14], f["sure"]) for f in t.derive(mike, ["COMMON CATHODE"]) if "cathode (" in f["fact"]], [("common cathode", 8)])
+check("honest: K on the common pin itself still means cathode", t.led_rules(["K", "R", "G", "B"])[1]["fact"], "common cathode (the shared pin goes to ground)")
 
 mled = {"what": "RGB LED pin-out", "part_numbers": [], "pins": [{"pin": "1", "label": "Red"}, {"pin": "2", "label": "Common"},
         {"pin": "3", "label": "Green"}, {"pin": "4", "label": "Blue"}], "values": [], "dimensions": [], "notes": "", "sure": 8}
