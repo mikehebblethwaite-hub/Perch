@@ -6,12 +6,14 @@
 # always holds the whole scene and every branch's findings at once.
 #   python3 perch_loop.py SOURCE [--board DIR] [--no-look]    SOURCE: a picture, a video, or a folder of pictures
 #   python3 perch_loop.py watch DIR                           follow a board live
-# The board: DIR/board.jsonl, one JSON line per event: tick / mark / branch / found / drop / doubt / error / wait / end, each with
+#   python3 perch_loop.py twigs DIR / grow DIR                list the twigs / send examiners down those that now have one
+# (A twig, as in "I twigged it": the moment something is realised, kept until it can be looked into.)
+# The board: DIR/board.jsonl, one JSON line per event: tick / mark / branch / found / drop / doubt / watch / met / twig / grown / error / end,
 #   t     the scene's clock (a video's own time; 0 for a still picture)
 #   wall  the machine's clock (so a branch running beside the trunk shows on the same line of time)
 # Zoom: the trunk keeps the last seconds of full frames in memory; a branch gets its crop from there (no second decode).
 # How many branches run at the same moment: the machine's cores (a physical bound, not a chosen cap); more wait in order of how
-# much they matter. Kinds with no examiner yet are put on the board as "wait" (seen, not examined), never dropped.
+# much they matter. Kinds with no examiner yet become TWIGS: kept with all a later examiner needs, never dropped (Mike).
 import json, math, os, subprocess, sys, time
 from concurrent.futures import ProcessPoolExecutor
 import numpy as np
@@ -119,7 +121,36 @@ def ex_sound(p):
     return [{"lines": [l for _, l in got]}], more
 
 
-EXAMINERS = {"sky": ex_sky, "shadows": ex_shadows, "look": ex_look, "words": ex_words, "movement": ex_movement,
+def ex_clouds(p):
+    """How much of the sky is cloud, in oktas (eighths, as British weather says it): the sky's own pixels above the horizon,
+    blue (clear) against white or grey (cloud); stones, trees and roofs are left out. Measured, not guessed; the cloud's KIND
+    (and so the weather and the place) needs a learned eye."""
+    import perch_sky
+    a = np.asarray(Image.open(p["picture"]).convert("RGB"), dtype=np.float32)
+    small_a = small(a.astype(np.uint8))
+    hz = perch_sky.find_horizon(small_a) or 0.5
+    top = small_a[: max(1, int(hz * small_a.shape[0]))].reshape(-1, 3)
+    lum = top @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    blue = (top[:, 2] - top[:, 0] > 25) & (top[:, 2] > 110)
+    cloud = ((top.max(1) - top.min(1)) < 30) & (lum > 130) & ~blue
+    seen = int(blue.sum() + cloud.sum())
+    if seen < 0.05 * len(top):
+        return [{"said": "can't tell: too little open sky in the picture"}], []
+    okta = int(round(8 * cloud.sum() / seen))
+    words = {0: "clear", 1: "a few clouds", 2: "a few clouds", 3: "scattered cloud", 4: "scattered cloud", 5: "broken cloud",
+             6: "broken cloud", 7: "broken cloud", 8: "overcast"}[okta]
+    return [{"oktas": okta, "said": f"{okta}/8 of the sky is cloud ({words})", "sky_seen": round(seen / len(top), 2)}], []
+
+
+# what a confirmed thing leads us to expect, each to be looked for (Mike, 16 Nov 2026: "we see a sky we expect clouds weather
+# birds, we identify those and we now have more clues where we are"). "watch" = the trunk looks for it itself as it goes.
+EXPECT = {"sky": [("clouds", "a sky holds clouds (or none)", 5), ("weather", "a sky shows the weather", 3),
+                  ("birds", "a sky has birds in it", 3)]}
+TRUNK_WATCHES = {"birds"}
+FROM_SKY = {"sky", "shadows", "clouds", "weather", "birds"}
+
+
+EXAMINERS = {"sky": ex_sky, "clouds": ex_clouds, "shadows": ex_shadows, "look": ex_look, "words": ex_words, "movement": ex_movement,
              "sound": ex_sound}
 
 
@@ -132,7 +163,7 @@ def run_branch(board_dir, point, examiners=None):
     found, more = ex(point)
     for f in found:
         b.put({**f, "type": "found", "t": point["t"], "id": point["id"], "kind": point["kind"]})
-    return more
+    return {"found": found, "more": more}
 
 
 # ---- the sources: frames on a clock ----
@@ -229,6 +260,9 @@ class Trunk:
         self.scene = 0.0                                     # the clock time the current scene began
         self.marked = []                                     # every point marked so far (id, kind, t, scene)
         self.doubted = set()                                 # points already put in doubt
+        self.indoor_scenes = set()                           # scenes a look said are indoors
+        self.watches = {}                                    # scene -> {kind: point id} the trunk looks for itself
+        self.horizon = None                                  # this scene's horizon (share of the height)
 
     def mark(self, kind, t, why, score, where=None, parent=None, **extra):
         p = {"id": self.next_id, "kind": kind, "t": round(t, 3), "why": why, "score": score, "where": where, **extra}
@@ -237,15 +271,22 @@ class Trunk:
         self.next_id += 1
         self.board.put({"type": "mark", **{k: v for k, v in p.items() if k not in ("picture", "around")}})
         if kind == "indoors":                                # branches inform each other: the look says this scene is indoors,
-            for q in self.marked:                            # so its "sky" was a ceiling or a wall and its "shadows" are not the sun's
-                if q["scene"] == p["scene"] and q["kind"] in ("sky", "shadows") and q["id"] not in self.doubted:
+            self.indoor_scenes.add(p["scene"])               # so its "sky" was a ceiling or a wall, its "shadows" not the sun's,
+            for q in self.marked:                            # and whatever that sky led us to expect goes with it
+                if q["scene"] == p["scene"] and q["kind"] in FROM_SKY and q["id"] not in self.doubted:
                     self.doubted.add(q["id"])                # once: a second look saying the same adds nothing new
                     self.board.put({"type": "doubt", "t": q["t"], "id": q["id"], "kind": q["kind"], "by": p["id"],
                                     "said": f"the look (#{parent}) sees an indoor scene: this {q['kind']} reading is not of the sky"})
+            for sc in [sc for sc, w in self.watches.items() if sc == p["scene"]]:
+                self.watches.pop(sc, None)
             return p
         self.marked.append({"id": p["id"], "kind": kind, "t": p["t"], "scene": p["scene"]})
-        if kind not in self.ex and not (kind == "moment" and "look" in self.ex):   # a moment is looked at, zoomed into its time
-            self.board.put({"type": "wait", "t": p["t"], "id": p["id"], "kind": kind, "said": f"seen, no examiner for {kind} yet"})
+        if kind in TRUNK_WATCHES:                            # the trunk looks for it itself as it goes (birds: in its movements)
+            self.watches.setdefault(p["scene"], {})[kind] = p["id"]
+            self.board.put({"type": "watch", "t": p["t"], "id": p["id"], "kind": kind, "said": f"the trunk watches for {kind}"})
+            return p
+        if kind not in self.ex and not (kind == "moment" and "look" in self.ex) and kind not in TRUNK_WATCHES and kind != "indoors":
+            self.twig(p)                                     # no examiner yet: a twig, kept for one to be sent down later
             return p
         self.waiting.append(p)
         self.waiting.sort(key=lambda q: -q["score"])
@@ -274,12 +315,34 @@ class Trunk:
         Image.fromarray(fr).save(path)
         return path
 
+    def twig(self, p):
+        """A twig: a point no examiner can take yet (weather, people, animals ...). It keeps all a later examiner needs: when,
+        where, why, its parent and scene, and its own picture (the crop, or the scene's picture). `grow` sends examiners down."""
+        pic = p.get("picture")
+        if not pic or not os.path.exists(pic):
+            pic = self.crop(p["t"], p.get("where"), f"{p['id']}-twig.png") if (self.memory or not self.src.lower().endswith(PICTURES)) else None
+            if pic is None and self.src.lower().endswith(PICTURES): pic = self.src
+        self.board.put({"type": "twig", "t": p["t"], "id": p["id"], "kind": p["kind"], "where": p.get("where"), "why": p.get("why"),
+                        "parent": p.get("parent"), "scene": p.get("scene"), "picture": pic, "source": self.src,
+                        "said": f"a twig: {p['kind']} waits for its examiner"})
+
+    def expect(self, p, found):
+        """A branch confirmed something: mark what it leads us to expect. Not from a doubted point, an indoor scene, or a reading
+        that could not tell."""
+        if p["kind"] not in EXPECT or p["id"] in self.doubted or p.get("scene") in self.indoor_scenes: return
+        if not found or found[0].get("light") in (None, "can't tell", "night or indoors"): return
+        for kind, why, score in EXPECT[p["kind"]]:
+            extra = {"picture": p.get("picture")} if kind in self.ex else {}
+            self.mark(kind, p["t"], f"expected: {why}", score, parent=p["id"], scene=p.get("scene", self.scene), **extra)
+
     def steer(self):
         """Never waits: collect the branches that are done (their new points are marked), start waiting ones on free cores."""
         for fut in [f for f in self.running if f.done()]:
             p = self.running.pop(fut)
             try:
-                for q in fut.result() or []:
+                res = fut.result() or {}
+                self.expect(p, res.get("found") or [])
+                for q in res.get("more") or []:
                     extra = {k: v for k, v in q.items() if k not in ("kind", "t", "why", "score", "where")}
                     t = q.get("t", p["t"])
                     if "picture" not in extra and q["kind"] in self.ex and q["kind"] != "moment":
@@ -304,6 +367,7 @@ class Trunk:
         import perch_sky
         a = small(frame)
         hz = perch_sky.find_horizon(a)
+        self.horizon = hz
         sh = perch_sky.find_shadows(a, hz) if hz else None
         if sh and sh.get("pieces"):
             self.mark("shadows", t, f"{len(sh['pieces'])} shadow pieces on the ground", 5, picture=path)
@@ -339,6 +403,7 @@ class Trunk:
                         self.tracks[tid] = {"where": r, "path": [], "quiet": 0}
                     tr = self.tracks[tid]
                     tr["where"], tr["quiet"] = r, 0
+                    tr["size"] = max(tr.get("size", 0), (r[2] - r[0]) * (r[3] - r[1]))
                     tr["path"].append((round(t, 3), round(cx, 3), round(cy, 3)))
                     seen.add(tid)
                 for tid in [k for k in self.tracks if k not in seen]:
@@ -361,6 +426,11 @@ class Trunk:
             if abs(dy) > 0.03: way.append("down the picture (towards)" if dy > 0 else "up the picture (away)")
             said = (" and ".join(way) or "on the spot") + f", {math.hypot(dx, dy) / secs:.2f} picture-widths a second"
         self.board.put({"type": "drop", "t": round(t, 3), "id": tid, "kind": "movement", "said": f"moved {said}", "path": path[:200]})
+        w = self.watches.get(self.scene, {})
+        if "birds" in w and self.horizon and len(path) >= 3 and tr.get("size", 1) < 0.01 \
+                and all(cy < self.horizon - 0.02 for _, _, cy in path):
+            self.board.put({"type": "met", "t": round(path[0][0], 3), "id": w["birds"], "kind": "birds", "by": tid,
+                            "said": f"a small thing moved {said.split(',')[0]} across the sky: a bird? (or a plane, an insect near the lens)"})
 
     def run(self):
         self.board.put({"type": "start", "t": 0, "source": os.path.basename(self.src), "cores": self.workers})
@@ -377,6 +447,23 @@ class Trunk:
         self.pool.shutdown()
         self.board.put({"type": "end", "t": round(end, 3), "ticks": self.ticks})
         return self.board.read()
+
+
+def grow(board_dir, examiners=None):
+    """Send examiners down the twigs: every twig whose kind has an examiner now (and that is not grown or doubted yet) is
+    examined as a branch; its findings go on the same board, under the twig's id."""
+    ex = examiners or EXAMINERS
+    b = Board(board_dir)
+    rows = b.read()
+    done = {r["id"] for r in rows if r["type"] in ("grown", "doubt")}
+    out = []
+    for r in rows:
+        if r["type"] != "twig" or r["id"] in done or r["kind"] not in ex: continue
+        res = run_branch(board_dir, {"id": r["id"], "kind": r["kind"], "t": r["t"], "where": r.get("where"), "picture": r.get("picture"),
+                                     "source": r.get("source"), "scene": r.get("scene")}, None if ex is EXAMINERS else ex)
+        b.put({"type": "grown", "t": r["t"], "id": r["id"], "kind": r["kind"], "new_points": len(res.get("more") or [])})
+        out.append(r["id"])
+    return out
 
 
 def line(r):
@@ -400,6 +487,12 @@ if __name__ == "__main__":
                         if l.endswith("\n"): print(line(json.loads(l)), flush=True)
                     pos = f.tell()
             time.sleep(0.3)
+    elif a[:1] == ["twigs"] and len(a) == 2:
+        rows = Board(a[1]).read(); done = {r["id"] for r in rows if r["type"] in ("grown", "doubt")}
+        for r in rows:
+            if r["type"] == "twig": print(("grown " if r["id"] in done else "open  ") + line(r))
+    elif a[:1] == ["grow"] and len(a) == 2:
+        print("grown:", grow(a[1]))
     elif a:
         src = a[0]
         board = a[a.index("--board") + 1] if "--board" in a else os.path.join("/dev/shm", "perch-board-" + str(os.getpid()))

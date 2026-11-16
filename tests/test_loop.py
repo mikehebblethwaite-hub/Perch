@@ -4,7 +4,7 @@
 beside it; branches branch again; everything on one board on one clock. Honest: a green thing moving in green grass is seen (each
 colour layer at full depth), tracked as ONE movement, its way said; branches run in parallel on the cores; a branch's new points
 are examined; the real sky and shadow examiners on Mike's Stonehenge picture. Tricks: camera noise alone and a light change over
-the whole picture are not movements; a crashing branch does not stop the trunk; a kind with no examiner is kept ("wait")."""
+the whole picture are not movements; a crashing branch does not stop the trunk; a kind with no examiner becomes a twig, and a later examiner can be sent down it (grow)."""
 import json, os, shutil, subprocess, sys, tempfile, time
 from multiprocessing import Process
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -21,6 +21,8 @@ def check(name, got, want):
 # test examiners (module level, so branch processes can run them)
 def look_in(p): return [{"summary": "people in a living room"}], [{"kind": "indoors", "why": "indoor", "score": 9}, {"kind": "people", "why": "3 people", "score": 6}]
 def look_out(p): return [{"summary": "a field under a blue sky"}], []
+def sky_day(p): return [{"light": "day", "said": "day"}], []
+def sky_cant(p): return [{"light": "can't tell", "said": "can't tell"}], []
 def slow3(p): time.sleep(3); return [{"said": "slow done"}], []
 def slow2(p): time.sleep(2); return [{"said": "two seconds"}], []
 def fan(p): return [{"said": "fanned"}], [{"kind": "slow2", "why": f"sub {i}", "score": 3} for i in range(6)]
@@ -128,7 +130,7 @@ try:
     # branches inform each other: an indoor look puts doubt on that scene's sky and shadows, never another scene's
     rows = L.Trunk(one, os.path.join(d, "b8"), examiners={"sky": quick, "shadows": quick, "look": look_in}).run()
     check("honest: the look sees indoors: the sky reading is doubted", any(r["type"] == "doubt" and r["kind"] == "sky" for r in rows), True)
-    check("...people the look saw are kept for a people examiner ('wait')", any(r["type"] == "wait" and r["kind"] == "people" for r in rows), True)
+    check("...people the look saw are kept for a people examiner (a twig)", any(r["type"] == "twig" and r["kind"] == "people" for r in rows), True)
     rows = L.Trunk(one, os.path.join(d, "b8b"), examiners={"sky": quick, "shadows": quick, "look": look_in, "movement": look_in}).run()
     T = L.Trunk(one, os.path.join(d, "b8c"), examiners={"sky": quick, "look": look_in})
     T.look = True
@@ -148,11 +150,57 @@ try:
     check("the indoor words: 'living room' yes, 'outdoors' and 'mushroom field' no",
           (bool(L.INDOORS.search("a living room")), bool(L.INDOORS.search("outdoors in a park")), bool(L.INDOORS.search("a mushroom field"))), (True, False, False))
 
-    # a crashing branch does not stop the trunk; a kind with no examiner waits on the board
+    # expectations: a confirmed sky leads to clouds (examined), weather (is a twig for a later examiner), birds (the trunk watches)
+    from PIL import Image as _I, ImageDraw as _D
+    def outdoor(cloud_share):
+        g = grass(rng); h, w, _ = g.shape
+        g[: h // 2] = [90, 150, 225]
+        if cloud_share: g[: h // 2, : int(w * cloud_share)] = [215, 215, 218]
+        return g
+    for share, want in ((0.0, 0), (0.5, 4), (1.0, 8)):
+        pth = os.path.join(d, f"sky{share}.png"); _I.fromarray(outdoor(share).astype(np.uint8)).save(pth)
+        got = L.ex_clouds({"picture": pth})[0][0].get("oktas")
+        check(f"clouds: {share:.0%} of the sky white -> {want}/8 (oktas)", got is not None and abs(got - want) <= 1, True)
+    pth = os.path.join(d, "wall.png"); _I.fromarray(np.full((240, 320, 3), 70, np.uint8)).save(pth)
+    check("trick: no open sky -> can't tell, not 'clear'", "can't tell" in L.ex_clouds({"picture": pth})[0][0]["said"], True)
+
+    fr = []
+    for i in range(50):
+        g = outdoor(0.0); g[40:43, 20 + i * 5:23 + i * 5] = 20; fr.append(g)          # a small dark thing crossing the sky
+    v = video(os.path.join(d, "bird.mkv"), fr)
+    rows = L.Trunk(v, os.path.join(d, "b11"), examiners={"sky": sky_day, "clouds": L.ex_clouds, "movement": quick}, look=False).run()
+    exp = sorted(r["kind"] for r in rows if r["type"] == "mark" and str(r.get("why", "")).startswith("expected"))
+    check("honest: a confirmed sky -> clouds, weather, birds expected", exp, ["birds", "clouds", "weather"])
+    check("...clouds examined (0/8 on a clear sky)", any(r["type"] == "found" and r["kind"] == "clouds" and r.get("oktas") == 0 for r in rows), True)
+    check("...weather is a twig for a later examiner", any(r["type"] == "twig" and r["kind"] == "weather" for r in rows), True)
+    check("...a small thing crossing the sky meets the birds watch, said as 'a bird?'", any(r["type"] == "met" and r["kind"] == "birds" and "bird?" in r["said"] for r in rows), True)
+    fr = []
+    for i in range(50):
+        g = outdoor(0.0); g[200:203, 20 + i * 5:23 + i * 5] = 20; fr.append(g)        # the same small thing, crossing the grass
+    rows = L.Trunk(video(os.path.join(d, "beetle.mkv"), fr), os.path.join(d, "b12"), examiners={"sky": sky_day, "clouds": L.ex_clouds, "movement": quick}, look=False).run()
+    check("trick: a small thing crossing the GRASS is not a bird", any(r["type"] == "met" for r in rows), False)
+    rows = L.Trunk(v, os.path.join(d, "b13"), examiners={"sky": sky_cant, "clouds": L.ex_clouds, "movement": quick}, look=False).run()
+    check("trick: a sky that can't be told expects nothing", any(str(r.get("why", "")).startswith("expected") for r in rows), False)
+    def look_in_slow(p): time.sleep(1.5); return look_in(p)
+    rows = L.Trunk(v, os.path.join(d, "b14"), examiners={"sky": sky_day, "clouds": L.ex_clouds, "movement": quick, "look": look_in}).run()
+    dk = {r["kind"] for r in rows if r["type"] == "doubt"}
+    check("an indoor look doubts the sky AND what it led to expect", {"sky", "clouds", "weather", "birds"} <= dk or ("sky" in dk and not any(str(r.get("why", "")).startswith("expected") for r in rows)), True)
+
+    # twigs: a later examiner is sent down them, on the same board
+    def weather_now(p): return [{"said": "weather examiner grown later", "has_picture": bool(p.get("picture")) and os.path.exists(p["picture"])}], []
+    bd = os.path.join(d, "b11")
+    tw = [r for r in L.Board(bd).read() if r["type"] == "twig" and r["kind"] == "weather"]
+    check("a twig keeps its picture, why, parent and scene", bool(tw) and all(tw[0].get(k) is not None for k in ("picture", "why", "parent", "scene")), True)
+    grown = L.grow(bd, {"weather": weather_now})
+    rows = L.Board(bd).read()
+    check("grow: the weather twig gets its examiner later, with its picture", (len(grown), any(r["type"] == "found" and r["kind"] == "weather" and r.get("has_picture") for r in rows)), (1, True))
+    check("...and is not grown twice", L.grow(bd, {"weather": weather_now}), [])
+
+    # a crashing branch does not stop the trunk; a kind with no examiner becomes a twig
     rows = L.Trunk(one, os.path.join(d, "b6"), examiners={"sky": boom, "shadows": quick}, look=True).run()
     check("trick: a crashing branch is put on the board as an error", any(r["type"] == "error" and "examiner broke" in r["error"] for r in rows), True)
     check("...the trunk ran to the end", rows[-1]["type"], "end")
-    check("a kind with no examiner yet is kept: 'wait'", any(r["type"] == "wait" and r["kind"] == "look" for r in rows), True)
+    check("a kind with no examiner yet is kept: a twig", any(r["type"] == "twig" and r["kind"] == "look" for r in rows), True)
 
     # real examiners on Mike's Stonehenge picture (sky + shadows; no model)
     pic = "/home/mike/Desktop/images/stonehenge/stonehenge day 2 360.jpg"
