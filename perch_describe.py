@@ -16,7 +16,7 @@ from PIL import Image
 import perch_tech                                       # a reverse engineer's known rules: codes, packages, LED legs
 
 MODEL = "gemma-chuck:latest"
-OLLAMA = "http://127.0.0.1:11434/api/chat"
+OLLAMA = os.environ.get("PERCH_OLLAMA", "http://127.0.0.1:11434").rstrip("/") + "/api/chat"   # PERCH_OLLAMA: another box's model
 EXT = (".jpg", ".jpeg", ".png", ".webp")
 PROMPT = """Look at this picture. Reply with ONE JSON object and nothing else, with these keys:
 "kind": what sort of picture it is, one of: "photo" (a photograph of people, places or things), "technical" (an electronic
