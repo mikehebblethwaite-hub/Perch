@@ -8,7 +8,7 @@
 #   python3 perch_loop.py watch DIR                           follow a board live
 #   python3 perch_loop.py twigs DIR / grow DIR                list the twigs / send examiners down those that now have one
 # (A twig, as in "I twigged it": the moment something is realised, kept until it can be looked into.)
-# The board: DIR/board.jsonl, one JSON line per event: tick / mark / branch / found / drop / doubt / watch / met / twig / grown / error / end,
+# The board: DIR/board.jsonl, one JSON line per event: tick / mark / branch / found / drop / doubt / watch / met / twig / grown / where / error / end,
 #   t     the scene's clock (a video's own time; 0 for a still picture)
 #   wall  the machine's clock (so a branch running beside the trunk shows on the same line of time)
 # Zoom: the trunk keeps the last seconds of full frames in memory; a branch gets its crop from there (no second decode).
@@ -263,6 +263,7 @@ class Trunk:
         self.indoor_scenes = set()                           # scenes a look said are indoors
         self.watches = {}                                    # scene -> {kind: point id} the trunk looks for itself
         self.horizon = None                                  # this scene's horizon (share of the height)
+        self.where = None                                    # where we are, by elimination of what the branches found
 
     def mark(self, kind, t, why, score, where=None, parent=None, **extra):
         p = {"id": self.next_id, "kind": kind, "t": round(t, 3), "why": why, "score": score, "where": where, **extra}
@@ -326,6 +327,17 @@ class Trunk:
                         "parent": p.get("parent"), "scene": p.get("scene"), "picture": pic, "source": self.src,
                         "said": f"a twig: {p['kind']} waits for its examiner"})
 
+    def report(self, p, found):
+        """A branch (or a twig's agent) reports what a thing IS; the trunk narrows where we are by elimination (perch_where)."""
+        import perch_where
+        new = False
+        for f in found:
+            if f.get("is") and p["id"] not in self.doubted:
+                if self.where is None: self.where = perch_where.Where()
+                new = self.where.add(f["is"], f.get("sure", 5), by=p["id"]) or new
+        if new:
+            self.board.put({"type": "where", "t": p["t"], "by": p["id"], **self.where.answer()})
+
     def expect(self, p, found):
         """A branch confirmed something: mark what it leads us to expect. Not from a doubted point, an indoor scene, or a reading
         that could not tell."""
@@ -342,6 +354,7 @@ class Trunk:
             try:
                 res = fut.result() or {}
                 self.expect(p, res.get("found") or [])
+                self.report(p, res.get("found") or [])
                 for q in res.get("more") or []:
                     extra = {k: v for k, v in q.items() if k not in ("kind", "t", "why", "score", "where")}
                     t = q.get("t", p["t"])
@@ -463,6 +476,13 @@ def grow(board_dir, examiners=None):
                                      "source": r.get("source"), "scene": r.get("scene")}, None if ex is EXAMINERS else ex)
         b.put({"type": "grown", "t": r["t"], "id": r["id"], "kind": r["kind"], "new_points": len(res.get("more") or [])})
         out.append(r["id"])
+    if out:                                              # what the twigs' agents found joins what the board already knew
+        import perch_where
+        w = perch_where.Where()
+        doubted = {r["id"] for r in b.read() if r["type"] == "doubt"}
+        for r in b.read():
+            if r["type"] == "found" and r.get("is") and r["id"] not in doubted: w.add(r["is"], r.get("sure", 5), by=r["id"])
+        if w.seen: b.put({"type": "where", "t": 0, "by": "grow", **w.answer()})
     return out
 
 
