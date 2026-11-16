@@ -417,8 +417,9 @@ def read(path):
             clue("moon lit on the " + disc["lit_side"], ("waxing" if disc["lit_side"] == "right" else "waning") +
                  " in the north half of the world (the other way round in the south)", 5)
     if sky["even"] < 6 and not dark:
-        if sky["warm"] > 0.12 and sky["brightness"] > 90: clue("warm, even sky", "sun low", 5)
-        elif sky["blue"] > 0.08 and sky["brightness"] > 140: clue("blue, even sky", "day", 6)
+        # "warm, even sky -> sun low" was dropped: on Mike's 705 GPS-refereed photos it was right 0 times, wrong 8 (warm indoor light
+        # and white-balance tints, not a low sun). Low sun needs a better clue (shadow length, the sun's height in the picture).
+        if sky["blue"] > 0.08 and sky["brightness"] > 140: clue("blue, even sky", "day", 6)
     if dark and sky["even"] < 4 and (ev is None or ev < 6): clue("dark, even sky", "night or twilight", 5)
 
     order = {"sun high": 0, "day": 1, "sun low": 2, "night or twilight": 3, "night (moon)": 4, "night": 5, "night or indoors": 6}
