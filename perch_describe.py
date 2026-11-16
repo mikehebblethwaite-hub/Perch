@@ -5,6 +5,7 @@
 #   python3 perch_describe.py teach PICTURE OUTDIR [--is WHAT] [--by MAKER] [--note N] [--from WHO]
 # Rules built in: no names (people are counted, never named); unsure = said as unsure, with a sure score 1-11 (never 0);
 # only what can be seen; the picture's own words go in text_in_media; nothing leaves this machine.
+# Where: a photo with GPS in its EXIF gets "where" (perch_geo: the place named offline from the coordinates, never guessed).
 # Taught: what a person who KNOWS says about a picture (what it is, who made it) is kept in OUTDIR/taught.jsonl, bound to
 # that exact picture by its sha256, and goes in the picture's info as "taught" (how: user). The look never guesses names.
 # No poisoning (as wikis get): a teaching counts only if the machine account that wrote it is a teacher: PERCH_TEACHERS
@@ -147,6 +148,15 @@ def describe_one(path):
     return info
 
 
+def where(path):
+    """Where it was taken, from the file's own GPS (perch_geo), or None: no GPS, the 0,0 of no fix, or no place index built."""
+    try:
+        import perch_geo
+        return perch_geo.where_of(path)
+    except Exception:
+        return None
+
+
 TAUGHT = "taught.jsonl"
 
 
@@ -224,6 +234,8 @@ def describe(folder, outdir, limit=10**9):
                                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}})
         t = taught_for(os.path.join(folder, n), outdir)
         if t: info["taught"] = t
+        w = where(os.path.join(folder, n))
+        if w: info["where"] = w
         with open(dst, "w", encoding="utf-8") as f:
             json.dump(info, f, ensure_ascii=False, indent=2)
         done += 1

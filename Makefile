@@ -59,3 +59,4 @@ test:			# real checks on real videos (skipped when the test video is not here)
 	./tests/test_pdf.py
 	./tests/test_web_draw.py
 	./tests/test_perch_tech.py
+	./tests/test_geo.py
