@@ -56,6 +56,8 @@ def stages(ps, k=4, rounds=25):
     each fingerprint's share per band, started from evenly spread moments: the same answer every time), each stage the mean of its
     members' power. Returns up to k fingerprints."""
     ps = [p for p in ps if sum(p) > 0]
+    if not ps: return []
+    if k <= 1: return [mean_print([(0, p) for p in ps])]          # one stage: the mean (k - 1 would divide by nothing)
     if len(ps) <= k: return [list(p) for p in ps]
     norm = [[v / sum(p) for v in p] for p in ps]
     cent = [list(norm[int(i * (len(norm) - 1) / (k - 1))]) for i in range(k)]
