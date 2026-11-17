@@ -24,7 +24,8 @@ def samples(src, start=0.0, end=None):
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"] + (["-ss", str(start)] if start else []) + ["-i", src] + \
           (["-t", str(end - start)] if end else []) + ["-vn", "-ac", "1", "-ar", str(RATE), "-f", "s16le", "-"]
     raw = subprocess.run(cmd, capture_output=True, timeout=1800).stdout
-    return mm.frombuffer(raw, "<i2").astype(mm.float32) / 32768.0
+    if len(raw) < 2: return None                # nothing decodable (an empty or unfinished file): no sound, not a crash
+    return mm.frombuffer(raw[: len(raw) // 2 * 2], "<i2").astype(mm.float32) / 32768.0
 
 
 def describe(x, prev_db):
@@ -55,6 +56,7 @@ def describe(x, prev_db):
 def lines(src, start=0.0, end=None, ts=None):
     """the sound of src as (time, text) pairs, only when it changes"""
     x = samples(src, start, end)
+    if x is None: return []
     w, h = int(WIN * RATE), int(HOP * RATE)
     n = len(x) // h
     if n < 1: return []
