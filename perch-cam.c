@@ -14,6 +14,9 @@
  *            water: busy but going nowhere; a passing bird or person never stays that long) is tuned out until it calms (< 10%)
  *   crossing a habit cell struck in the same frame as a NON-habit neighbour still counts: something is coming in from outside
  *   Bots are told:  h c=CELL x,y beat 1.20s | h c=CELL x,y restless | h c=CELL x,y off
+ * The camera moving (a pan, a tilt, auto-tracking turning its head): when most of the cells strike in the same frame it is the
+ * VIEW that moved, not the world: one line  C moved n=CELLS , the new view taken as the background at once, a short settle
+ * (0.6 s) without movement lines; then watching goes on (things moving inside the new view count).
  *   perch-cam -s WxH [-g 16x9] [-T 18 (pixel threshold)] [-p 3 (percent of a cell)] [-o DIR]
  */
 #define _GNU_SOURCE
@@ -105,7 +108,8 @@ int main(int argc, char **argv) {
     int was = 0, lx0 = -1, ly0 = -1, lx1 = -1, ly1 = -1;
     Habit *hab = calloc((size_t)GX * GY, sizeof(Habit));
     unsigned char *raw = calloc((size_t)GX * GY, 1);
-    long tuned = 0;
+    long tuned = 0, cmoves = 0;
+    double moved_t = -1e9;
     setvbuf(stdout, NULL, _IOLBF, 0);
     while (fread(fr, 1, n, stdin) == n) {
         frames++;
@@ -123,6 +127,19 @@ int main(int argc, char **argv) {
             cellv[c * 3] = (uint8_t)(sum / (cw * ch));
             cellv[c * 3 + 1] = (uint8_t)(cnt * 255 / (cw * ch));
             raw[c] = cnt >= need;
+        }
+        /* the camera moved? most cells struck at once: re-take the background, settle, say so once */
+        int nraw = 0; for (int c = 0; c < ncells; c++) nraw += raw[c];
+        if (nraw * 2 > ncells) {
+            if (tnow - moved_t > 0.6) { char l[80]; snprintf(l, sizeof l, "%.2f C moved n=%d", tnow, nraw); puts(l); if (tape) fprintf(tape, "%s\n", l); lines++; cmoves++; }
+            moved_t = tnow;
+            memcpy(bg, fr, n); for (size_t i = 0; i < n; i++) bgf[i] = (uint16_t)(fr[i] << 8);
+            if (was) { char l[60]; snprintf(l, sizeof l, "%.2f Q", tnow); puts(l); if (tape) fprintf(tape, "%s\n", l); lines++; was = 0; }
+            continue;
+        }
+        if (tnow - moved_t < 0.6) {                                    /* settling after the view moved */
+            for (size_t i = 0; i < n; i++) { int d = ((int)fr[i] << 8) - (int)bgf[i]; bgf[i] = (uint16_t)((int)bgf[i] + d / 4); bg[i] = (unsigned char)(bgf[i] >> 8); }
+            continue;
         }
         /* habits: learn them, then count a habit cell only when something crosses into it from a plain neighbour */
         for (int c = 0; c < ncells; c++) {
@@ -185,7 +202,7 @@ int main(int argc, char **argv) {
     }
     double dt = now_s() - t0, dc = cpu_s() - c0;
     int nb = 0, nr = 0; for (int c = 0; c < GX * GY && c < 4096; c++) { nb += hab[c].beat_habit; nr += hab[c].restless; }
-    fprintf(stderr, "perch-cam: %ld frames (%dx%d), %ld with movement, %ld lines, %ld habit strikes tuned out (habits now: %d beat, %d restless), cpu %.2f s (%.2f%% of a core)\n",
-            frames, W, H, mframes, lines, tuned, nb, nr, dc, dt > 0 ? 100 * dc / dt : 0);
+    fprintf(stderr, "perch-cam: %ld frames (%dx%d), %ld with movement, %ld lines, %ld habit strikes tuned out (habits now: %d beat, %d restless), camera moved %ld times, cpu %.2f s (%.2f%% of a core)\n",
+            frames, W, H, mframes, lines, tuned, nb, nr, cmoves, dc, dt > 0 ? 100 * dc / dt : 0);
     return 0;
 }
