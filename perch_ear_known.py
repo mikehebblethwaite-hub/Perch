@@ -11,6 +11,7 @@
 # close enough: names only ever come from a person's examples, never guessed.
 #   python3 perch_ear_known.py label LINES.txt NAME FROM TO [KNOWN.jsonl]    (FROM/TO: unix seconds or HH:MM:SS today)
 #   python3 perch_ear_known.py scan  LINES.txt [KNOWN.jsonl] [WINDOW_S]       -> one line per window: I think NAME (sure n/11)
+#   python3 perch_ear_known.py ask   LINES.txt [KNOWN.jsonl]                  -> the unnamed sounds it keeps hearing: "what is sound A?"
 import datetime as dt, json, math, os, re, sys
 
 KINDS = ("quiet", "tone", "voice?", "music?", "noise", "bang")
@@ -56,6 +57,30 @@ def sure_of(d):
     return max(1, min(11, int(round(11 - d * 12))))
 
 
+def group_unknown(lines, known_list, window=30.0, near=0.45):
+    """the sounds it keeps hearing without a name: windows that match no known sound (sure < 6) are grouped by shape (a window
+    joins the closest group if within `near`, else starts a new one). Returns groups [{label: 'A', shape, times: [...]}], the
+    biggest first: the ear's questions for a person ("what is sound A?")."""
+    groups = []
+    if not lines: return groups
+    t, end = lines[0]["t"], lines[-1]["t"]
+    while t <= end:
+        s = shape([x for x in lines if t <= x["t"] < t + window])
+        if s and not (known_list and sure_of(min(distance(s, k["shape"]) for k in known_list)) >= 6):
+            best = min(groups, key=lambda g: distance(s, g["shape"]), default=None)
+            if best is not None and distance(s, best["shape"]) < near:
+                best["times"].append(t)
+                k = len(best["times"])                       # the group's shape follows its members (running mean)
+                best["shape"]["bands"] = [round(b + (x - b) / k, 2) for b, x in zip(best["shape"]["bands"], s["bands"])]
+                best["shape"]["level"] = round(best["shape"]["level"] + (s["level"] - best["shape"]["level"]) / k, 2)
+            else:
+                groups.append({"shape": s, "times": [t]})
+        t += window
+    groups.sort(key=lambda g: -len(g["times"]))
+    for i, g in enumerate(groups): g["label"] = chr(65 + i) if i < 26 else f"Z{i}"
+    return groups
+
+
 def when(s):
     if re.fullmatch(r"\d+(\.\d+)?", s): return float(s)
     h, m, sec = (int(x) for x in s.split(":"))
@@ -94,4 +119,10 @@ if __name__ == "__main__":
     a = sys.argv[1:]
     if a[:1] == ["label"] and len(a) >= 5: label(a[1], a[2], a[3], a[4], a[5] if len(a) > 5 else "known-sounds.jsonl")
     elif a[:1] == ["scan"] and len(a) >= 2: scan(a[1], a[2] if len(a) > 2 else "known-sounds.jsonl", float(a[3]) if len(a) > 3 else 30.0)
-    else: sys.exit(__doc__ or "label LINES NAME FROM TO [KNOWN] | scan LINES [KNOWN] [WINDOW]")
+    elif a[:1] == ["ask"] and len(a) >= 2:
+        for g in group_unknown(read_lines(a[1]), known(a[2] if len(a) > 2 else "known-sounds.jsonl"))[:8]:
+            if len(g["times"]) < 2: continue
+            ts = ", ".join(dt.datetime.fromtimestamp(t).strftime("%H:%M") for t in g["times"][:6])
+            print(f"sound {g['label']}: heard {len(g['times'])} times ({ts}{' ...' if len(g['times']) > 6 else ''}): "
+                  f"bands {'-'.join(str(round(b)) for b in g['shape']['bands'])}, loudness {g['shape']['level']}: what is it?")
+    else: sys.exit(__doc__ or "label LINES NAME FROM TO [KNOWN] | scan LINES [KNOWN] [WINDOW] | ask LINES [KNOWN]")

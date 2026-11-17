@@ -30,4 +30,16 @@ ex = K.known(kn)[0]["shape"]
 check(f"the same kind of sound later is named, sure >= 8 (got {K.sure_of(K.distance(same, ex))})", K.sure_of(K.distance(same, ex)) >= 8)
 check(f"a different sound (a whistle) is NOT called kettle: sure < 6 (got {K.sure_of(K.distance(diff, ex))})", K.sure_of(K.distance(diff, ex)) < 6)
 check("quiet alone has no shape (nothing to name)", K.shape([x for x in K.read_lines(lines) if x["t"] >= 4000]) is None)
+# the unnamed sounds it keeps hearing: three repeats of a hum and two of a chirp, plus the known kettle, give two groups to ask about
+hum = [3, 6, 5, 2, 1]; chirp = [1, 2, 4, 9, 11]
+L2 = []
+for i, base in enumerate((5000, 5300, 5600)): L2 += stretch(base, 30, hum, "noise", 3)
+for base in (6000, 6300): L2 += stretch(base, 30, chirp, "tone", 6)
+L2 += stretch(7000, 60, rush, "music?", 4)
+lines2 = os.path.join(d, "ear2.txt"); open(lines2, "w").write("\n".join(L2) + "\n")
+G = K.group_unknown(K.read_lines(lines2), K.known(kn))
+big = [g for g in G if len(g["times"]) >= 2]
+check(f"repeated unnamed sounds form groups to ask about: 2 groups (got {len(big)}: {[len(g['times']) for g in big]})", len(big) == 2)
+check("the biggest group (the hum, 3 times) is 'sound A'", big and big[0]["label"] == "A" and len(big[0]["times"]) >= 3)
+check("the known kettle is NOT asked about", all(abs(g["shape"]["bands"][0] - rush[0]) > 2 or abs(g["shape"]["bands"][4] - rush[4]) > 2 for g in big))
 print(f"{ok}/{n} pass"); sys.exit(0 if ok == n else 1)
