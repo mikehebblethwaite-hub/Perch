@@ -87,13 +87,16 @@ def unmix_one(p, known):
     total = sum(p) or 1e-30
     a = [0.0] * len(W)
     norms = [sum(v * v for v in w) or 1e-30 for w in W]
+    r = list(p)                                        # the residual, kept up to date as each amount moves (not recomputed)
     for _ in range(300):
         moved = 0.0
         for j, w in enumerate(W):
-            r = [p[i] - sum(a[k] * W[k][i] for k in range(len(W))) for i in range(NB)]
             new = max(0.0, a[j] + sum(w[i] * r[i] for i in range(NB)) / norms[j])
-            moved += abs(new - a[j]); a[j] = new
-        if moved < 1e-12 * total: break
+            d = new - a[j]
+            if d:
+                for i in range(NB): r[i] -= d * w[i]
+                moved += abs(d) * (sum(w) or 0); a[j] = new
+        if moved < 1e-6 * total: break
     # each band: the known sounds explain AT MOST the power that is there (an average fingerprint overshoots some bands and falls
     # short in others); the rest of the band is leftover. So the shares and the leftover always add up to exactly 1.
     shares = [0.0] * len(W); left = 0.0
