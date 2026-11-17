@@ -284,6 +284,97 @@ def find_shadows(a, horizon, sun_x=None):
     return {"pieces": pieces, "meet_x": round(meet, 3), "spread": round(spread, 3), "grass": round(grass, 1)}
 
 
+def feet_shadows(path, size=3200):
+    """Shadows read at the FEET of upright things (people, posts, stones) standing on grass, at full size (at 800 px a person is
+    a few pixels and their shadow is lost). Each upright: a joined patch that is not grass, below the horizon, taller than wide;
+    its foot = its lowest rows. Its shadow = shade on the grass (greener than not, darker than the grass of that band of rows)
+    joined to the foot. The shadow's run from the foot gives the sun's side; where it runs ACROSS the picture (not towards or
+    away, so not foreshortened) its length against the upright's height gives the sun's height: tan(height) = upright / run.
+    Each reading carries its own numbers; the votes say what all of them agree on."""
+    a = _load(path, size)
+    h, w, _ = a.shape
+    hz = find_horizon(a)
+    if hz is None: return {"error": "no horizon found"}
+    hy = int(hz * h)
+    lum = a @ mm.array([0.2126, 0.7152, 0.0722], dtype=mm.float32)
+    greenish = (a[..., 1] > a[..., 2] + 4) & (a[..., 1] >= a[..., 0] - 6)
+    # the grass's own brightness, band by band (it darkens and lightens with distance and cloud): the median of green pixels
+    band = max(8, h // 60)
+    grass_lum = mm.zeros(h, dtype=mm.float32)
+    for y0 in range(hy, h, band):
+        g = lum[y0:y0 + band][greenish[y0:y0 + band]]
+        grass_lum[y0:y0 + band] = float(mm.median(g)) if g.size > 50 else 0
+    shade = greenish & (lum < grass_lum[:, None] * 0.72) & (lum > 8)
+    shade[:hy + 2] = False
+    sky = (lum > 140) & (a[..., 2] >= a[..., 0] - 12)                    # bright, not warm: sky, not a person
+    upright = (~greenish) & ~(sky & (mm.arange(h)[:, None] < hy + 2))    # people's dark clothes count too
+    upright[:max(hy - h // 6, 0)] = False
+    # start from each SHADOW (people standing together join into one patch, so a person is found from their shadow, not the
+    # other way round): where it touches something upright is the foot; the upright's height is the run straight up from there.
+    # A thin shade line hugging a person's edge (a halo) is not a shadow: shade within 3 px of upright is dropped first.
+    U = upright
+    near = U.copy()
+    for d in (1, 2, 3):
+        near[d:] |= U[:-d]; near[:-d] |= U[d:]; near[:, d:] |= U[:, :-d]; near[:, :-d] |= U[:, d:]
+    shade_far = shade & ~near
+    touch = U.copy()                                                     # within 6 px of upright: where a shadow meets its foot
+    for d in range(1, 7):
+        touch[d:] |= U[:-d]; touch[:-d] |= U[d:]; touch[:, d:] |= U[:, :-d]; touch[:, :-d] |= U[:, d:]
+    out = []
+    for pts in _blobs(shade_far):
+        if len(pts) < max(40, h * w // 100000): continue
+        S = mm.array(pts, float)
+        ys, xs = S[:, 0].astype(int), S[:, 1].astype(int)
+        # the shade's own pixels next to the touch zone (just outside the halo band) mark the foot
+        ring = [(y, x) for y, x in zip(ys.tolist(), xs.tolist()) if any(touch[yy, xx] for yy, xx in ((y, x - 4), (y, x + 4), (y - 4, x), (y + 4, x)) if 0 <= yy < h and 0 <= xx < w)]
+        if not ring: continue
+        # many things touch a shadow (a rope, a post, a neighbour's foot): the foot is where the TALLEST upright stands
+        def column_height(x, y):
+            gap = 0; H = 0
+            while y > 0 and gap <= 3:
+                if U[y, x]: H += 1 + gap; gap = 0
+                else: gap += 1
+                y -= 1
+            return H
+        best = (0, None)
+        for (ry, rx) in ring[::max(1, len(ring) // 80)]:
+            for yy in range(max(ry - 6, 0), min(ry + 7, h)):
+                for xx in range(max(rx - 6, 0), min(rx + 7, w), 2):
+                    if U[yy, xx]:
+                        H_ = column_height(xx, yy)
+                        if H_ > best[0]: best = (H_, (yy, xx))
+        H, foot = best
+        if foot is None: continue
+        fy, fx = float(foot[0]), float(foot[1])
+        d = mm.sqrt((S[:, 0] - fy) ** 2 + (S[:, 1] - fx) ** 2)
+        far = S[int(mm.argmax(d))]; dx, dy = float(far[1] - fx), float(far[0] - fy); L = math.hypot(dx, dy)
+        if H < max(12, h * 0.02) or L < 0.15 * H: continue
+        r = {"x": round(fx / w, 3), "y": round(fy / h, 3), "height_px": int(H), "run_px": round(L), "across": round(dx / L, 2),
+             "down": round(dy / L, 2), "shade_px": len(pts)}
+        if abs(dx) > 3 * abs(dy):                                         # runs across the picture: not foreshortened
+            r["sun_height_deg"] = round(math.degrees(math.atan(H / abs(dx))), 1)
+        out.append(r)
+    if not out: return {"horizon": round(hz, 3), "feet": [], "said": "no shadows found at anything's feet"}
+    left_n = sum(1 for r in out if r["across"] < -0.5); right_n = sum(1 for r in out if r["across"] > 0.5)
+    heights = sorted(r["sun_height_deg"] for r in out if "sun_height_deg" in r)
+    res = {"horizon": round(hz, 3), "feet": out, "left": left_n, "right": right_n}
+    lines = []
+    if left_n >= 2 * max(right_n, 1) or right_n >= 2 * max(left_n, 1):
+        to = "left" if left_n > right_n else "right"
+        res["shadows_run"] = to; res["sun_side"] = "right" if to == "left" else "left"
+        lines.append(f"{max(left_n, right_n)} of {len(out)} shadows at people's or things' feet run to the {to}: the sun is to the "
+                     f"{res['sun_side']} of where the camera looks")
+    else:
+        lines.append(f"shadows at feet run both ways ({left_n} left, {right_n} right): no side claimed")
+    if len(heights) >= 2:
+        mid = heights[len(heights) // 2]
+        res["sun_height_deg"] = [heights[0], mid, heights[-1]]
+        lines.append(f"from {len(heights)} shadows running across the picture (height against run): the sun about {mid} deg up "
+                     f"(they range {heights[0]}-{heights[-1]})")
+    res["said"] = "; ".join(lines)
+    return res
+
+
 def shadow_reading(path, hfov=(60, 110)):
     """The shadow layer: is the sun ahead or behind, do the shadows belong to the sun in the picture, and how high the sun is.
     The height needs the lens's field of view (unknown in a cropped picture; exact in a 360 original), so it is a range."""
