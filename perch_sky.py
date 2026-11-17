@@ -328,26 +328,40 @@ def feet_shadows(path, size=3200):
         # the shade's own pixels next to the touch zone (just outside the halo band) mark the foot
         ring = [(y, x) for y, x in zip(ys.tolist(), xs.tolist()) if any(touch[yy, xx] for yy, xx in ((y, x - 4), (y, x + 4), (y - 4, x), (y + 4, x)) if 0 <= yy < h and 0 <= xx < w)]
         if not ring: continue
-        # many things touch a shadow (a rope, a post, a neighbour's foot): the foot is where the TALLEST upright stands
-        def column_height(x, y):
-            gap = 0; H = 0
-            while y > 0 and gap <= 3:
-                if U[y, x]: H += 1 + gap; gap = 0
+        # search a little wider than the touch (a post or rope may stand between the shadow and the person who cast it):
+        # climb each spot through its strip and keep the TALLEST
+        k = max(4, w // 600); R_ = max(20, w // 150)
+        def climb(x, y):
+            gap = 0; top = y
+            while y > 0 and gap <= 4:
+                if U[y, max(x - k, 0):min(x + k + 1, w)].any(): top = y; gap = 0
                 else: gap += 1
                 y -= 1
-            return H
+            return top
+        cy0 = int(sum(r_[0] for r_ in ring) / len(ring)); cx0 = int(sum(r_[1] for r_ in ring) / len(ring))
         best = (0, None)
-        for (ry, rx) in ring[::max(1, len(ring) // 80)]:
-            for yy in range(max(ry - 6, 0), min(ry + 7, h)):
-                for xx in range(max(rx - 6, 0), min(rx + 7, w), 2):
-                    if U[yy, xx]:
-                        H_ = column_height(xx, yy)
-                        if H_ > best[0]: best = (H_, (yy, xx))
+        for yy in range(max(cy0 - 6, 0), min(cy0 + 9, h), 3):
+            for xx in range(max(cx0 - R_, 0), min(cx0 + R_ + 1, w), 3):
+                if U[yy, xx]:
+                    H_ = yy - climb(xx, yy) + 1
+                    if H_ > best[0]: best = (H_, (yy, xx))
         H, foot = best
         if foot is None: continue
         fy, fx = float(foot[0]), float(foot[1])
         d = mm.sqrt((S[:, 0] - fy) ** 2 + (S[:, 1] - fx) ** 2)
-        far = S[int(mm.argmax(d))]; dx, dy = float(far[1] - fx), float(far[0] - fy); L = math.hypot(dx, dy)
+        far = S[int(mm.argmax(d))]; dx, dy = float(far[1] - fx), float(far[0] - fy); L0 = math.hypot(dx, dy)
+        if L0 < 1: continue
+        ux, uy = dx / L0, dy / L0
+        # its LENGTH: walk from the foot along the shadow, counting even faint shade (a soft shadow breaks into pieces under the
+        # strict test), until a clear gap (12 px of plain grass)
+        soft = lambda yy, xx: greenish[yy, xx] and lum[yy, xx] < grass_lum[yy] * 0.85
+        t, last, gap = 0.0, 0.0, 0
+        while gap <= 12:
+            t += 1; yy = int(round(fy + uy * t)); xx = int(round(fx + ux * t))
+            if not (hy < yy < h and 0 <= xx < w): break
+            if any(soft(min(max(yy + o, 0), h - 1), xx) for o in (-2, 0, 2)): last = t; gap = 0
+            elif not U[yy, xx]: gap += 1
+        L = max(last, L0); dx, dy = ux * L, uy * L
         if H < max(12, h * 0.02) or L < 0.15 * H: continue
         r = {"x": round(fx / w, 3), "y": round(fy / h, 3), "height_px": int(H), "run_px": round(L), "across": round(dx / L, 2),
              "down": round(dy / L, 2), "shade_px": len(pts)}
@@ -355,6 +369,24 @@ def feet_shadows(path, size=3200):
             r["sun_height_deg"] = round(math.degrees(math.atan(H / abs(dx))), 1)
         out.append(r)
     if not out: return {"horizon": round(hz, 3), "feet": [], "said": "no shadows found at anything's feet"}
+    # a PANORAMA turns across its width: the same sun throws shadows one way on one side and the other way on the other side.
+    # So find where they flip: sorted left to right, the split that best puts "run right" on one side and "run left" on the
+    # other. At the flip the shadows run straight towards or away from the camera: the sun is straight ahead or behind there.
+    across = sorted((r["x"], r["across"]) for r in out if abs(r["across"]) > 0.5)
+    flip = None
+    if len(across) >= 4:
+        best_f = None
+        for i in range(1, len(across)):
+            x0 = (across[i - 1][0] + across[i][0]) / 2
+            for sgn in (1, -1):
+                agree = sum(1 for x, c in across if (c > 0) == ((x < x0) == (sgn > 0)))
+                if best_f is None or agree > best_f[0]: best_f = (agree, x0, sgn)
+        agree, x0, sgn = best_f
+        if agree >= 0.8 * len(across) and 0.05 < x0 < 0.95:
+            near = [r for r in out if abs(r["x"] - x0) < 0.12]
+            towards = sum(1 for r in near if r["down"] > 0.5); away = sum(1 for r in near if r["down"] < -0.5)
+            flip = {"x": round(x0, 3), "agree": f"{agree} of {len(across)}",
+                    "left_side_runs": "right" if sgn > 0 else "left", "sun_there": ("ahead" if towards > away else "behind" if away > towards else "ahead or behind")}
     left_n = sum(1 for r in out if r["across"] < -0.5); right_n = sum(1 for r in out if r["across"] > 0.5)
     heights = sorted(r["sun_height_deg"] for r in out if "sun_height_deg" in r)
     res = {"horizon": round(hz, 3), "feet": out, "left": left_n, "right": right_n}
@@ -364,6 +396,11 @@ def feet_shadows(path, size=3200):
         res["shadows_run"] = to; res["sun_side"] = "right" if to == "left" else "left"
         lines.append(f"{max(left_n, right_n)} of {len(out)} shadows at people's or things' feet run to the {to}: the sun is to the "
                      f"{res['sun_side']} of where the camera looks")
+    elif flip:
+        res["flip"] = flip
+        lines.append(f"shadows run {flip['left_side_runs']} on the left of the picture and the other way on the right ({flip['agree']} agree): "
+                     f"a wide view turning past the sun's line; at {flip['x']:.2f} across they run straight along the view: the sun is "
+                     f"{flip['sun_there']} there (that much of the picture's width is the sun's bearing or its opposite)")
     else:
         lines.append(f"shadows at feet run both ways ({left_n} left, {right_n} right): no side claimed")
     if len(heights) >= 2:
