@@ -166,7 +166,28 @@ def walk(a, win, out, depth=0):
             walk(c, win, out, depth + 1)
 
 def x_windows():
-    """top-level windows on the display that are viewable, from X itself: (box, title)"""
+    """the application windows on the display that are viewable: (box, title). First from the window manager's own list
+    (_NET_CLIENT_LIST: real app windows with their real titles; a window manager wraps each in an unnamed frame, so the root's
+    children alone hide them all: a WebKit app window went missing that way), else the root's children."""
+    try:
+        r = subprocess.run(["xprop", "-root", "-display", disp, "_NET_CLIENT_LIST"], capture_output=True, text=True, timeout=5).stdout
+        ids = re.findall(r"0x[0-9a-f]+", r.split("#", 1)[1]) if "#" in r else []
+    except Exception:
+        ids = []
+    if ids:
+        wins = []
+        for wid in ids:
+            try:
+                st = subprocess.run(["xwininfo", "-id", wid, "-display", disp], capture_output=True, text=True, timeout=5).stdout
+                nm = subprocess.run(["xprop", "-id", wid, "-display", disp, "_NET_WM_NAME", "WM_NAME", "_NET_WM_STATE"], capture_output=True, text=True, timeout=5).stdout
+            except Exception:
+                continue
+            if "IsViewable" not in st or "_NET_WM_STATE_HIDDEN" in nm: continue
+            g = {k: int(re.search(rf"{k}:\s+(-?\d+)", st).group(1)) for k in ("Absolute upper-left X", "Absolute upper-left Y", "Width", "Height")}
+            if g["Width"] < 8 or g["Height"] < 8: continue
+            t = re.search(r'(?:_NET_WM_NAME|WM_NAME)\([^)]*\) = "(.*)"', nm)
+            wins.append(((g["Absolute upper-left X"], g["Absolute upper-left Y"], g["Width"], g["Height"]), t.group(1) if t else ""))
+        return wins
     try:
         r = subprocess.run(["xwininfo", "-root", "-children", "-display", disp], capture_output=True, text=True, timeout=5)
     except Exception:
