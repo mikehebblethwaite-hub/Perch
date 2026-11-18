@@ -1,5 +1,5 @@
 CFLAGS ?= -O2 -Wall -Wextra
-all: perch-eye perch-feed perch-tap perch-box perch-chip perch-hen perch-wait perch-crop perch-scene perch-shotbot perch-cam perch-vm libperch-text.so libperch-murmur.so
+all: perch-eye perch-feed perch-tap perch-box perch-chip perch-hen perch-wait perch-crop perch-scene perch-shotbot perch-cam perch-track perch-vm libperch-text.so libperch-murmur.so
 libperch-murmur.so: perch-murmur.c
 	$(CC) -O3 -Wall -Wextra -fPIC -shared -o $@ $< -lm -lpthread
 libperch-text.so: perch-text.c
@@ -26,8 +26,10 @@ perch-shotbot: perch-shotbot.c
 	$(CC) $(CFLAGS) -o $@ $< -lX11 -lz
 perch-cam: perch-cam.c perch-box.h
 	$(CC) $(CFLAGS) -o $@ $<
+perch-track: perch-track.c
+	$(CC) $(CFLAGS) -o $@ $< -lm
 clean:
-	rm -f perch-eye perch-feed perch-tap perch-box perch-chip perch-hen perch-wait perch-crop perch-scene perch-shotbot perch-cam perch-vm; rm -rf dist
+	rm -f perch-eye perch-feed perch-tap perch-box perch-chip perch-hen perch-wait perch-crop perch-scene perch-shotbot perch-cam perch-track perch-vm; rm -rf dist
 perch-vm: perch-vm.c perch-core.h perch-box.h
 	$(CC) $(CFLAGS) -o $@ $< $(shell pkg-config --cflags --libs gio-2.0 gio-unix-2.0) -lm
 
