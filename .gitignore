@@ -10,6 +10,7 @@ perch-crop
 perch-scene
 perch-shotbot
 perch-cam
+perch-track
 vm/
 perch-vm
 dist/
